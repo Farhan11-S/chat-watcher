@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Streams — Chat Watcher</title>
+  <script src="/js/tailwind.config.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = window.tailwindConfig</script>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+  <div id="navbar-mount"></div>
+
+  <main class="max-w-7xl mx-auto px-6 py-8">
+
+    <!-- Page header -->
+    <div class="flex items-center justify-between mb-8">
+      <div>
+        <h1 class="text-2xl font-bold text-white">Streams</h1>
+        <p class="text-gray-500 text-sm mt-1">Manage your YouTube streams and VODs</p>
+      </div>
+      <button onclick="openAddModal()"
+              class="inline-flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-xl transition-all text-white"
+              style="background:#0ea5e9; box-shadow: 0 0 20px #0ea5e933;">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        Add Stream
+      </button>
+    </div>
+
+    <!-- Streams table card -->
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+        <div class="flex items-center gap-2">
+          <span class="text-base">🎬</span>
+          <h2 class="text-sm font-semibold text-white">All Streams</h2>
+          <span id="stream-count-badge" class="hidden ml-1 bg-gray-800 text-gray-400 text-xs font-medium px-2 py-0.5 rounded-full"></span>
+        </div>
+        <button onclick="loadStreams()" class="btn-ghost flex items-center gap-1.5 text-xs border border-gray-800 rounded-lg px-3 py-1.5 hover:border-gray-600">
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+          Refresh
+        </button>
+      </div>
+      <div class="overflow-x-auto" id="streams-table"></div>
+    </div>
+  </main>
+
+  <!-- Add Stream Modal -->
+  <div id="add-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">Add Stream</h3>
+        <button onclick="closeModal('add-modal')" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">YouTube URL</label>
+        <input id="add-url" type="text" class="form-input" placeholder="https://youtube.com/watch?v=..." />
+        <p id="add-error" class="text-red-400 text-xs mt-2 hidden"></p>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModal('add-modal')" class="btn-ghost">Cancel</button>
+        <button onclick="submitAddStream()" class="btn-primary">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Stream Modal -->
+  <div id="edit-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">Edit Stream</h3>
+        <button onclick="closeModal('edit-modal')" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <input id="edit-id" type="hidden" />
+        <label class="form-label">URL</label>
+        <input id="edit-url" type="text" class="form-input mb-4" />
+        <label class="form-label">Status</label>
+        <select id="edit-status" class="form-input">
+          <option value="pending">pending</option>
+          <option value="processing">processing</option>
+          <option value="done">done</option>
+          <option value="error">error</option>
+        </select>
+        <p id="edit-error" class="text-red-400 text-xs mt-2 hidden"></p>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModal('edit-modal')" class="btn-ghost">Cancel</button>
+        <button onclick="submitEditStream()" class="btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stream Config Modal -->
+  <div id="config-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">⚙️ Stream Config</h3>
+        <button onclick="closeModal('config-modal')" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <input id="config-stream-id" type="hidden" />
+        <p id="config-source" class="text-xs text-gray-400 mb-4 px-3 py-2 bg-gray-800 rounded-lg"></p>
+        <div id="stream-config-form"></div>
+        <p id="config-error" class="text-red-400 text-xs mt-3 hidden"></p>
+      </div>
+      <div class="modal-footer">
+        <button onclick="deleteStreamConfig()" class="btn-danger mr-auto">Reset to Global</button>
+        <button onclick="closeModal('config-modal')" class="btn-ghost">Cancel</button>
+        <button onclick="submitStreamConfig()" class="btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run Watcher Modal -->
+  <div id="run-modal" class="modal-backdrop hidden">
+    <div class="modal" style="max-width:420px;">
+      <div class="modal-header">
+        <h3 class="modal-title" style="color:#34d399;">▶ Run Watcher</h3>
+        <button onclick="closeModal('run-modal')" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-gray-300 text-sm">
+          This will start the chat spike watcher for:
+        </p>
+        <p id="run-stream-title" class="text-white font-medium text-sm mt-2 px-3 py-2 bg-gray-800 rounded-lg truncate"></p>
+        <p class="text-gray-500 text-xs mt-3">The watcher will run in the background and detect chat spikes. The stream status will update to <span class="text-yellow-400">processing</span> while running.</p>
+        <input id="run-id" type="hidden" />
+        <p id="run-error" class="text-red-400 text-xs mt-2 hidden"></p>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModal('run-modal')" class="btn-ghost">Cancel</button>
+        <button onclick="submitRunStream()"
+                class="inline-flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-xl transition-all text-white"
+                style="background:#10b981; box-shadow: 0 0 20px #10b98133;">
+          ▶ Start Watcher
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rerun Watcher Modal -->
+  <div id="rerun-modal" class="modal-backdrop hidden">
+    <div class="modal" style="max-width:440px;">
+      <div class="modal-header">
+        <h3 class="modal-title" style="color:#fbbf24;">↺ Rerun Watcher</h3>
+        <button onclick="closeModal('rerun-modal')" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-gray-300 text-sm">You are about to rerun the watcher for:</p>
+        <p id="rerun-stream-title" class="text-white font-medium text-sm mt-2 px-3 py-2 bg-gray-800 rounded-lg truncate"></p>
+        <div class="mt-4 px-3 py-3 rounded-lg border border-amber-500/20 bg-amber-500/5">
+          <p class="text-amber-400 text-xs font-medium mb-1">⚠ This will permanently delete all previously detected spikes for this stream.</p>
+          <p class="text-gray-400 text-xs">A fresh analysis will run from scratch using the current config.</p>
+        </div>
+        <input id="rerun-id" type="hidden" />
+        <p id="rerun-error" class="text-red-400 text-xs mt-3 hidden"></p>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModal('rerun-modal')" class="btn-ghost">Cancel</button>
+        <button onclick="submitRerunStream()"
+                class="inline-flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-xl transition-all text-white"
+                style="background:#d97706; box-shadow: 0 0 20px #d9770633;">
+          ↺ Clear &amp; Rerun
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Confirm Modal -->
+  <div id="delete-modal" class="modal-backdrop hidden">
+    <div class="modal" style="max-width:420px;">
+      <div class="modal-header">
+        <h3 class="modal-title" style="color:#f87171;">🗑 Delete Stream</h3>
+        <button onclick="closeModal('delete-modal')" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-gray-300 text-sm">This will permanently delete the stream and all its spike results. This action cannot be undone.</p>
+        <input id="delete-id" type="hidden" />
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModal('delete-modal')" class="btn-ghost">Cancel</button>
+        <button onclick="submitDeleteStream()" class="btn-danger">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/components.js"></script>
+  <script src="/js/streams.js"></script>
+</body>
+</html>
