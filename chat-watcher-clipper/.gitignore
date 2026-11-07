@@ -1,7 +1,0 @@
-.env
-docs/*
-output/*
-src/__pycache__/*
-tests/__pycache__/*
-venv/*
-youtube_cookies.txt
