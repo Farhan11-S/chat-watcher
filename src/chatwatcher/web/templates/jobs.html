@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_pill %}
+{% block title %}Queue · chat-watcher{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Queue</h2>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <tr><th>Status</th><th>Stream</th><th>Stage</th><th class="num">Tries</th><th>When (UTC)</th><th>Last result</th><th></th></tr>
+    {% for j in rows %}
+    <tr>
+      <td>{{ status_pill(j.status) }}</td>
+      <td><a href="/video/{{ j.yt_id }}">{{ (j.title or j.yt_id)[:60] }}</a></td>
+      <td>{{ j.stage }}{% if j.moment_rank %} #{{ j.moment_rank }}{% endif %}</td>
+      <td class="num">{{ j.attempts }}</td>
+      <td><small>{% if j.status == 'pending' %}runs at {{ j.run_after }}{% elif j.finished_at %}{{ j.finished_at }}{% elif j.started_at %}started {{ j.started_at }}{% endif %}</small></td>
+      <td><small class="{{ 'muted' if j.status != 'error' else '' }}" style="white-space:pre-wrap">{{ ((j.error or j.message) or '')[:300] }}</small></td>
+      <td>{% if j.status in ('error', 'pending') %}<form method="post" action="/jobs/{{ j.id }}/retry" class="inline"><button class="small">Run now</button></form>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}
+  <p class="empty">Nothing queued yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

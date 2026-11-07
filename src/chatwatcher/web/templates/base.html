@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}chat-watcher{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-autorefresh="{% block autorefresh %}1{% endblock %}">
+<header class="top">
+  <a class="brand" href="/">🎬 chat-watcher</a>
+  <nav>
+    {% set here = request.url.path %}
+    <a href="/" class="{{ 'on' if here == '/' else '' }}">Streams</a>
+    <a href="/channels" class="{{ 'on' if here.startswith('/channels') else '' }}">Channels</a>
+    <a href="/jobs" class="{{ 'on' if here.startswith('/jobs') else '' }}">Queue</a>
+    <a href="/settings" class="{{ 'on' if here.startswith('/settings') else '' }}">Settings</a>
+  </nav>
+  <span class="spacer"></span>
+  <span id="worker-pill" class="pill {{ 'ok' if worker != 'stopped' else 'warn' }}">worker: {{ worker }}</span>
+</header>
+<main>
+  {% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
+  {% if error %}<div class="flash err">{{ error }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

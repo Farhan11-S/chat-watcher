@@ -1,0 +1,234 @@
+"""SQLite storage. Schema changes are numbered migrations tracked by PRAGMA user_version.
+
+To change the schema, append a new SQL string to MIGRATIONS — never edit an old one.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator
+
+MIGRATIONS: list[str] = [
+    # 1 — initial schema
+    """
+    CREATE TABLE channels (
+        id              INTEGER PRIMARY KEY,
+        channel_id      TEXT NOT NULL UNIQUE,          -- YouTube UC… id
+        handle          TEXT,                          -- @handle
+        title           TEXT,
+        default_type    TEXT NOT NULL DEFAULT 'auto'
+                        CHECK (default_type IN ('auto','talk','gaming','karaoke')),
+        auto_upload     INTEGER NOT NULL DEFAULT 0,
+        enabled         INTEGER NOT NULL DEFAULT 1,
+        last_checked_at TEXT,
+        added_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE videos (
+        id            INTEGER PRIMARY KEY,
+        video_id      TEXT NOT NULL UNIQUE,            -- 11-char YouTube id
+        channel_id    INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+        title         TEXT,
+        duration_s    REAL,
+        published_at  TEXT,
+        stream_type   TEXT NOT NULL DEFAULT 'auto'
+                      CHECK (stream_type IN ('auto','talk','gaming','karaoke')),
+        status        TEXT NOT NULL DEFAULT 'new'
+                      CHECK (status IN ('new','processing','done','error','skipped')),
+        error         TEXT,
+        data_dir      TEXT,
+        output_dir    TEXT,
+        drive_url     TEXT,
+        added_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_videos_channel ON videos(channel_id);
+    CREATE INDEX idx_videos_status ON videos(status);
+
+    CREATE TABLE moments (
+        id             INTEGER PRIMARY KEY,
+        video_id       INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        rank           INTEGER NOT NULL,
+        score          REAL NOT NULL,
+        start_s        REAL NOT NULL,
+        end_s          REAL NOT NULL,
+        peak_s         REAL NOT NULL,
+        kind           TEXT NOT NULL DEFAULT 'reaction',   -- reaction | song | ...
+        features_json  TEXT NOT NULL DEFAULT '{}',         -- score breakdown
+        status         TEXT NOT NULL DEFAULT 'new'
+                       CHECK (status IN ('new','approved','rejected')),
+        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        CHECK (end_s > start_s)
+    );
+    CREATE INDEX idx_moments_video ON moments(video_id, rank);
+
+    CREATE TABLE clips (
+        id          INTEGER PRIMARY KEY,
+        moment_id   INTEGER NOT NULL UNIQUE REFERENCES moments(id) ON DELETE CASCADE,
+        path        TEXT NOT NULL,
+        container   TEXT,
+        width       INTEGER,
+        height      INTEGER,
+        fps         REAL,
+        vcodec      TEXT,
+        acodec      TEXT,
+        size_bytes  INTEGER,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- moment_id NULL = stream-level digest for the video
+    CREATE TABLE analyses (
+        id             INTEGER PRIMARY KEY,
+        video_id       INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id      INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        model          TEXT,
+        analysis_json  TEXT NOT NULL,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_analyses_moment ON analyses(moment_id);
+    CREATE INDEX idx_analyses_video ON analyses(video_id);
+
+    CREATE TABLE jobs (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id   INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        stage       TEXT NOT NULL
+                    CHECK (stage IN ('ingest','score','clip','frames','analyze','digest','upload')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        run_after   TEXT NOT NULL DEFAULT (datetime('now')),
+        error       TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    -- One job per (video, stage, moment); NULL moment counts as one value.
+    CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
+    CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
+
+    CREATE TABLE settings (
+        key         TEXT PRIMARY KEY,
+        value_json  TEXT NOT NULL
+    );
+    """,
+    # 2 — ingest results on videos
+    """
+    ALTER TABLE videos ADD COLUMN live_status TEXT;
+    ALTER TABLE videos ADD COLUMN message_count INTEGER;   -- NULL = not ingested / no chat replay
+    ALTER TABLE videos ADD COLUMN caption_lang TEXT;       -- e.g. 'ja-orig'; NULL = none
+    ALTER TABLE videos ADD COLUMN has_heatmap INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE videos ADD COLUMN ingested_at TEXT;
+    """,
+    # 3 — scoring results on videos
+    """
+    ALTER TABLE videos ADD COLUMN detected_type TEXT;     -- talk | gaming | karaoke (auto-detected)
+    ALTER TABLE videos ADD COLUMN scored_at TEXT;
+    """,
+    # 4 — clip details: where the file starts in stream time, frames, folder
+    """
+    ALTER TABLE clips ADD COLUMN folder TEXT;
+    ALTER TABLE clips ADD COLUMN zero_s REAL;          -- stream time at clip time 0
+    ALTER TABLE clips ADD COLUMN duration_s REAL;
+    ALTER TABLE clips ADD COLUMN req_start_s REAL;     -- range asked of yt-dlp
+    ALTER TABLE clips ADD COLUMN req_end_s REAL;
+    ALTER TABLE clips ADD COLUMN format_id TEXT;
+    ALTER TABLE clips ADD COLUMN frames_json TEXT NOT NULL DEFAULT '[]';
+    """,
+    # 5 — automation: job timing/messages, and streams the channel watcher has seen
+    """
+    ALTER TABLE jobs ADD COLUMN started_at TEXT;
+    ALTER TABLE jobs ADD COLUMN finished_at TEXT;
+    ALTER TABLE jobs ADD COLUMN message TEXT;              -- last outcome, incl. warnings
+
+    CREATE TABLE discovered (
+        video_id     TEXT PRIMARY KEY,
+        channel_id   INTEGER REFERENCES channels(id) ON DELETE CASCADE,
+        title        TEXT,
+        duration_s   REAL,
+        action       TEXT NOT NULL CHECK (action IN ('queued', 'skipped')),
+        reason       TEXT,
+        seen_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
+]
+
+SCHEMA_VERSION = len(MIGRATIONS)
+
+
+def connect(db_path: str | Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a connection with the pragmas every caller needs.
+
+    check_same_thread=False is for the web app, where one request's connection may be
+    opened, used and closed on different threads (never concurrently)."""
+    path = Path(db_path)
+    if str(path) != ":memory:":
+        path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30, isolation_level=None,  # autocommit; use tx()
+                           check_same_thread=check_same_thread)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    if str(path) != ":memory:":
+        conn.execute("PRAGMA journal_mode = WAL")  # web + worker read/write together
+    return conn
+
+
+@contextmanager
+def tx(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Run a block in one transaction (BEGIN IMMEDIATE: take the write lock up front)."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def migrate(conn: sqlite3.Connection) -> list[int]:
+    """Apply pending migrations. Returns the versions applied (empty if up to date)."""
+    current = schema_version(conn)
+    if current > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Database schema v{current} is newer than this code (v{SCHEMA_VERSION}). "
+            "Update chatwatcher."
+        )
+    applied: list[int] = []
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        script = MIGRATIONS[version - 1]
+        # executescript() commits first, so wrap the script and version bump ourselves.
+        try:
+            conn.executescript(
+                f"BEGIN IMMEDIATE;\n{script}\nPRAGMA user_version = {version};\nCOMMIT;"
+            )
+        except sqlite3.Error:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        applied.append(version)
+    return applied
+
+
+def open_db(db_path: str | Path) -> sqlite3.Connection:
+    """Connect and bring the schema up to date."""
+    conn = connect(db_path)
+    migrate(conn)
+    return conn
+
+
+def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    names = [
+        r["name"]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+            "ORDER BY name"
+        )
+    ]
+    return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0] for n in names}

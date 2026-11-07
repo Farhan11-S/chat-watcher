@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+
+# Chat Watcher runtime data
+data/
+output/
+config.toml
+.env
+*cookies*.txt
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% from "_macros.html" import stage_pills, status_pill, flag %}
+{% block title %}{{ video.title or video.video_id }} · chat-watcher{% endblock %}
+{% block content %}
+{% set vtype = video.stream_type if video.stream_type != 'auto' else (video.detected_type or 'auto') %}
+<div class="card">
+  <h1>{{ video.title or video.video_id }}</h1>
+  <p class="muted" style="margin:.2rem 0 .6rem">
+    {{ video.channel_title or '' }}{% if video.duration_s %} · {{ video.duration_s | ts }}{% endif %}
+    {% if video.published_at %} · {{ video.published_at[:10] }}{% endif %}
+    · {{ vtype }}{% if video.message_count %} · {{ '{:,}'.format(video.message_count) }} chat messages{% endif %}
+    · <a href="https://youtu.be/{{ video.video_id }}" target="_blank" rel="noopener">YouTube ↗</a>
+    {% if video.drive_url and video.drive_url.startswith('https://') %} · <a href="{{ video.drive_url }}" target="_blank" rel="noopener">Google Drive ↗</a>{% elif video.drive_url %} · <span class="mono">{{ video.drive_url }}</span>{% endif %}
+  </p>
+  <div class="actions">
+    {{ stage_pills(stages) }}
+    {{ status_pill(video.status) }}
+    {% if video.status == 'error' or stages.values() | selectattr('status', 'equalto', 'error') | list %}
+    <form method="post" action="/video/{{ video.video_id }}/retry" class="inline"><button class="small">↻ Retry</button></form>
+    {% endif %}
+  </div>
+  {% if video.error %}<p class="faint" style="margin:.5rem 0 0; white-space:pre-wrap">{{ video.error }}</p>{% endif %}
+  {% if video.output_dir %}<p style="margin:.5rem 0 0"><small class="muted">📁 <span class="mono">{{ video.output_dir }}</span>
+    <button class="small" data-copy="{{ video.output_dir }}">copy path</button></small></p>{% endif %}
+</div>
+
+{% if chart %}
+<div class="card">
+  <h2>Moment score</h2>
+  <div class="legend">
+    <span><span class="sw" style="background:var(--series-1)"></span>combined chat reaction score</span>
+    <span><span class="sw" style="background:var(--moment); outline:1px solid var(--series-1)"></span>moment (click to open)</span>
+    {% if vtype == 'karaoke' %}<span><span class="sw" style="background:var(--song)"></span>song ♪</span>{% endif %}
+    <span>- - - minimum score {{ cfg.scoring.min_score }}</span>
+  </div>
+  <div class="chart-wrap" data-hover='{{ chart.hover }}'>{{ chart.svg | safe }}<div class="tooltip"></div></div>
+  {% if heat %}
+  <h3>Most replayed <small class="muted">(YouTube heatmap)</small></h3>
+  <div class="chart-wrap" data-hover='{{ heat.hover }}'>{{ heat.svg | safe }}<div class="tooltip"></div></div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if digest %}
+<div class="card">
+  <h2>Claude's stream digest</h2>
+  <p>{{ digest.stream_summary }}</p>
+  <div class="grid-2">
+    <div>
+      <h3>Highlights video order</h3>
+      <ol>{% for r in digest.highlights_order %}{% set m = ranks.get(r) %}
+        <li>{% if m %}<a href="/moment/{{ m.id }}">#{{ r }} {{ (m.analysis.titles[0].text if m.analysis and m.analysis.titles else '') }}</a>{% else %}#{{ r }}{% endif %}</li>
+      {% endfor %}</ol>
+      {% if digest.best_shorts %}<h3>Best Shorts</h3>
+      <p>{% for r in digest.best_shorts %}{% set m = ranks.get(r) %}{% if m %}<a href="/moment/{{ m.id }}">#{{ r }}</a> {% endif %}{% endfor %}</p>{% endif %}
+    </div>
+    <div>
+      <h3>Compilation titles</h3>
+      <ul class="titles">{% for t in digest.compilation_titles %}
+        <li>{{ flag(t.lang) }} {{ t.text }} <button class="small" data-copy="{{ t.text }}">copy</button></li>{% endfor %}</ul>
+      {% if digest.notes %}<h3>Notes</h3><p class="muted">{{ digest.notes }}</p>{% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="actions" style="justify-content: space-between; margin-bottom:.5rem">
+    <h2 style="margin:0">Moments</h2>
+    <div class="actions">
+      <form method="post" action="/video/{{ video.video_id }}/clip" class="inline"><button class="small">Clip all</button></form>
+      <form method="post" action="/video/{{ video.video_id }}/analyze" class="inline"><button class="small">Analyze top {{ cfg.pipeline.analyze_top or 'all' }}</button></form>
+      {% if cfg.drive.enabled %}<form method="post" action="/video/{{ video.video_id }}/upload" class="inline"><button class="small">Upload to Drive</button></form>{% endif %}
+      <form method="post" action="/video/{{ video.video_id }}/rescore" class="inline"
+            onsubmit="return confirm('Re-scoring replaces all moments (approve/reject decisions too). Clip files already on disk are kept. Continue?')">
+        <select name="stream_type">{% for t in ['auto', 'talk', 'gaming', 'karaoke'] %}<option {{ 'selected' if video.stream_type == t }}>{{ t }}</option>{% endfor %}</select>
+        <button class="small">Re-score</button>
+      </form>
+    </div>
+  </div>
+  {% if moments %}
+  <div class="table-wrap"><table>
+    <tr><th class="num">#</th><th>When</th><th class="num">Score</th><th>Why</th><th>Chat</th><th>Claude</th><th>Clip</th><th>Review</th></tr>
+    {% for m in moments %}
+    <tr>
+      <td class="num"><a href="/moment/{{ m.id }}">#{{ m.rank }}</a>{% if m.kind == 'song' %} ♪{% endif %}</td>
+      <td><a href="/moment/{{ m.id }}">{{ m.start_s | ts }}–{{ m.end_s | ts }}</a><br><small class="muted">{{ (m.end_s - m.start_s) | int }}s</small></td>
+      <td class="num">{{ '%.2f' | format(m.score) }}</td>
+      <td><small>{% for r in (m.reasons or [])[:3] %}{{ r.signal }} <span class="faint">{{ r.z }}</span>{{ ' · ' if not loop.last }}{% endfor %}</small></td>
+      <td><small>{% for t, n in (m.top_messages or [])[:3] %}{{ t[:14] }}×{{ n }}{{ ', ' if not loop.last }}{% endfor %}</small></td>
+      <td>{% if m.analysis %}<small><b>{{ m.analysis.clip_worthiness }}/10</b> {{ m.analysis.category }}<br>{{ (m.analysis.titles[0].text if m.analysis.titles else '')[:60] }}</small>
+          {% elif moment_jobs.get(m.id) %}<span class="pill pending">queued</span>{% else %}<span class="faint">–</span>{% endif %}</td>
+      <td>{% if m.clip_id %}<span class="pill done">{{ m.height }}p</span>{% else %}<span class="faint">–</span>{% endif %}</td>
+      <td>{{ status_pill(m.status) }}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}
+  <p class="empty">No moments yet{% if stages.score.status != 'done' %} — scoring hasn't run{% endif %}.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_pill, flag %}
+{% block title %}#{{ moment.rank }} · {{ video.title }}{% endblock %}
+{% block content %}
+{% set a = analysis %}
+<div class="actions" style="justify-content: space-between; margin-bottom: .75rem">
+  <div>
+    <a href="/video/{{ video.video_id }}">← {{ (video.title or video.video_id)[:80] }}</a>
+  </div>
+  <div class="actions">
+    {% if prev %}<a class="btn" href="/moment/{{ prev }}">← #{{ moment.rank - 1 }}</a>{% endif %}
+    {% if next %}<a class="btn" href="/moment/{{ next }}">#{{ moment.rank + 1 }} →</a>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h1>#{{ moment.rank }} · {{ (a.titles[0].text if a and a.titles else (moment.start_s | ts) ~ '–' ~ (moment.end_s | ts)) }}</h1>
+  <div class="actions">
+    {{ status_pill(moment.status) }}
+    {% if a %}<span class="pill"><b>{{ a.clip_worthiness }}/10</b>&nbsp;{{ a.category }}</span><span class="pill">{{ a.format }}</span>{% endif %}
+    {% if moment.kind == 'song' %}<span class="pill">♪ song</span>{% endif %}
+    {% if a and a.song %}<span class="pill">{{ a.song.title }} — {{ a.song.artist }}</span>{% endif %}
+    {% if a and a.music_copyright and a.music_copyright.risk != 'none' %}<span class="pill {{ 'error' if a.music_copyright.risk == 'high' else 'pending' }}">music © {{ a.music_copyright.risk }}</span>{% endif %}
+    {% for j in jobs %}<span class="pill {{ j.status }}">{{ j.stage }} {{ j.status }}</span>{% endfor %}
+    <span class="spacer" style="flex:1"></span>
+    <form method="post" action="/moment/{{ moment.id }}/approve" class="inline"><button class="small">✓ Keep</button></form>
+    <form method="post" action="/moment/{{ moment.id }}/reject" class="inline"><button class="small danger">✗ Skip</button></form>
+    {% if moment.status != 'new' %}<form method="post" action="/moment/{{ moment.id }}/reset" class="inline"><button class="small">Undo</button></form>{% endif %}
+  </div>
+</div>
+
+<div class="grid-2">
+  <div>
+    <div class="card">
+      {% if clip %}
+      <video controls preload="metadata" src="/media/clip/{{ clip.id }}"
+             {% if frames %}poster="/media/frame/{{ clip.id }}/{{ (frames | selectattr('is_peak') | list or frames)[0].file.split('/')[-1] }}"{% endif %}></video>
+      <p class="muted" style="margin:.5rem 0 0"><small>
+        {{ clip.width }}×{{ clip.height }} {{ clip.fps | int }}fps · {{ clip.vcodec }}/{{ clip.acodec }} · {{ clip.size_bytes | mb }}
+        · stream {{ clip.zero_s | ts }}–{{ (clip.zero_s + clip.duration_s) | ts }}
+        · <a href="https://youtu.be/{{ video.video_id }}?t={{ clip.zero_s | int }}" target="_blank" rel="noopener">YouTube ↗</a>
+        <br>📁 <span class="mono">{{ clip.path }}</span> <button class="small" data-copy="{{ clip.path }}">copy path</button>
+      </small></p>
+      {% if frames %}
+      <div class="frames">
+        {% for f in frames %}{% set name = f.file.split('/')[-1] %}
+        <figure data-seek="{{ f.clip_s }}"><img src="/media/frame/{{ clip.id }}/{{ name }}" alt="frame at {{ f.clip_s }}s"
+          class="{{ 'thumb' if a and a.thumbnail and a.thumbnail.frame_file == f.file else ('peak' if f.is_peak else '') }}">
+          <figcaption>{{ f.clip_s | ts }}{% if f.is_peak %} · peak{% endif %}{% if a and a.thumbnail and a.thumbnail.frame_file == f.file %} · thumbnail{% endif %}</figcaption></figure>
+        {% endfor %}
+      </div>
+      <p class="faint" style="margin:.3rem 0 0"><small>Click a frame to jump there. Blue border: Claude's thumbnail pick; orange: chat peak.</small></p>
+      {% endif %}
+      {% else %}
+      <p class="empty">Not clipped yet.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Cut</h2>
+      <form method="post" action="/moment/{{ moment.id }}/cut" class="actions">
+        <label>start <input type="text" name="start" value="{{ moment.start_s | ts }}" style="width:6.5rem"></label>
+        <label>end <input type="text" name="end" value="{{ moment.end_s | ts }}" style="width:6.5rem"></label>
+        <button>Re-cut clip</button>
+      </form>
+      <p class="faint" style="margin:.4rem 0 0"><small>Stream times (h:mm:ss). Re-cutting downloads the new range and has Claude re-analyse it.</small></p>
+      <div class="actions" style="margin-top:.6rem">
+        <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small">Re-download</button></form>
+        <form method="post" action="/moment/{{ moment.id }}/reanalyze" class="inline"><button class="small">Ask Claude again</button></form>
+      </div>
+      {% if a and a.cut %}
+      <h3>Claude's suggested cut <small class="muted">(clip time — click to play)</small></h3>
+      <ul>
+        <li>Long-form: <a href="#" data-seek="{{ a.cut.long_in }}">{{ a.cut.long_in | ts }}</a> → {{ a.cut.long_out | ts }}</li>
+        {% if a.cut.short_in is not none %}<li>Short: <a href="#" data-seek="{{ a.cut.short_in }}">{{ a.cut.short_in | ts }}</a> → {{ a.cut.short_out | ts }} · {{ a.vertical_crop }}</li>{% endif %}
+        {% if a.cut.notes %}<li class="muted">{{ a.cut.notes }}</li>{% endif %}
+        <li>Hook: {{ a.hook }}</li>
+      </ul>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Why it ranked</h2>
+      <dl class="kv">
+        <dt>score</dt><dd>{{ '%.2f' | format(moment.score) }}</dd>
+        <dt>signals</dt><dd>{% for r in moment.reasons or [] %}{{ r.signal }} (z {{ r.z }}){{ ', ' if not loop.last }}{% endfor %}</dd>
+        <dt>top chat</dt><dd>{% for t, n in (moment.top_messages or []) %}{{ t }} ×{{ n }}{{ ', ' if not loop.last }}{% endfor %}</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div>
+    {% if a %}
+    <div class="card">
+      <h2>What happens</h2>
+      <p>{{ a.summary }}</p>
+      <p class="muted"><b>Context:</b> {{ a.context }}</p>
+      <p class="muted"><b>Why it works:</b> {{ a.why_it_works }}</p>
+    </div>
+    <div class="card">
+      <h2>Titles</h2>
+      <ul class="titles">{% for t in a.titles %}
+        <li>{{ flag(t.lang) }} {{ t.text }} <button class="small" data-copy="{{ t.text }}">copy</button></li>{% endfor %}</ul>
+      {% if a.thumbnail %}<h3>Thumbnail</h3>
+      <p><b>{{ a.thumbnail.text }}</b> <button class="small" data-copy="{{ a.thumbnail.text }}">copy</button><br><small class="muted">{{ a.thumbnail.notes }}</small></p>{% endif %}
+      {% if a.tags %}<h3>Tags</h3><p><small>{{ a.tags | join(', ') }}</small> <button class="small" data-copy="{{ a.tags | join(', ') }}">copy</button></p>{% endif %}
+    </div>
+    {% else %}
+    <div class="card"><p class="empty">No Claude analysis yet{% if not clip %} (clip it first){% endif %}.</p></div>
+    {% endif %}
+  </div>
+</div>
+
+{% if a and a.storyboard %}
+<div class="card">
+  <h2>Storyboard <small class="muted">· click a time to play</small></h2>
+  <div class="table-wrap"><table>
+    <tr><th>Time</th><th>Beat</th><th>On screen</th><th>Line</th><th>Text overlay</th><th>Edit</th></tr>
+    {% for b in a.storyboard %}
+    <tr><td><a href="#" data-seek="{{ b.start }}">{{ b.start | ts }}–{{ b.end | ts }}</a></td><td><span class="pill">{{ b.beat }}</span></td>
+      <td>{{ b.on_screen }}</td><td>{{ b.line }}</td><td>{{ b.text_overlay }}</td><td>{{ b.edit }}</td></tr>
+    {% endfor %}
+  </table></div>
+</div>
+{% endif %}
+
+{% if a and a.captions %}
+<div class="card">
+  <h2>Captions</h2>
+  <table>
+    <tr><th>Time</th><th>Original</th><th>Translation</th></tr>
+    {% for c in a.captions %}
+    <tr><td><a href="#" data-seek="{{ c.at }}">{{ c.at | ts }}</a></td><td>{{ c.original }}</td><td>{{ c.translation }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Source text</h2>
+  {% if files['transcript.txt'] %}<details><summary>Transcript (clip time)</summary><pre class="text">{{ files['transcript.txt'] }}</pre></details>{% endif %}
+  {% if files['chat_excerpt.txt'] %}<details><summary>Chat during the clip</summary><pre class="text">{{ files['chat_excerpt.txt'] }}</pre></details>{% endif %}
+  {% if a %}<p class="faint" style="margin:.6rem 0 0"><small>Analysed by {{ a.model }} at {{ a.created_at }} UTC. Check it before publishing.</small></p>{% endif %}
+</div>
+{% endblock %}

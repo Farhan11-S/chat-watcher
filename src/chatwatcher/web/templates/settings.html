@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Settings · chat-watcher{% endblock %}
+{% block autorefresh %}0{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Health check</h2>
+  <table>
+    {% for c in checks %}
+    <tr><td><span class="pill {{ c.level }}">{{ {'ok': '✓', 'warn': '!', 'fail': '✗'}[c.level] }} {{ c.name }}</span></td><td><small>{{ c.detail }}</small></td></tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="card">
+  <h2>Settings</h2>
+  <p class="muted">From <span class="mono">{{ source or 'built-in defaults (no config.toml)' }}</span>. Edit that file and restart
+    <code>cw serve</code> to change them; <code>config.example.toml</code> explains every option.</p>
+  {% for section, values in config.items() %}
+  <h3>[{{ section }}]</h3>
+  <table>
+    {% for k, v in values.items() %}
+    <tr><td class="mono" style="width:16rem">{{ k }}</td><td class="mono">{{ v | json }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endfor %}
+</div>
+{% endblock %}

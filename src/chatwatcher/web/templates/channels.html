@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Channels · chat-watcher{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Watch a channel</h2>
+  <form method="post" action="/channels" class="actions">
+    <input type="text" name="channel" placeholder="@handle, channel URL or UC… id" style="flex:1; min-width: 240px" required>
+    <label>type <select name="stream_type">
+      {% for t in ['auto', 'talk', 'gaming', 'karaoke'] %}<option>{{ t }}</option>{% endfor %}
+    </select></label>
+    <label>process latest <input type="number" name="backfill" value="{{ cfg.discover.default_backfill }}" min="0" max="15" style="width:4.5rem"> stream(s) now</label>
+    <button class="primary">Watch</button>
+  </form>
+  <p class="muted" style="margin:.6rem 0 0">The worker checks each channel's Streams tab every {{ cfg.discover.poll_minutes }} minutes. Finished streams are processed; upcoming and live ones are picked up when they end.</p>
+</div>
+
+<div class="card">
+  <h2>Watched channels</h2>
+  {% if channels %}
+  <div class="table-wrap"><table>
+    <tr><th>Channel</th><th>Type</th><th class="num">Streams</th><th>Last check (UTC)</th><th></th></tr>
+    {% for c in channels %}
+    <tr>
+      <td><a href="https://www.youtube.com/channel/{{ c.channel_id }}/streams" target="_blank" rel="noopener">{{ c.title }}</a><br>
+        <small class="muted">{{ c.handle or c.channel_id }}</small>{% if not c.enabled %} <span class="pill">off</span>{% endif %}</td>
+      <td><form method="post" action="/channels/{{ c.id }}/type" class="inline">
+        <select name="stream_type" onchange="this.form.submit()">
+          {% for t in ['auto', 'talk', 'gaming', 'karaoke'] %}<option {{ 'selected' if c.default_type == t }}>{{ t }}</option>{% endfor %}
+        </select></form></td>
+      <td class="num">{{ c.videos }}</td>
+      <td><small>{{ c.last_checked_at or 'never' }}</small></td>
+      <td class="actions">
+        <form method="post" action="/channels/{{ c.id }}/check" class="inline"><button class="small">Check now</button></form>
+        {% if c.enabled %}
+        <form method="post" action="/channels/{{ c.id }}/disable" class="inline"><button class="small">Pause</button></form>
+        {% else %}
+        <form method="post" action="/channels/{{ c.id }}/enable" class="inline"><button class="small">Resume</button></form>
+        {% endif %}
+        <form method="post" action="/channels/{{ c.id }}/remove" class="inline" onsubmit="return confirm('Stop watching {{ c.title | e }}? Its clips are kept.')"><button class="small danger">Remove</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}
+  <p class="empty">No channels yet.</p>
+  {% endif %}
+</div>
+
+{% if discovered %}
+<div class="card">
+  <h2>Recently seen streams</h2>
+  <table>
+    {% for d in discovered %}
+    <tr><td>{% if d.action == 'queued' %}<a href="/video/{{ d.video_id }}">{{ d.title or d.video_id }}</a>{% else %}{{ d.title or d.video_id }}{% endif %}
+      <br><small class="muted">{{ d.channel_title or '' }} · {{ d.seen_at }}</small></td>
+      <td><span class="pill {{ 'done' if d.action == 'queued' else '' }}">{{ d.action }}</span></td>
+      <td><small class="muted">{{ d.reason or '' }}</small></td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

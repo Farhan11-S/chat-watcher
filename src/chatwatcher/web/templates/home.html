@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_macros.html" import stage_pills, status_pill %}
+{% block content %}
+<div class="tiles">
+  <div class="tile"><div class="n">{{ summary.done }}</div><div class="l">streams done</div></div>
+  <div class="tile"><div class="n">{{ summary.processing + summary.new }}</div><div class="l">in progress</div></div>
+  <div class="tile"><div class="n">{{ summary.clips }}</div><div class="l">clips</div></div>
+  <div class="tile"><div class="n">{{ summary.storyboards }}</div><div class="l">storyboards</div></div>
+  <div class="tile"><div class="n">{{ summary.get('jobs_error', 0) }}</div><div class="l">failed jobs</div></div>
+  <div class="tile"><div class="n">{{ summary.channels }}</div><div class="l">watched channels</div></div>
+</div>
+
+<div class="card">
+  <form method="post" action="/add" class="actions">
+    <input type="text" name="url" placeholder="Paste a VOD URL to process it…" style="flex:1; min-width: 260px" required>
+    <button class="primary">Add stream</button>
+    <a class="btn" href="/channels">Watch a channel instead</a>
+  </form>
+  {% if worker == 'stopped' %}
+  <p class="muted" style="margin:.6rem 0 0">⚠️ No worker is running, so nothing will be processed. Start one with <code>cw serve</code> or <code>cw worker</code>.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Streams</h2>
+  {% if videos %}
+  <div class="table-wrap"><table>
+    <tr><th>Stream</th><th>Progress</th><th class="num">Moments</th><th class="num">Clips</th><th class="num">Storyboards</th><th>Status</th></tr>
+    {% for v in videos %}
+    <tr>
+      <td><a href="/video/{{ v.video_id }}">{{ v.title or v.video_id }}</a><br>
+        <small>{{ v.channel_title or '' }}{% if v.duration_s %} · {{ v.duration_s | ts }}{% endif %}{% if v.detected_type %} · {{ v.stream_type if v.stream_type != 'auto' else v.detected_type }}{% endif %}</small></td>
+      <td>{{ stage_pills(v.stages) }}</td>
+      <td class="num">{{ v.n_moments }}</td>
+      <td class="num">{{ v.n_clips }}</td>
+      <td class="num">{{ v.n_analyses }}</td>
+      <td>{{ status_pill(v.status) }}{% if v.error %}<br><small class="faint">{{ v.error[:90] }}</small>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}
+  <p class="empty">No streams yet. Paste a VOD URL above, or watch a channel.</p>
+  {% endif %}
+</div>
+
+{% if queue %}
+<div class="card">
+  <h2>Queue <small class="muted">· <a href="/jobs">all jobs</a></small></h2>
+  <table>
+    {% for j in queue %}
+    <tr><td>{{ status_pill(j.status) }}</td>
+      <td><a href="/video/{{ j.yt_id }}">{{ (j.title or j.yt_id)[:70] }}</a></td>
+      <td>{{ j.stage }}{% if j.moment_rank %} #{{ j.moment_rank }}{% endif %}</td>
+      <td><small class="muted">{% if j.status == 'pending' %}at {{ j.run_after }} UTC{% endif %} {{ (j.error or '')[:100] }}</small></td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,73 @@
+# Copy to config.toml and edit. Every key is optional; these are the defaults.
+# Relative paths are resolved from this file's folder.
+
+[paths]
+data_dir = "data"      # database, raw chat, captions, heatmap
+output_dir = "output"  # clips, storyboards, digests
+
+[youtube]
+ytdlp_path = "yt-dlp"
+cookies_file = ""      # cookies.txt export; recommended (bot checks, members-only)
+po_token = ""
+deno_path = ""         # empty = look for deno on PATH
+caption_langs = ["ja", "en"]   # fallback order when the original-language track is unknown
+extra_args = []                # extra yt-dlp flags, e.g. ["--proxy", "socks5://..."]
+
+[discover]
+poll_minutes = 30              # how often the worker checks each channel's Streams tab
+streams_per_check = 15
+min_duration_s = 600           # ignore streams shorter than 10 minutes
+default_backfill = 1           # finished streams to queue when you add a channel
+
+[pipeline]
+auto_clip = true
+auto_analyze = true
+clip_top = 0                   # clip the best N moments (0 = all scored)
+analyze_top = 5                # Claude-analyse the best N clips (0 = all); saves plan usage
+
+[scoring]
+bin_seconds = 5
+top_n = 10
+min_score = 1.0               # weighted mean of √z; top moments are usually 1.2–2.5
+merge_gap_s = 45
+pre_roll_s = 25
+post_roll_s = 5
+min_clip_s = 20
+max_clip_s = 180
+default_stream_type = "auto"   # auto | talk | gaming | karaoke
+react_window_s = 15            # chat reactions are summed over this window
+baseline_window_s = 600        # "normal" chat level = rolling median over this window
+feature_cap = 64.0             # z is capped before the square root
+edge_ignore_s = 60             # no moments in the first/last N seconds
+weights = {}                   # per-type overrides, e.g. { talk = { laugh = 3.0 } }
+extra_keywords = {}            # e.g. { laugh = [":_mywarai:"] } for channel emotes
+
+[clip]
+format = "bv*+ba[ext=m4a]/bv*+ba/b"   # best video + AAC audio, never re-encoded
+sort = "res,fps,br"            # highest resolution, then fps, then bitrate
+merge_output_format = "mp4/mkv"
+max_concurrent = 2
+frames_per_clip = 8
+
+[claude]
+enabled = true
+cli_path = "claude"            # uses your Claude subscription login (`claude auth login`); never --bare
+model = "opus"                 # "sonnet" uses less of your plan's limits
+effort = "medium"              # low | medium | high | xhigh | max
+daily_moment_cap = 40          # max moment analyses per day (0 = no cap)
+timeout_s = 600
+output_language = "English"    # summaries, storyboards, caption translations
+title_languages = ["ja", "en"]
+allow_api_key = false          # keep false: ANTHROPIC_API_KEY would bill the API instead
+
+[drive]
+enabled = false                # turn on after `rclone config` has a Google Drive remote
+rclone_path = "rclone"
+remote = "gdrive"              # remote name from `rclone config`
+folder = "chat-watcher"        # Drive folder; mirrors output/<channel>/<stream>/
+auto_upload = true             # upload each stream when processing finishes
+transfers = 4
+
+[web]
+host = "127.0.0.1"
+port = 8000

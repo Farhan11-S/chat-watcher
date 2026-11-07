@@ -1,0 +1,18 @@
+{% macro stage_pills(stages) -%}
+<span class="stages">
+  {%- for name, j in stages.items() %}
+  {%- set st = j.status %}
+  <span class="pill {{ st }}" title="{{ (j.error or j.message or st) | e }}">
+    {%- if st == 'done' %}✓{% elif st == 'running' %}▶{% elif st == 'pending' %}⏳{% elif st == 'error' %}✗{% else %}·{% endif %} {{ name -}}
+  </span>
+  {%- endfor %}
+</span>
+{%- endmacro %}
+
+{% macro status_pill(status) -%}
+<span class="pill {{ status }}">{{ status }}</span>
+{%- endmacro %}
+
+{% macro flag(lang) -%}
+{{ {'ja': '🇯🇵', 'en': '🇬🇧', 'id': '🇮🇩', 'ko': '🇰🇷', 'zh': '🇨🇳', 'es': '🇪🇸'}.get(lang, lang) }}
+{%- endmacro %}

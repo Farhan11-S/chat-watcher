@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chatwatcher"
+version = "2.0.0.dev0"
+description = "Turn finished VTuber streams into ranked, ready-to-edit clips with summaries and storyboards."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    "uvicorn>=0.32",
+    "numpy>=2.1",
+    "pydantic>=2.9",
+    "typer>=0.12",
+    "yt-dlp[default]>=2026.3.17",  # keep current: `pip install -U yt-dlp`
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx2"]
+
+[project.scripts]
+cw = "chatwatcher.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chatwatcher"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
