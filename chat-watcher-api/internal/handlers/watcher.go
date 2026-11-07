@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"bytes"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -39,17 +41,33 @@ func (h *WatcherHandler) RunStream(c fiber.Ctx) error {
 	}
 
 	// Mark stream as pending so the bot picks it up
-	h.db.Exec("UPDATE streams SET status='pending' WHERE id=$1", streamID)
+	h.db.Exec("UPDATE streams SET status='pending', error_message=NULL WHERE id=$1", streamID)
 
 	// Spawn bot: python main.py run <video_id>
+	var stderr bytes.Buffer
 	cmd := exec.Command(h.pythonPath, h.botPath, "run", stream.VideoID)
 	cmd.Dir = filepath.Dir(h.botPath)
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		// Revert status on failure
 		h.db.Exec("UPDATE streams SET status=$1 WHERE id=$2", stream.Status, streamID)
 		return c.Status(500).JSON(fiber.Map{"error": "failed to start watcher: " + err.Error()})
 	}
-	go cmd.Wait()
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			errStr := err.Error()
+			if stderr.Len() > 0 {
+				errStr = fmt.Sprintf("%s — %s", err.Error(), stderr.String())
+			}
+			// Clip error message to avoid DB column overflow (last 2000 chars)
+			if len(errStr) > 2000 {
+				errStr = errStr[len(errStr)-2000:]
+			}
+			h.db.Exec("UPDATE streams SET status='error', error_message=$1 WHERE id=$2 AND status NOT IN ('done','error')",
+				errStr, streamID)
+		}
+	}()
 
 	return c.Status(202).JSON(fiber.Map{
 		"stream_id": streamID,
@@ -87,13 +105,28 @@ func (h *WatcherHandler) RerunStream(c fiber.Ctx) error {
 	h.db.Exec("UPDATE streams SET status='pending', error_message=NULL WHERE id=$1", streamID)
 
 	// Spawn bot: python main.py run <video_id>
+	var stderr bytes.Buffer
 	cmd := exec.Command(h.pythonPath, h.botPath, "run", stream.VideoID)
 	cmd.Dir = filepath.Dir(h.botPath)
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		h.db.Exec("UPDATE streams SET status=$1 WHERE id=$2", stream.Status, streamID)
 		return c.Status(500).JSON(fiber.Map{"error": "failed to start watcher: " + err.Error()})
 	}
-	go cmd.Wait()
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			errStr := err.Error()
+			if stderr.Len() > 0 {
+				errStr = fmt.Sprintf("%s — %s", err.Error(), stderr.String())
+			}
+			if len(errStr) > 2000 {
+				errStr = errStr[len(errStr)-2000:]
+			}
+			h.db.Exec("UPDATE streams SET status='error', error_message=$1 WHERE id=$2 AND status NOT IN ('done','error')",
+				errStr, streamID)
+		}
+	}()
 
 	return c.Status(202).JSON(fiber.Map{
 		"stream_id": streamID,
