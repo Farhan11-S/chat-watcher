@@ -6,6 +6,7 @@ you add there (edits, project files) is safe. Re-running only sends new/changed 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -102,6 +103,16 @@ class Rclone:
             notices.append("uses rclone's shared Google client id, which Google is retiring — create your own "
                            "(https://rclone.org/drive/#making-your-own-client-id) to keep uploads working")
         return notices
+
+    def login_fingerprint(self) -> str | None:
+        """A short hash of the remote's refresh token. It changes when you sign in again
+        (`rclone config reconnect`), so we can tell when the current sign-in started."""
+        try:
+            remote = json.loads(self._run(["config", "dump"], timeout=30)).get(self.remote) or {}
+            token = json.loads(remote.get("token") or "{}").get("refresh_token")
+        except (RcloneError, json.JSONDecodeError, AttributeError):
+            return None
+        return hashlib.sha256(token.encode()).hexdigest()[:16] if token else None
 
     def copy(self, local_dir: Path, dest_path: str, *, on_line: LineFn | None = None,
              timeout: float = 4 * 3600) -> str:

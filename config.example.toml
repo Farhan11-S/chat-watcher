@@ -67,6 +67,7 @@ remote = "gdrive"              # remote name from `rclone config`
 folder = "chat-watcher"        # Drive folder; mirrors output/<channel>/<stream>/
 auto_upload = true             # upload each stream when processing finishes
 transfers = 4
+login_expires_days = 0         # 7 if your Google app is in "Testing" (sign-in lasts a week)
 
 [web]
 host = "127.0.0.1"

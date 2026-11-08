@@ -22,6 +22,11 @@
 <main>
   {% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
   {% if error %}<div class="flash err">{{ error }}</div>{% endif %}
+  {% if drive_login %}
+  <div class="flash {{ drive_login.level }}">⚠ {{ drive_login.text }}
+    Run this on the server: <code>{{ drive_login.command }}</code> (answer <b>n</b> to auto config, then follow
+    its <code>rclone authorize</code> step on a computer with a browser).</div>
+  {% endif %}
   {% block content %}{% endblock %}
 </main>
 <script src="/static/app.js"></script>

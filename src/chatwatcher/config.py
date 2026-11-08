@@ -110,6 +110,8 @@ class DriveConfig(_Section):
     folder: str = "chat-watcher"      # top folder on Drive; mirrors output/<channel>/<stream>/
     auto_upload: bool = True          # upload every stream when the pipeline finishes it
     transfers: int = Field(4, ge=1, le=16)
+    # Days a Drive sign-in lasts. 7 while your Google app is in "Testing"; 0 = it doesn't expire.
+    login_expires_days: int = Field(0, ge=0)
 
 
 class WebConfig(_Section):

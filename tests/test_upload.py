@@ -29,6 +29,10 @@ if fail == "auth":
     print("ERROR : couldn't fetch token: invalid_grant: maybe token expired?", file=sys.stderr); sys.exit(1)
 if fail == "network":
     print("ERROR : dial tcp: lookup www.googleapis.com: no such host", file=sys.stderr); sys.exit(1)
+if args[0] == "config" and args[1:] == ["dump"]:
+    tok = open(os.path.join(root, "_token")).read().strip() if os.path.exists(os.path.join(root, "_token")) else ""
+    print(json.dumps({"gdrive": {"type": "drive", "token": json.dumps({"refresh_token": tok}) if tok else ""}}))
+    sys.exit(0)
 if args[0] == "listremotes":
     print("" if fail == "noremote" else "gdrive:\nother:"); sys.exit(0)
 if args[0] == "lsjson":
@@ -210,3 +214,32 @@ def test_cli_upload(drive, tmp_path):
     assert "gdrive:chat-watcher/Pekora_Ch" in r.output and "FOLDER123" in r.output
     r = CliRunner().invoke(app, ["upload", "zzzzzzzzzzz", "-c", str(f)])
     assert r.exit_code == 1
+
+
+def test_drive_login_notice(drive):
+    from datetime import datetime, timedelta, timezone
+    from chatwatcher.upload.login import drive_login_notice
+    cfg, conn, remote = drive
+    t0 = datetime(2026, 11, 8, 4, 0, tzinfo=timezone.utc)
+    rc = Rclone(cfg.drive)
+    assert drive_login_notice(cfg, conn, rclone=rc, now=t0) is None             # no token yet
+    (remote / "_token").write_text("refresh-A")
+    assert drive_login_notice(cfg, conn, rclone=rc, now=t0) is None             # expiry off (0 days)
+    cfg.drive.login_expires_days = 7
+    assert drive_login_notice(cfg, conn, rclone=rc, now=t0 + timedelta(days=4)) is None
+    n = drive_login_notice(cfg, conn, rclone=rc, now=t0 + timedelta(days=5, hours=12))
+    assert n.level == "warn" and "36 hours" in n.text and "config reconnect gdrive:" in n.command
+    n = drive_login_notice(cfg, conn, rclone=rc, now=t0 + timedelta(days=7, minutes=1))
+    assert n.level == "err" and "expired on" in n.text
+
+    # An upload that failed on sign-in shows the banner; a new sign-in requeues it and resets the clock.
+    pk = store.upsert_video(conn, VID)
+    jid = jobs.enqueue(conn, pk, "upload")
+    jobs.finish(conn, jid, ok=False, message="Google Drive login expired. Run ...")
+    t1 = t0 + timedelta(days=8)
+    assert drive_login_notice(cfg, conn, rclone=rc, now=t1).level == "err"
+    (remote / "_token").write_text("refresh-B")
+    assert drive_login_notice(cfg, conn, rclone=rc, now=t1) is None
+    j = conn.execute("SELECT status, attempts FROM jobs WHERE id = ?", (jid,)).fetchone()
+    assert j["status"] == "pending" and j["attempts"] == 0
+    assert drive_login_notice(cfg, conn, rclone=rc, now=t1 + timedelta(days=6)).level == "warn"

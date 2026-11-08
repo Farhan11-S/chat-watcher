@@ -190,3 +190,15 @@ def test_drive_link_and_upload_button(site):
     assert "upload" in client.get("/").text
     client.post(f"/video/{VID}/upload")
     assert any(j["stage"] == "upload" for j in jobs.list_jobs(conn))
+
+
+def test_drive_login_banner(site, monkeypatch):
+    from chatwatcher.upload.login import LoginNotice
+    cfg, conn, client, _ = site
+    assert "sign-in" not in client.get("/").text
+    monkeypatch.setattr("chatwatcher.upload.login.drive_login_notice",
+                        lambda cfg, conn, rclone=None: LoginNotice("warn", "Google Drive sign-in expires in 20 hours.",
+                                                                   "rclone config reconnect gdrive:"))
+    cfg2 = cfg.model_copy(deep=True)
+    page = TestClient(create_app(cfg2)).get("/").text
+    assert 'class="flash warn"' in page and "expires in 20 hours" in page and "config reconnect gdrive:" in page

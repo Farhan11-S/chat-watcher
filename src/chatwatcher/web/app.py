@@ -8,6 +8,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -102,10 +103,28 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             return "running (separate process)"
         return "stopped"
 
+    login_cache: dict[str, Any] = {"at": 0.0, "notice": None}
+
+    def drive_login() -> Any:
+        # Asking rclone takes a moment, so check at most once a minute.
+        if time.monotonic() - login_cache["at"] > 60:
+            from chatwatcher.upload.login import drive_login_notice
+            conn = db.connect(cfg.paths.db_path, check_same_thread=False)
+            try:
+                login_cache["notice"] = drive_login_notice(cfg, conn, rclone=deps.rclone if deps else None)
+            except Exception:
+                log.exception("Drive sign-in check failed")
+                login_cache["notice"] = None
+            finally:
+                conn.close()
+            login_cache["at"] = time.monotonic()
+        return login_cache["notice"]
+
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         ctx.setdefault("msg", request.query_params.get("msg"))
         ctx.setdefault("error", request.query_params.get("error"))
-        return templates.TemplateResponse(request, name, {"worker": worker_status(), "cfg": cfg, **ctx})
+        return templates.TemplateResponse(request, name, {"worker": worker_status(), "cfg": cfg,
+                                                          "drive_login": drive_login(), **ctx})
 
     # ── pages ────────────────────────────────────────────────────────────────
 

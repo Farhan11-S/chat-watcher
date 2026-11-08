@@ -71,6 +71,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 1.25rem; }
 
 .flash { padding: .6rem .9rem; border-radius: var(--radius); margin-bottom: 1rem; }
 .flash.ok { background: var(--good-bg); color: var(--good); }
+.flash.warn { background: var(--warn-bg); color: var(--warn); }
 .flash.err { background: var(--bad-bg); color: var(--bad); white-space: pre-wrap; }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
