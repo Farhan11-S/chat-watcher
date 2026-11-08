@@ -84,7 +84,7 @@ def score_timeline(scores: dict[str, Any], moments: list[dict[str, Any]], durati
                 text = f'<text class="m-label" x="{cx:.1f}" y="{ly}" text-anchor="middle">{label}</text>'
                 break
         parts.append(
-            f'<a href="/moment/{m["id"]}" class="m-link"><title>{escape(tip)}</title>'
+            f'<a href="/moment/{m["id"]}" class="m-link" data-goto="{m["id"]}"><title>{escape(tip)}</title>'
             f'<rect class="{cls}" x="{x0:.1f}" y="{top}" width="{w:.1f}" height="{plot_h}" rx="2"/>{text}</a>')
     parts.append(f'<line class="threshold" x1="{LEFT}" x2="{W - RIGHT}" y1="{y(threshold):.1f}" y2="{y(threshold):.1f}"/>')
     if pts:

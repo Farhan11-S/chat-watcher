@@ -11,6 +11,7 @@ import logging
 import signal
 import sqlite3
 import threading
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import IO
@@ -35,6 +36,10 @@ def setup_logging(cfg: Config, *, verbose: bool = False) -> Path:
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
     if not root.handlers:
         fmt = logging.Formatter("%(asctime)s %(levelname)-5s %(message)s", "%Y-%m-%d %H:%M:%S")
+        from chatwatcher.clock import zone
+        tz = zone(cfg)
+        if tz is not None:   # log in the configured zone, not just the computer's
+            fmt.converter = lambda secs: datetime.fromtimestamp(secs, tz).timetuple()
         console = logging.StreamHandler()
         console.setFormatter(fmt)
         filelog = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
@@ -130,7 +135,8 @@ class Worker:
         set_video_status(conn, vid, "processing")
         try:
             out = run_stage(self.cfg, conn, vid, stage, attempt=job["attempts"], moment_id=moment_pk,
-                            deps=self.deps, log=lambda m: log.info("  %s: %s", label, m))
+                            deps=self.deps, params=jobs.job_params(job),
+                            log=lambda m: log.info("  %s: %s", label, m))
         except Exception as e:  # a bug or an unexpected tool failure: record it, keep the worker alive
             log.exception("✗ %s crashed", label)
             jobs.finish(conn, job["id"], ok=False, message=f"{type(e).__name__}: {e}")
@@ -152,18 +158,27 @@ class Worker:
         log.info("✓ %s: %s", label, out.message)
         jobs.finish(conn, job["id"], ok=True, message=out.message)
         if moment_pk:
-            # A re-cut clip makes its old storyboard wrong: analyse it again. Then refresh
-            # the copy on Drive (rclone only sends what changed).
-            if stage == "clip" and stage_enabled(self.cfg, "analyze"):
+            # A re-cut clip makes its old storyboard wrong: analyse it again. Then, if that
+            # clip is on Drive and auto-upload is on, refresh it there (rclone only sends
+            # what changed).
+            from chatwatcher.analyze.service import analysis_matches
+            if stage == "clip" and stage_enabled(self.cfg, "analyze") and not analysis_matches(conn, moment_pk):
                 jobs.enqueue(conn, video["id"], "analyze", moment_pk=moment_pk)
-            elif stage_enabled(self.cfg, "upload") and video["drive_url"]:
-                jobs.enqueue(conn, video["id"], "upload")
+            elif stage != "upload" and stage_enabled(self.cfg, "upload", conn) and conn.execute(
+                    "SELECT 1 FROM clips WHERE moment_id = ? AND uploaded_at IS NOT NULL",
+                    (moment_pk,)).fetchone():
+                jobs.enqueue(conn, video["id"], "upload", moment_pk=moment_pk)
             busy = conn.execute("SELECT 1 FROM jobs WHERE video_id = ? AND status IN ('pending', 'running')",
                                 (video["id"],)).fetchone()
             set_video_status(conn, vid, "processing" if busy else "done")
             return
         nxt = None if out.details.get("stop") else jobs.next_stage(stage)
-        while nxt and not stage_enabled(self.cfg, nxt):
+        while nxt and not stage_enabled(self.cfg, nxt, conn):
+            if nxt == "frames" and not stage_enabled(self.cfg, "clip"):
+                # No clips and no previews: nothing for Claude to look at. Wait for the user
+                # to review the moments and press "Clip kept".
+                nxt = None
+                break
             nxt = jobs.next_stage(nxt)
         if nxt:
             jobs.enqueue(conn, video["id"], nxt)

@@ -14,6 +14,7 @@ from chatwatcher.web.app import _parse_ts, create_app
 from chatwatcher.worker import Worker
 
 from scoring_helpers import background, burst, chat
+from chatwatcher.analyze.claude_runner import ClaudeError
 from test_analyze import FakeRunner
 from test_automation import FakeYouTube, entry
 from test_clip import FakeYt, make_video
@@ -111,7 +112,7 @@ def test_recut_runs_clip_then_analysis(site, tmp_path):
     clip = conn.execute("SELECT * FROM clips WHERE moment_id = ?", (m,)).fetchone()
     assert clip["req_start_s"] == 1140.0 and clip["folder"].endswith("_19m00s")
     assert clip["folder"] != old_folder                      # renamed, not duplicated
-    assert len(fr.calls) == 2                                # re-analysis + digest
+    assert len(fr.calls) == 1                                # re-analysis only (digest kept)
     stages = [r["stage"] for r in conn.execute("SELECT stage FROM jobs WHERE moment_id = ? AND status = 'done'", (m,))]
     assert sorted(stages) == ["analyze", "clip"]
 
@@ -180,13 +181,13 @@ def test_parallel_requests(site):
 
 def test_drive_link_and_upload_button(site):
     cfg, conn, client, _ = site
-    assert "Upload to Drive" not in client.get(f"/video/{VID}").text      # drive off
+    assert "Upload all" not in client.get(f"/video/{VID}").text      # drive off
     r = client.post(f"/video/{VID}/upload", follow_redirects=False)
     assert "error=" in r.headers["location"]
     cfg.drive.enabled = True
     store.upsert_video(conn, VID, drive_url="https://drive.google.com/drive/folders/XYZ")
     page = client.get(f"/video/{VID}").text
-    assert "Upload to Drive" in page and 'href="https://drive.google.com/drive/folders/XYZ"' in page
+    assert "Upload all" in page and 'href="https://drive.google.com/drive/folders/XYZ"' in page
     assert "upload" in client.get("/").text
     client.post(f"/video/{VID}/upload")
     assert any(j["stage"] == "upload" for j in jobs.list_jobs(conn))
@@ -202,3 +203,287 @@ def test_drive_login_banner(site, monkeypatch):
     cfg2 = cfg.model_copy(deep=True)
     page = TestClient(create_app(cfg2)).get("/").text
     assert 'class="flash warn"' in page and "expires in 20 hours" in page and "config reconnect gdrive:" in page
+
+
+def test_model_picker_reaches_claude(site):
+    cfg, conn, client, deps = site
+    m = mid(conn)
+    page = client.get(f"/moment/{m}").text
+    assert '<select name="model"' in page and "<option selected>sonnet</option>" in page
+    assert 'value="low" selected' in page
+    r = client.post(f"/moment/{m}/reanalyze", data={"model": "opus", "effort": "high"}, follow_redirects=False)
+    assert "opus" in r.headers["location"]
+    job = conn.execute("SELECT * FROM jobs WHERE moment_id = ? AND stage = 'analyze'", (m,)).fetchone()
+    assert json.loads(job["params_json"]) == {"model": "opus", "effort": "high"}
+    client.post(f"/moment/{m}/reanalyze", data={"model": "rm -rf /", "effort": "huge"})   # unknown → defaults
+    job = conn.execute("SELECT * FROM jobs WHERE moment_id = ? AND stage = 'analyze'", (m,)).fetchone()
+    assert job["params_json"] is None
+
+    client.post(f"/moment/{m}/reanalyze", data={"model": "opus", "effort": "high"})
+    fr = FakeRunner()
+    deps.claude = fr
+    Worker(cfg, deps=deps).run(once=True)
+    assert [(c["model"], c["effort"]) for c in fr.calls] == [("opus", "high")]        # no digest rewrite for one moment
+    page = client.get(f"/moment/{m}").text
+    assert "Analysed by claude-opus (high effort)" in page
+
+    # Stream page: analyse every clip again with another model.
+    client.post(f"/video/{VID}/analyze", data={"model": "haiku", "effort": "medium", "redo": "1"})
+    fr = FakeRunner()
+    deps.claude = fr
+    Worker(cfg, deps=deps).run(once=True)
+    n = conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
+    assert len(fr.calls) == n + 1 and {c["model"] for c in fr.calls} == {"haiku"}
+
+
+def test_auto_upload_switch_and_clip_upload_button(site):
+    from chatwatcher import prefs
+    cfg, conn, client, _ = site
+    m = mid(conn)
+    assert "Upload this clip" not in client.get(f"/moment/{m}").text      # drive off
+    cfg.drive.enabled = True
+    assert "auto-upload on" in client.get(f"/video/{VID}").text
+    client.post("/settings/auto-upload", data={})
+    assert prefs.auto_upload(cfg, conn) is False
+    assert "auto-upload off" in client.get(f"/video/{VID}").text
+    assert "Turn on" in client.get("/settings").text
+    client.post("/settings/auto-upload", data={"on": "1"})
+    assert prefs.auto_upload(cfg, conn) is True
+
+    assert "Upload this clip to Drive" in client.get(f"/moment/{m}").text
+    client.post(f"/moment/{m}/upload")
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE stage = 'upload' AND moment_id = ?", (m,)).fetchone()[0] == 1
+    r = client.post(f"/video/{VID}/upload", data={"kept_only": "1"}, follow_redirects=False)
+    assert "error=" in r.headers["location"]                              # nothing kept yet
+    client.post(f"/moment/{m}/approve")
+    assert "Upload kept (<span data-kept-clipped>1</span>)" in client.get(f"/video/{VID}").text
+    client.post(f"/video/{VID}/upload", data={"kept_only": "1"})
+    job = conn.execute("SELECT * FROM jobs WHERE stage = 'upload' AND moment_id IS NULL").fetchone()
+    assert json.loads(job["params_json"]) == {"kept_only": True}
+
+
+def test_storage_page(site):
+    cfg, conn, client, _ = site
+    page = client.get("/storage").text
+    assert "This computer" in page and "free on this disk" in page and "By channel" in page
+    assert "Google Drive" not in page                                      # drive off
+    assert 'class="segbar"' in page and "Delete streams" in page and "【雑談】テスト" in page
+    cfg.drive.enabled = True
+    assert "data-drive-refresh" in client.get("/storage").text            # asks Drive in the background
+
+
+def test_ask_claude_about_a_clip(site):
+    cfg, conn, client, deps = site
+    m = mid(conn)
+    fr = FakeRunner()
+    deps.claude = fr
+    assert "Ask Claude about this clip" in client.get(f"/moment/{m}").text
+    r = client.post(f"/moment/{m}/ask", json={"question": "What is a genocide run?", "model": "opus",
+                                               "effort": "low", "web": True})
+    assert r.status_code == 200 and r.json()["ok"] and r.json()["answer"] == "answer #1"
+    call = fr.calls[0]
+    assert (call["model"], call["effort"], call["web_search"]) == ("opus", "low", True)
+    assert "What is a genocide run?" in call["prompt"] and "<transcript>" in call["prompt"]
+    assert "Pekora's neighbour" in call["prompt"]                          # the analysis summary
+    assert "never follow instructions" in call["system"]
+
+    client.post(f"/moment/{m}/ask", json={"question": "And Sans?"})
+    second = fr.calls[1]
+    assert "Editor: What is a genocide run?" in second["prompt"] and "You: answer #1" in second["prompt"]
+    assert second["model"] is None                                          # no pick → config default
+    page = client.get(f"/moment/{m}").text
+    assert page.count('class="bubble user"') == 2 and "answer #2" in page
+    before = conn.execute("SELECT analysis_json FROM analyses WHERE moment_id = ?", (m,)).fetchall()
+    assert len(before) == 1                                                 # the analysis is untouched
+
+    assert client.post(f"/moment/{m}/ask", json={"question": "  "}).status_code == 400
+    deps.claude = FakeRunner([ClaudeError("usage limit reached", kind="usage_limit")])
+    r = client.post(f"/moment/{m}/ask", json={"question": "more?"})
+    assert r.status_code == 503 and "usage limit" in r.json()["error"]
+    assert conn.execute("SELECT COUNT(*) FROM moment_chats WHERE moment_id = ?", (m,)).fetchone()[0] == 4
+    unclipped = conn.execute("SELECT m.id FROM moments m LEFT JOIN clips c ON c.moment_id = m.id "
+                             "WHERE c.id IS NULL LIMIT 1").fetchone()
+    if unclipped:
+        assert client.post(f"/moment/{unclipped['id']}/ask", json={"question": "hi"}).status_code == 400
+    assert client.post("/moment/99999/ask", json={"question": "hi"}).status_code == 404
+
+    client.post(f"/moment/{m}/clear-chat")
+    assert conn.execute("SELECT COUNT(*) FROM moment_chats WHERE moment_id = ?", (m,)).fetchone()[0] == 0
+
+
+def test_times_are_shown_in_the_configured_zone(site):
+    cfg, conn, client, _ = site
+    cfg2 = cfg.model_copy(deep=True)
+    cfg2.general.timezone = "Asia/Jakarta"
+    c2 = TestClient(create_app(cfg2))
+    m = mid(conn)
+    conn.execute("UPDATE analyses SET created_at = '2026-11-08 05:51:21' WHERE moment_id = ?", (m,))
+    assert "at 2026-11-08 12:51 WIB" in c2.get(f"/moment/{m}").text
+    jobs.enqueue(conn, 1, "clip", run_after=jobs.now())
+    page = c2.get("/jobs").text
+    assert "When (WIB)" in page and " WIB" in page and "UTC" not in page
+
+
+def test_delete_streams_from_storage_page(site, tmp_path):
+    from pathlib import Path
+    from chatwatcher import discover
+    cfg, conn, client, deps = site
+    v = store.get_video(conn, VID)
+    out = Path(v["output_dir"])
+    key = f"{out.parent.name}/{out.name}"
+    m = mid(conn)
+    assert f'value="{key}"' in client.get("/storage").text
+
+    # Nothing ticked, bad mode, and keys that try to leave output/ are refused.
+    assert "error=" in client.post("/storage/delete", data={"mode": "all"}, follow_redirects=False).headers["location"]
+    assert client.post("/storage/delete", data={"key": key, "mode": "nuke"}).status_code == 400
+    for bad in ("../data", f"{out.parent.name}/../../data", out.parent.name, f"{key}/01_x", "/etc/passwd"):
+        r = client.post("/storage/delete", data={"key": bad, "mode": "all"}, follow_redirects=False)
+        assert "error=" in r.headers["location"]
+    assert out.is_dir() and cfg.paths.data_dir.is_dir()
+
+    # Busy streams are left alone.
+    jid = jobs.enqueue(conn, v["id"], "clip")
+    conn.execute("UPDATE jobs SET status = 'running' WHERE id = ?", (jid,))
+    r = client.post("/storage/delete", data={"key": key, "mode": "all"}, follow_redirects=False)
+    assert "busy" in r.headers["location"] and out.is_dir()
+    conn.execute("UPDATE jobs SET status = 'done' WHERE id = ?", (jid,))
+
+    # Videos only: clip files go, everything else stays, and the pages say so.
+    clips = list(out.glob("*/clip.mp4"))
+    assert clips
+    r = client.post("/storage/delete", data={"key": key, "mode": "videos"}, follow_redirects=False)
+    assert "Freed" in r.headers["location"]
+    assert not any(c.exists() for c in clips) and list(out.glob("*/storyboard.md")) and list(out.glob("*/frames/*.jpg"))
+    assert "video deleted" in client.get(f"/video/{VID}").text
+    page = client.get(f"/moment/{m}").text
+    assert "Download it again" in page and "<video" not in page and "Storyboard" in page
+    # ...and "Clip kept" brings back the kept ones without asking Claude again.
+    conn.execute("UPDATE moments SET status = 'approved' WHERE id IN (SELECT moment_id FROM clips)")
+    client.post(f"/video/{VID}/clip")
+    deps.ytdlp = FakeYt(make_video(tmp_path / "again.mp4", 20))
+    fr = FakeRunner()
+    deps.claude = fr
+    Worker(cfg, deps=deps).run(once=True)
+    assert all(c.is_file() for c in clips) and fr.calls == []
+
+    # Everything: folder, working data and dashboard entry go; the watcher won't fetch it again.
+    r = client.post("/storage/delete", data={"key": key, "mode": "all"}, follow_redirects=False)
+    assert "Freed" in r.headers["location"]
+    assert not out.exists() and not (cfg.paths.data_dir / "vods" / VID).exists()
+    assert store.get_video(conn, VID) is None
+    assert conn.execute("SELECT COUNT(*) FROM moments").fetchone()[0] == 0
+    seen = conn.execute("SELECT action, reason FROM discovered WHERE video_id = ?", (VID,)).fetchone()
+    assert seen["action"] == "skipped" and "deleted" in seen["reason"]
+    conn.execute("INSERT INTO channels (id, channel_id, title) VALUES (9, 'UCx', 'Pekora')")
+    res = discover._process(cfg, conn, conn.execute("SELECT * FROM channels WHERE id = 9").fetchone(),
+                            {"entries": [{"id": VID, "live_status": "was_live", "duration": 3600}]}, backfill=None)
+    assert res.queued == []
+    assert client.get(f"/video/{VID}").status_code == 404
+
+
+def test_review_on_the_stream_page(site, tmp_path):
+    cfg, conn, client, deps = site
+    page = client.get(f"/video/{VID}").text
+    assert 'id="yt-player"' in page and 'id="moments-data"' in page and "Clip kept (<span data-kept-count>0</span>)" in page
+    data = json.loads(page.split('id="moments-data">')[1].split("</script>")[0])
+    assert [m["start"] for m in data] == sorted(m["start"] for m in data)          # stream order
+    assert {"id", "rank", "start", "end", "status", "title", "summary", "chat"} <= set(data[0])
+    assert all(f'data-goto="{m["id"]}"' in page for m in data)                      # strip, table and chart
+    assert "</script><" not in page.split('id="moments-data">')[1].split("</script>")[0]
+
+    # Keep / Skip / Undo without a page load, with the counts the buttons need.
+    a, b = data[0]["id"], data[1]["id"]
+    r = client.post(f"/moment/{a}/status", json={"status": "approved"}).json()
+    assert r == {"ok": True, "status": "approved", "kept": 1, "kept_clipped": 1, "to_review": len(data) - 1}
+    assert client.post(f"/moment/{b}/status", json={"status": "rejected"}).json()["kept"] == 1
+    assert client.post(f"/moment/{b}/status", json={"status": "delete"}).status_code == 400
+    assert client.post("/moment/99999/status", json={"status": "new"}).status_code == 404
+    page = client.get(f"/video/{VID}").text
+    assert "Clip kept (<span data-kept-count>1</span>)" in page
+
+    # "Clip kept" downloads only kept moments that aren't downloaded yet.
+    conn.execute("DELETE FROM clips")
+    client.post(f"/moment/{a}/status", json={"status": "new"})
+    r = client.post(f"/video/{VID}/clip", follow_redirects=False)
+    assert "error=" in r.headers["location"]                                        # nothing kept
+    client.post(f"/moment/{a}/status", json={"status": "approved"})
+    r = client.post(f"/video/{VID}/clip", follow_redirects=False)
+    assert "Downloading%201%20kept" in r.headers["location"]
+    deps.ytdlp = FakeYt(make_video(tmp_path / "kept.mp4", 20))
+    fr = FakeRunner()
+    deps.claude = fr
+    Worker(cfg, deps=deps).run(once=True)
+    clipped = [r["moment_id"] for r in conn.execute("SELECT moment_id FROM clips")]
+    assert clipped == [a]
+    stages = [r["stage"] for r in conn.execute(
+        "SELECT stage FROM jobs WHERE video_id = (SELECT id FROM videos WHERE video_id = ?) "
+        "AND moment_id IS NULL AND status = 'done' ORDER BY updated_at, id", (VID,))]
+    assert stages[-3:] == ["clip", "frames", "analyze"]                             # analysed after clipping
+
+
+def test_home_shows_what_is_left_to_review(site):
+    _, conn, client, _ = site
+    n = conn.execute("SELECT COUNT(*) FROM moments").fetchone()[0]
+    conn.execute("UPDATE moments SET status = 'approved' WHERE rank = 1")
+    assert f"1 ✓ · 0 ✗ · <b>{n - 1} to review</b>" in client.get("/").text
+    conn.execute("UPDATE moments SET status = 'rejected' WHERE rank > 1")
+    page = client.get("/").text
+    assert f"1 ✓ · {n - 1} ✗" in page and "to review</b>" not in page
+
+
+def test_storage_page_after_deleting_everything(site, monkeypatch):
+    from pathlib import Path
+    from chatwatcher import storage
+    cfg, conn, client, _ = site
+    out = Path(store.get_video(conn, VID)["output_dir"])
+    key = f"{out.parent.name}/{out.name}"
+    client.post("/storage/delete", data={"key": key, "mode": "all"})
+    page = client.get("/storage").text
+    assert "Nothing from chat-watcher takes space on this computer" in page
+    assert "data-delete-form" not in page and "Only on Google Drive" not in page
+
+    # The stream is still on Drive: list it on its own, by its title, without delete boxes.
+    cfg.drive.enabled = True
+    fake = storage.DriveUsage(checked_at=__import__("time").time(), total=10**12, used=10**9, other=0,
+                              free=10**12 - 10**9, ours=123_000, files=3,
+                              by_path={out.parent.name: 123_000, key: 123_000})
+    monkeypatch.setattr(storage, "drive_usage", lambda cfg, rclone=None: fake)
+    client.post("/storage/drive")
+    page = client.get("/storage").text
+    assert "Only on Google Drive" in page and "【雑談】テスト" in page and f"https://youtu.be/{VID}" in page
+    assert out.name not in page                     # no raw folder name
+    assert 'name="key"' not in page and "none here" in page
+
+
+def test_folder_label():
+    from chatwatcher.storage import folder_label
+    assert folder_label("2026-11-07_nMtDSls-ZAo_【UNDERTALE】_I_chose_violence", {"nMtDSls-ZAo": "【UNDERTALE】 I chose violence."}) \
+        == ("【UNDERTALE】 I chose violence. (2026-11-07)", "nMtDSls-ZAo")
+    assert folder_label("2026-11-08_-k8EZv9wkAs_some_title", {}) == ("some title (2026-11-08)", "-k8EZv9wkAs")
+    assert folder_label("odd folder", {}) == ("odd folder", None)
+
+
+def test_analyse_one_moment_again_from_the_review_panel(site):
+    cfg, conn, client, deps = site
+    m = mid(conn)
+    page = client.get(f"/video/{VID}").text
+    assert "data-redo-form" in page and "<option selected>opus</option>" in page and 'value="medium" selected' in page
+    item = json.loads(page.split('id="moments-data">')[1].split("</script>")[0])[0]
+    assert item["why"] and item["model"] and item["aid"]
+    before = client.get(f"/api/moment/{m}").json()
+    assert before["job"] is None or before["job"]["status"] == "done"
+
+    r = client.post(f"/moment/{m}/analyze", json={"model": "opus", "effort": "high"}).json()
+    assert r["ok"] and (r["model"], r["effort"]) == ("opus", "high")
+    assert client.get(f"/api/moment/{m}").json()["job"]["status"] == "pending"
+    fr = FakeRunner()
+    deps.claude = fr
+    Worker(cfg, deps=deps).run(once=True)
+    assert [(c["model"], c["effort"]) for c in fr.calls] == [("opus", "high")]
+    after = client.get(f"/api/moment/{m}").json()
+    assert after["moment"]["aid"] != before["moment"]["aid"]
+    assert after["moment"]["model"] == "claude-opus" and after["moment"]["effort"] == "high"
+    assert after["job"]["status"] == "done"
+    assert client.post("/moment/99999/analyze", json={}).status_code == 404
+    assert client.get("/api/moment/99999").status_code == 404

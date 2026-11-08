@@ -112,6 +112,18 @@ def reaction_extent(score: np.ndarray, peak: int, min_score: float, max_bins: in
 # ── transcript → sentences, for natural cut points ────────────────────────────
 
 _SENT_END = re.compile(r"[。！？!?.…♪]$|\[(?:音楽|music|拍手|applause)\]$", re.I)
+# Scripts written without spaces between words (kana, CJK ideographs, full-width forms).
+_NO_SPACE = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]")
+
+
+def _join(a: str, b: str) -> str:
+    """Join two caption lines: no space inside Japanese/Chinese text (lines break
+    mid-word there), one space otherwise (English and Indonesian break between words)."""
+    if not a or not b or a[-1].isspace() or b[0].isspace():
+        return a + b
+    if _NO_SPACE.match(a[-1]) or _NO_SPACE.match(b[0]):
+        return a + b
+    return f"{a} {b}"
 
 
 def sentences(segments: list[Segment], gap_s: float = 1.2, max_len_s: float = 25) -> list[Segment]:
@@ -125,7 +137,7 @@ def sentences(segments: list[Segment], gap_s: float = 1.2, max_len_s: float = 25
         if cur is None:
             cur = Segment(s.start, s.end, s.text)
         else:
-            cur.end, cur.text = s.end, cur.text + s.text
+            cur.end, cur.text = s.end, _join(cur.text, s.text)
         if _SENT_END.search(s.text):
             out.append(cur)
             cur = None

@@ -3,7 +3,7 @@
   {%- for name, j in stages.items() %}
   {%- set st = j.status %}
   <span class="pill {{ st }}" title="{{ (j.error or j.message or st) | e }}">
-    {%- if st == 'done' %}✓{% elif st == 'running' %}▶{% elif st == 'pending' %}⏳{% elif st == 'error' %}✗{% else %}·{% endif %} {{ name -}}
+    {%- if st == 'done' %}✓{% elif st == 'running' %}▶{% elif st == 'pending' %}⏳{% elif st == 'error' %}✗{% else %}·{% endif %} {{ {'frames': 'preview'}.get(name, name) -}}
   </span>
   {%- endfor %}
 </span>
@@ -15,4 +15,14 @@
 
 {% macro flag(lang) -%}
 {{ {'ja': '🇯🇵', 'en': '🇬🇧', 'id': '🇮🇩', 'ko': '🇰🇷', 'zh': '🇨🇳', 'es': '🇪🇸'}.get(lang, lang) }}
+{%- endmacro %}
+
+{% macro claude_picker(cfg, models, efforts, model=none, effort=none) -%}
+{%- set model = model or cfg.claude.model %}{% set effort = effort or cfg.claude.effort %}
+<select name="model" title="Claude model" aria-label="Claude model">
+  {%- for m in models %}<option {{ 'selected' if m == model }}>{{ m }}</option>{% endfor -%}
+</select>
+<select name="effort" title="How hard Claude thinks (more effort uses more of your plan)" aria-label="Effort">
+  {%- for e in efforts %}<option value="{{ e }}" {{ 'selected' if e == effort }}>{{ e }} effort</option>{% endfor -%}
+</select>
 {%- endmacro %}

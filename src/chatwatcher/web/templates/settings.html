@@ -2,6 +2,17 @@
 {% block title %}Settings · chat-watcher{% endblock %}
 {% block autorefresh %}0{% endblock %}
 {% block content %}
+{% if cfg.drive.enabled %}
+<div class="card">
+  <h2>Google Drive</h2>
+  <form method="post" action="/settings/auto-upload" class="actions">
+    <span>Auto-upload each stream when it finishes: <span class="pill {{ 'ok' if auto_upload else '' }}">{{ 'on' if auto_upload else 'off' }}</span></span>
+    {% if auto_upload %}<button class="small">Turn off</button>{% else %}<input type="hidden" name="on" value="1"><button class="small primary">Turn on</button>{% endif %}
+  </form>
+  <p class="faint" style="margin:.4rem 0 0"><small>When it's off, nothing goes to Drive until you press <b>☁ Upload all</b>, <b>☁ Upload kept</b>
+    (stream page) or <b>☁ Upload this clip</b> (clip page). This switch wins over <code>drive.auto_upload</code> in config.toml.</small></p>
+</div>
+{% endif %}
 <div class="card">
   <h2>Health check</h2>
   <table>

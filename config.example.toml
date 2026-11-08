@@ -1,6 +1,10 @@
 # Copy to config.toml and edit. Every key is optional; these are the defaults.
 # Relative paths are resolved from this file's folder.
 
+[general]
+timezone = ""          # e.g. "Asia/Jakarta" (WIB) for every time shown, folder dates and the daily
+                       # Claude cap; empty = this computer's time zone
+
 [paths]
 data_dir = "data"      # database, raw chat, captions, heatmap
 output_dir = "output"  # clips, storyboards, digests
@@ -20,10 +24,12 @@ min_duration_s = 600           # ignore streams shorter than 10 minutes
 default_backfill = 1           # finished streams to queue when you add a channel
 
 [pipeline]
-auto_clip = true
+auto_clip = true               # false: stop after finding moments; you Keep/Skip them, then press "Clip kept"
 auto_analyze = true
 clip_top = 0                   # clip the best N moments (0 = all scored)
-analyze_top = 5                # Claude-analyse the best N clips (0 = all); saves plan usage
+analyze_top = 0                # Claude-analyse the best N moments (0 = all)
+preview_height = 360           # moments not downloaded yet get a video-only preview at this height;
+                               # only its frames are kept, for Claude (0 = analyse downloaded clips only)
 
 [scoring]
 bin_seconds = 5
@@ -52,8 +58,10 @@ frames_per_clip = 8
 [claude]
 enabled = true
 cli_path = "claude"            # uses your Claude subscription login (`claude auth login`); never --bare
-model = "opus"                 # "sonnet" uses less of your plan's limits
-effort = "medium"              # low | medium | high | xhigh | max
+model = "sonnet"               # default for every clip; the dashboard can redo one with "opus" etc.
+effort = "low"                 # low | medium | high | xhigh | max (more = deeper, uses more of your plan)
+redo_model = "opus"            # what "Analyse again" on one moment picks first
+redo_effort = "medium"
 daily_moment_cap = 40          # max moment analyses per day (0 = no cap)
 timeout_s = 600
 output_language = "English"    # summaries, storyboards, caption translations

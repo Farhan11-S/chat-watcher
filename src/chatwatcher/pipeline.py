@@ -51,27 +51,32 @@ def usage_reset_delay(message: str, default: timedelta = timedelta(hours=1)) -> 
     return default
 
 
-def until_utc_midnight() -> timedelta:
-    n = datetime.now(timezone.utc)
-    tomorrow = (n + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
-    return tomorrow - n
 
 
 def run_stage(cfg: Config, conn: sqlite3.Connection, video_id: str, stage: str, *,
               attempt: int = 1, moment_id: int | None = None, deps: Deps | None = None,
-              log: LogFn | None = None) -> StageOutcome:
-    """moment_id: redo just that moment's clip or analysis (forced)."""
+              log: LogFn | None = None, params: dict[str, Any] | None = None) -> StageOutcome:
+    """moment_id: redo just that moment's clip or analysis (forced), or upload just its clip.
+    params: per-job options from the dashboard (analyze: model, effort, redo; upload: kept_only)."""
     deps = deps or Deps()
     say = log or (lambda _m: None)
+    params = params or {}
     if moment_id is not None:
         row = conn.execute("SELECT rank FROM moments WHERE id = ?", (moment_id,)).fetchone()
         if row is None:
             return StageOutcome("error", "moment no longer exists (the video was re-scored)")
-        return {"clip": _clip, "analyze": _analyze}[stage](
-            cfg, conn, video_id, attempt, deps, say, rank=row["rank"])
-    fn = {"ingest": _ingest, "score": _score, "clip": _clip, "analyze": _analyze,
+        return {"clip": _clip, "analyze": _analyze, "upload": _upload}[stage](
+            cfg, conn, video_id, attempt, deps, say, rank=row["rank"], **_opts(stage, params))
+    fn = {"ingest": _ingest, "score": _score, "clip": _clip, "frames": _frames, "analyze": _analyze,
           "upload": _upload}[stage]
-    return fn(cfg, conn, video_id, attempt, deps, say)
+    return fn(cfg, conn, video_id, attempt, deps, say, **_opts(stage, params))
+
+
+def _opts(stage: str, params: dict[str, Any]) -> dict[str, Any]:
+    """The job options each stage understands; anything else is ignored."""
+    keys = {"analyze": ("model", "effort", "redo"), "upload": ("kept_only",),
+            "clip": ("kept_only",)}.get(stage, ())
+    return {k: params[k] for k in keys if params.get(k) is not None}
 
 
 # ── stages ───────────────────────────────────────────────────────────────────
@@ -107,12 +112,22 @@ def _score(cfg, conn, video_id, attempt, deps, say) -> StageOutcome:
     return StageOutcome("done", f"{r.stream_type}: {len(r.moments)} moments")
 
 
-def _clip(cfg, conn, video_id, attempt, deps, say, rank: int | None = None) -> StageOutcome:
+def _clip(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
+          kept_only: bool = False) -> StageOutcome:
+    """Automatic: the best clip_top moments. rank: redo that one. kept_only: every moment
+    marked Keep that isn't downloaded yet ("Clip kept" on the stream page)."""
     from chatwatcher.clip.service import ClipError, clip_video
-    top = None if rank else (cfg.pipeline.clip_top or None)
+    top = None if (rank or kept_only) else (cfg.pipeline.clip_top or None)
+    ranks = [rank] if rank else None
+    if kept_only:
+        ranks = [r["rank"] for r in conn.execute(
+            "SELECT m.rank FROM moments m JOIN videos v ON v.id = m.video_id "
+            "WHERE v.video_id = ? AND m.status = 'approved' ORDER BY m.rank", (video_id,))]
+        if not ranks:
+            return StageOutcome("done", "nothing to clip: no moments are marked Keep", details={"stop": True})
     try:
         run = clip_video(cfg, conn, video_id, top=top, ytdlp=deps.ytdlp,
-                         ranks=[rank] if rank else None, force=bool(rank),
+                         ranks=ranks, force=bool(rank),
                          on_event=lambda r, m: say(f"clip #{r}: {m}" if r else m))
     except ClipError as e:
         if attempt < 4:
@@ -127,14 +142,35 @@ def _clip(cfg, conn, video_id, attempt, deps, say, rank: int | None = None) -> S
     return StageOutcome("done", msg)
 
 
-def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None) -> StageOutcome:
+def _frames(cfg, conn, video_id, attempt, deps, say) -> StageOutcome:
+    """Low-res previews of the moments that aren't downloaded, for Claude."""
+    from chatwatcher.clip.preview import PreviewError, preview_video
+    try:
+        run = preview_video(cfg, conn, video_id, ytdlp=deps.ytdlp,
+                            on_event=lambda r, m: say(f"#{r}: {m}" if r else m))
+    except PreviewError as e:
+        if attempt < 4:
+            return StageOutcome("retry", str(e), _backoff(attempt, 15, 120))
+        return StageOutcome("error", str(e))
+    msg = f"{len(run.done)} preview(s)" + (f", {run.skipped} already there" if run.skipped else "")
+    if run.errors:
+        msg += f", {len(run.errors)} failed: " + "; ".join(f"#{r} {m}" for r, m in run.errors[:3])
+        if not run.done and not run.skipped and attempt < 4:
+            return StageOutcome("retry", msg, _backoff(attempt, 15, 120))
+    return StageOutcome("done", msg)
+
+
+def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
+             model: str | None = None, effort: str | None = None, redo: bool = False) -> StageOutcome:
     from chatwatcher.analyze.service import AnalyzeError, analyze_video
     if not cfg.claude.enabled:
         return StageOutcome("skip", "claude.enabled is false")
     top = None if rank else (cfg.pipeline.analyze_top or None)
     try:
         run = analyze_video(cfg, conn, video_id, top=top, runner=deps.claude,
-                            ranks=[rank] if rank else None, force=bool(rank),
+                            ranks=[rank] if rank else None, force=bool(rank) or redo,
+                            digest=not rank,   # one moment redone: keep the digest (and the plan) as is
+                            model=model, effort=effort,
                             on_event=lambda r, m: say(f"analyze #{r}: {m}" if r else m))
     except AnalyzeError as e:
         if e.kind in ("auth", "missing") and attempt < 48:
@@ -146,7 +182,8 @@ def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None) -
         msg += f" ({run.usage['output']:,} output tokens)"
     if deferred:
         reason = next(o.message for o in run.outcomes if o.status == "deferred")
-        wait = until_utc_midnight() if "daily cap" in reason else usage_reset_delay(reason)
+        from chatwatcher.clock import until_midnight, zone
+        wait = until_midnight(zone(cfg)) if "daily cap" in reason else usage_reset_delay(reason)
         return StageOutcome("retry", f"{msg}; {reason[:200]}", wait)
     if errors and not done and attempt < 3:
         return StageOutcome("retry", msg, timedelta(minutes=30))
@@ -155,12 +192,21 @@ def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None) -
     return StageOutcome("done" if (done or not errors) else "error", msg)
 
 
-def _upload(cfg, conn, video_id, attempt, deps, say) -> StageOutcome:
-    from chatwatcher.upload.drive import UploadError, upload_video
+def _upload(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
+            kept_only: bool = False) -> StageOutcome:
+    """The whole stream folder; or one clip (rank); or only the clips marked Keep."""
+    from chatwatcher.upload.drive import UploadError, clip_folders, upload_video
     if not cfg.drive.enabled:
         return StageOutcome("skip", "drive.enabled is false")
+    folders = None
+    if rank or kept_only:
+        folders = clip_folders(conn, video_id, ranks=[rank] if rank else None, kept_only=kept_only)
+        if not folders:
+            return StageOutcome("done", "nothing to upload: " + ("that clip isn't downloaded yet" if rank
+                                                              else "no downloaded clips are marked Keep"))
     try:
-        r = upload_video(cfg, conn, video_id, rclone=deps.rclone, on_line=lambda m: say(f"rclone: {m}"))
+        r = upload_video(cfg, conn, video_id, rclone=deps.rclone, folders=folders,
+                         on_line=lambda m: say(f"rclone: {m}"))
     except UploadError as e:
         if e.kind == "nothing":
             return StageOutcome("done", str(e))
@@ -169,18 +215,23 @@ def _upload(cfg, conn, video_id, attempt, deps, say) -> StageOutcome:
         if e.kind in ("network", "rate_limited", "error") and attempt < 6:
             return StageOutcome("retry", str(e), _backoff(attempt, 10, 180))
         return StageOutcome("error", str(e))
-    return StageOutcome("done", f"uploaded to {r.dest}" + (f" ({r.stats})" if r.stats else ""))
+    what = f"{len(folders)} clip(s)" if folders else "uploaded"
+    return StageOutcome("done", f"{what} to {r.dest}" + (f" ({r.stats})" if r.stats else ""))
 
 
 # ── bookkeeping shared by the worker and `cw run` ─────────────────────────────
 
-def stage_enabled(cfg: Config, stage: str) -> bool:
+def stage_enabled(cfg: Config, stage: str, conn: sqlite3.Connection | None = None) -> bool:
+    """Does this stage run automatically? (conn: read the dashboard's auto-upload switch.)"""
     if stage == "clip":
         return cfg.pipeline.auto_clip
+    if stage == "frames":
+        return bool(cfg.pipeline.preview_height) and cfg.pipeline.auto_analyze and cfg.claude.enabled
     if stage == "analyze":
         return cfg.pipeline.auto_analyze and cfg.claude.enabled
     if stage == "upload":
-        return cfg.drive.enabled and cfg.drive.auto_upload
+        from chatwatcher import prefs
+        return cfg.drive.enabled and prefs.auto_upload(cfg, conn)
     return True
 
 

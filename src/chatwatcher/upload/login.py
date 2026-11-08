@@ -79,7 +79,9 @@ def drive_login_notice(cfg: Config, conn: sqlite3.Connection, *, rclone: Rclone 
     left = expires - now
     if left > WARN_BEFORE:
         return None
-    when = expires.astimezone().strftime("%a %d %b, %H:%M")
+    from chatwatcher.clock import abbr, zone
+    local = expires.astimezone(zone(cfg))
+    when = local.strftime("%a %d %b, %H:%M ") + abbr(local)
     if left <= timedelta(0):
         return LoginNotice("err", f"Google Drive sign-in expired on {when}. Sign in again to keep uploading.", cmd)
     hours = int(left.total_seconds() // 3600)

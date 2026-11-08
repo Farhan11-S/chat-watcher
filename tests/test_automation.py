@@ -14,7 +14,7 @@ from chatwatcher.cli import app
 from chatwatcher.config import Config, PathsConfig
 from chatwatcher.discover import DiscoverError, add_channel, check_channel, due_channels, find_channel, streams_url
 from chatwatcher.ingest.service import IngestError
-from chatwatcher.pipeline import Deps, run_stage, stage_enabled, until_utc_midnight, usage_reset_delay
+from chatwatcher.pipeline import Deps, run_stage, stage_enabled, usage_reset_delay
 from chatwatcher.worker import Worker, WorkerLocked, run_now
 
 from scoring_helpers import background, burst, chat
@@ -75,7 +75,7 @@ def test_reset_running_and_next_stage(env):
     with pytest.raises(ValueError):
         jobs.enqueue(conn, 1, "publish")
     with pytest.raises(ValueError):
-        jobs.enqueue(conn, 1, "upload", moment_pk=1)   # uploads are per stream
+        jobs.enqueue(conn, 1, "ingest", moment_pk=1)   # ingest is per stream
 
 
 # ── retry rules ──────────────────────────────────────────────────────────────
@@ -85,7 +85,6 @@ def test_usage_reset_parsing():
     d = usage_reset_delay(f"claude: Claude AI usage limit reached|{soon}")
     assert timedelta(minutes=59) < d < timedelta(minutes=65)
     assert usage_reset_delay("no time here") == timedelta(hours=1)
-    assert timedelta(0) < until_utc_midnight() <= timedelta(days=1, minutes=5)
 
 
 @pytest.mark.parametrize("kind,retryable,attempt,status,wait", [
@@ -244,10 +243,11 @@ def test_worker_runs_whole_pipeline(env, tmp_path):
     add_channel(cfg, conn, "@usadapekora", backfill=1, ytdlp=yt)
     fr = FakeRunner()
     n = Worker(cfg, deps=Deps(ytdlp=yt, claude=fr)).run(once=True)
-    assert n == 4                                            # ingest, score, clip, analyze
+    assert n == 5                                            # ingest, score, clip, frames, analyze
     v = store.get_video(conn, "streamone01")
     assert v["status"] == "done" and v["error"] is None
-    assert [r["stage"] for r in jobs.list_jobs(conn, include_done=True)] == ["ingest", "score", "clip", "analyze"]
+    assert [r["stage"] for r in jobs.list_jobs(conn, include_done=True)] == ["ingest", "score", "clip", "frames", "analyze"]
+    assert "0 preview(s)" in conn.execute("SELECT message FROM jobs WHERE stage = 'frames'").fetchone()[0]  # all clipped
     assert all(r["status"] == "done" for r in jobs.list_jobs(conn, include_done=True))
     folders = [Path(r["folder"]) for r in conn.execute("SELECT folder FROM clips")]
     assert folders and all((f / "clip.mp4").is_file() for f in folders)
@@ -286,12 +286,22 @@ def test_worker_survives_crash_and_skips_disabled_stages(env, tmp_path, monkeypa
     assert calls == ["ingest", "score"]
     assert store.get_video(conn, "streamone01")["status"] == "error"
 
-    # With score fixed, clip is skipped (auto_clip off) and analyze is queued next.
+    # With score fixed and auto_clip off: low-res previews, then Claude analyses every
+    # moment; full-quality clips wait for "Clip kept".
     monkeypatch.setattr("chatwatcher.worker.run_stage",
                         lambda *a, **k: __import__("chatwatcher.pipeline", fromlist=["x"]).StageOutcome("done", "ok"))
-    jobs.retry_video(conn, store.get_video(conn, "streamone01")["id"])
+    vpk = store.get_video(conn, "streamone01")["id"]
+    jobs.retry_video(conn, vpk)
     Worker(cfg, deps=Deps(ytdlp=yt)).run(once=True)
-    assert [r["stage"] for r in jobs.list_jobs(conn, include_done=True)] == ["ingest", "score", "analyze"]
+    assert [r["stage"] for r in jobs.list_jobs(conn, include_done=True)] == ["ingest", "score", "frames", "analyze"]
+    assert store.get_video(conn, "streamone01")["status"] == "done"
+
+    # Previews off too: nothing for Claude to look at, so it stops after scoring.
+    cfg.pipeline.preview_height = 0
+    conn.execute("DELETE FROM jobs WHERE stage IN ('frames', 'analyze')")
+    jobs.enqueue(conn, vpk, "score")
+    Worker(cfg, deps=Deps(ytdlp=yt)).run(once=True)
+    assert [r["stage"] for r in jobs.list_jobs(conn, include_done=True)] == ["ingest", "score"]
 
 
 def test_single_worker_lock(env):

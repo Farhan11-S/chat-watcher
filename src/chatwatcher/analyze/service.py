@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import timezone, tzinfo
 from pathlib import Path
 from typing import Any, Callable
 
@@ -58,26 +59,98 @@ class AnalyzeRun:
         return sum(o.status == status for o in self.outcomes)
 
 
-def _rows(conn: sqlite3.Connection, video_pk: int) -> list[sqlite3.Row]:
-    return conn.execute(
+def material_folder(clip_folder: str | None, preview_folder: str | None) -> Path | None:
+    """What Claude looks at for a moment: its full-quality clip folder if there is one,
+    otherwise its low-res preview."""
+    for f in (clip_folder, preview_folder):
+        if f and (Path(f) / "moment.json").is_file():
+            return Path(f)
+    return None
+
+
+def _rows(conn: sqlite3.Connection, video_pk: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
         """
-        SELECT m.id, m.rank, m.kind, c.folder,
+        SELECT m.id, m.rank, m.kind, m.start_s, m.end_s, c.folder AS clip_folder, p.folder AS preview_folder,
                (SELECT a.analysis_json FROM analyses a WHERE a.moment_id = m.id
                 ORDER BY a.id DESC LIMIT 1) AS analysis_json,
                (SELECT a.model FROM analyses a WHERE a.moment_id = m.id
                 ORDER BY a.id DESC LIMIT 1) AS model
-        FROM moments m LEFT JOIN clips c ON c.moment_id = m.id
+        FROM moments m LEFT JOIN clips c ON c.moment_id = m.id LEFT JOIN previews p ON p.moment_id = m.id
         WHERE m.video_id = ? AND m.status != 'rejected'
         ORDER BY m.rank
         """,
         (video_pk,),
     ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        folder = material_folder(r["clip_folder"], r["preview_folder"])
+        d["folder"] = str(folder) if folder else None
+        out.append(d)
+    return out
 
 
-def analyses_today(conn: sqlite3.Connection) -> int:
+def analysis_matches(conn: sqlite3.Connection, moment_pk: int) -> bool:
+    """Was the latest analysis made for the moment's current cut? (Then a new download of
+    the same range reuses it instead of asking Claude again.)"""
+    row = conn.execute(
+        """SELECT m.start_s, m.end_s, (SELECT a.analysis_json FROM analyses a WHERE a.moment_id = m.id
+                  ORDER BY a.id DESC LIMIT 1) AS analysis_json FROM moments m WHERE m.id = ?""",
+        (moment_pk,)).fetchone()
+    if row is None or not row["analysis_json"]:
+        return False
+    rng = (json.loads(row["analysis_json"]).get("_meta") or {}).get("range")
+    return bool(rng) and abs(rng[0] - row["start_s"]) < 0.5 and abs(rng[1] - row["end_s"]) < 0.5
+
+
+def carry_analysis(conn: sqlite3.Connection, moment_pk: int, folder: Path) -> bool:
+    """A moment analysed from its low-res preview was just downloaded at full quality into
+    `folder`. Shift the analysis's clip-relative times onto the new file, point the
+    thumbnail at the nearest new frame, and write analysis.json + storyboard.md there.
+    Returns False when there's nothing to carry over (no analysis, or another cut)."""
+    if not analysis_matches(conn, moment_pk):
+        return False
+    row = conn.execute("SELECT id, analysis_json FROM analyses WHERE moment_id = ? ORDER BY id DESC LIMIT 1",
+                       (moment_pk,)).fetchone()
+    a = json.loads(row["analysis_json"])
+    meta_m = a.get("_meta") or {}
+    meta = json.loads((folder / "moment.json").read_text(encoding="utf-8"))
+    new_zero = float(meta["clip"]["zero_s"])
+    old_zero = float(meta_m.get("zero_s", new_zero))
+    delta = old_zero - new_zero                      # clip time t → t + delta on the new file
+
+    def shift(v: Any) -> Any:
+        return None if v is None else float(v) + delta
+    cut = a.get("cut") or {}
+    for k in ("long_in", "long_out", "short_in", "short_out"):
+        if k in cut:
+            cut[k] = shift(cut[k])
+    for b in a.get("storyboard") or []:
+        b["start"], b["end"] = shift(b.get("start", 0)), shift(b.get("end", 0))
+    for c in a.get("captions") or []:
+        c["at"] = shift(c.get("at", 0))
+    # Thumbnail: the new frame closest in stream time to the one Claude picked.
+    old_frames = {f["file"]: f["stream_s"] for f in meta_m.get("frames", [])}
+    thumb = a.get("thumbnail") or {}
+    if thumb.get("frame_file") in old_frames and meta.get("frames"):
+        t = old_frames[thumb["frame_file"]]
+        thumb["frame_file"] = min(meta["frames"], key=lambda f: abs(f["stream_s"] - t))["file"]
+    a = sanitize(a, meta)
+    a["_meta"] = meta_m | {"zero_s": new_zero, "source": "clip", "frames": meta.get("frames", [])}
+    meta["model"] = meta_m.get("model")
+    (folder / "analysis.json").write_text(json.dumps(a, ensure_ascii=False, indent=1), encoding="utf-8")
+    (folder / "storyboard.md").write_text(render_moment(a, meta), encoding="utf-8")
+    conn.execute("UPDATE analyses SET analysis_json = ? WHERE id = ?", (json.dumps(a, ensure_ascii=False), row["id"]))
+    return True
+
+
+def analyses_today(conn: sqlite3.Connection, tz: tzinfo | None = timezone.utc) -> int:
+    """Analyses since midnight in the display time zone (the daily cap's day)."""
+    from chatwatcher.clock import today_start_utc
     return conn.execute(
-        "SELECT COUNT(*) FROM analyses WHERE moment_id IS NOT NULL AND date(created_at) = date('now')"
-    ).fetchone()[0]
+        "SELECT COUNT(*) FROM analyses WHERE moment_id IS NOT NULL AND created_at >= ?",
+        (today_start_utc(tz),)).fetchone()[0]
 
 
 def _call(runner: ClaudeRunner, *args, attempts: int = 2, **kwargs) -> ClaudeResult:
@@ -132,8 +205,12 @@ def analyze_video(
     digest: bool = True,
     runner: ClaudeRunner | None = None,
     on_event: EventFn | None = None,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> AnalyzeRun:
+    """model/effort: use these instead of claude.model/effort for this run."""
     event = on_event or (lambda _r, _m: None)
+    choice = {"model": model, "effort": effort}
     if not cfg.claude.enabled:
         raise AnalyzeError("claude.enabled is false in the config.", kind="disabled")
     try:
@@ -162,14 +239,15 @@ def analyze_video(
 
     run = AnalyzeRun(video_id=video_id)
     cap = cfg.claude.daily_moment_cap
-    used_today = analyses_today(conn)
+    from chatwatcher.clock import zone
+    used_today = analyses_today(conn, zone(cfg))
     stop_reason: str | None = None
     new_analyses = 0
 
     for r in selected:
         folder = Path(r["folder"]) if r["folder"] else None
         if folder is None or not (folder / "moment.json").is_file():
-            run.outcomes.append(AnalyzeOutcome(r["rank"], "skipped", "not clipped yet (run `cw clip`)"))
+            run.outcomes.append(AnalyzeOutcome(r["rank"], "skipped", "no clip or preview yet"))
             continue
         if r["analysis_json"] and (folder / "storyboard.md").is_file() and not force:
             a = json.loads(r["analysis_json"])
@@ -189,7 +267,7 @@ def analyze_video(
                                title_languages=cfg.claude.title_languages)
         try:
             res = _call(runner, prompt, MOMENT_SCHEMA, system=SYSTEM_PROMPT, cwd=folder,
-                        allow_read=True)
+                        allow_read=True, **choice)
         except ClaudeError as e:
             if e.kind in ("auth", "missing"):
                 raise AnalyzeError(str(e), kind=e.kind) from e
@@ -204,7 +282,12 @@ def analyze_video(
 
         run.add_usage(res)
         a = sanitize(res.data, meta)
-        a["_meta"] = {"model": res.model, "duration_ms": res.duration_ms, "usage": res.usage}
+        a["_meta"] = {"model": res.model, "effort": effort or cfg.claude.effort,
+                      "duration_ms": res.duration_ms, "usage": res.usage,
+                      # what it was made from, so a later full-quality download can reuse it
+                      "range": [r["start_s"], r["end_s"]], "zero_s": meta["clip"]["zero_s"],
+                      "source": "clip" if folder == (Path(r["clip_folder"]) if r["clip_folder"] else None) else "preview",
+                      "frames": meta.get("frames", [])}
         meta["model"] = res.model
         (folder / "analysis.json").write_text(json.dumps(a, ensure_ascii=False, indent=1), encoding="utf-8")
         (folder / "storyboard.md").write_text(render_moment(a, meta), encoding="utf-8")
@@ -216,7 +299,7 @@ def analyze_video(
         event(r["rank"], "done")
 
     if digest and not stop_reason:
-        _digest(cfg, conn, video, run, runner, force=force or new_analyses > 0, event=event)
+        _digest(cfg, conn, video, run, runner, force=force or new_analyses > 0, event=event, choice=choice)
     return run
 
 
@@ -228,7 +311,8 @@ def _outcome(rank: int, status: str, a: dict[str, Any], folder: Path, msg: str =
 
 
 def _digest(cfg: Config, conn: sqlite3.Connection, video: sqlite3.Row, run: AnalyzeRun,
-            runner: ClaudeRunner, *, force: bool, event: EventFn) -> None:
+            runner: ClaudeRunner, *, force: bool, event: EventFn,
+            choice: dict[str, str | None] | None = None) -> None:
     out_dir = Path(video["output_dir"]) if video["output_dir"] else None
     rows = _rows(conn, video["id"])
     analysed = []
@@ -251,7 +335,7 @@ def _digest(cfg: Config, conn: sqlite3.Connection, video: sqlite3.Row, run: Anal
     try:
         res = _call(runner, digest_prompt(stream, analysed, output_language=cfg.claude.output_language,
                                           title_languages=cfg.claude.title_languages),
-                    DIGEST_SCHEMA, system=SYSTEM_PROMPT, cwd=out_dir, allow_read=False)
+                    DIGEST_SCHEMA, system=SYSTEM_PROMPT, cwd=out_dir, allow_read=False, **(choice or {}))
     except ClaudeError as e:
         run.digest_error = str(e)
         return

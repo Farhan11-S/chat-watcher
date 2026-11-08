@@ -1,6 +1,40 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_pill, flag %}
+{% from "_macros.html" import status_pill, flag, claude_picker %}
 {% block title %}#{{ moment.rank }} · {{ video.title }}{% endblock %}
+{% macro ask_card() -%}
+<div class="card" id="ask">
+  <div class="actions" style="justify-content: space-between">
+    <h2 style="margin:0">Ask Claude about this clip</h2>
+    {% if chat %}<form method="post" action="/moment/{{ moment.id }}/clear-chat" class="inline"
+          onsubmit="return confirm('Delete this conversation?')"><button class="small">Clear</button></form>{% endif %}
+  </div>
+  <p class="faint" style="margin:.3rem 0 .6rem"><small>Jargon, game lore, memes, who's who. Claude reads the transcript, chat
+    and the analysis above; the analysis itself stays as it is.</small></p>
+  <div class="chat-log" data-chat-log aria-live="polite">
+    {%- for c in chat %}
+    <div class="bubble {{ c.role }}"><span class="bubble-text">{{ c.text }}</span>{% if c.role == 'assistant' and c.model %}<div class="bubble-meta">{{ c.model }}</div>{% endif %}</div>
+    {%- endfor %}
+  </div>
+  {% if not chat %}
+  <div class="actions chips" data-chips>
+    <button type="button" class="small" data-ask="Explain any jargon, slang or in-jokes in this clip.">Explain the jargon</button>
+    <button type="button" class="small" data-ask="What's the game or story context here? What normally happens at this point?">Game / story context</button>
+    <button type="button" class="small" data-ask="Who are the people or characters mentioned in this clip?">Who's who</button>
+  </div>
+  {% endif %}
+  <form class="ask-form" data-ask-form action="/moment/{{ moment.id }}/ask">
+    <textarea name="question" rows="2" maxlength="2000" required
+              placeholder="e.g. What is supposed to happen in Undertale at this point?"></textarea>
+    <div class="actions">
+      {{ claude_picker(cfg, claude_models, efforts) }}
+      <label class="muted" title="Lets Claude search the web (for recent VTuber news or lore it may not know)">
+        <input type="checkbox" name="web" value="1"> <small>search the web</small></label>
+      <span style="flex:1"></span>
+      <button class="primary small">Ask</button>
+    </div>
+  </form>
+</div>
+{%- endmacro %}
 {% block content %}
 {% set a = analysis %}
 <div class="actions" style="justify-content: space-between; margin-bottom: .75rem">
@@ -33,12 +67,20 @@
   <div>
     <div class="card">
       {% if clip %}
+      {% if clip.exists %}
       <video controls preload="metadata" src="/media/clip/{{ clip.id }}"
              {% if frames %}poster="/media/frame/{{ clip.id }}/{{ (frames | selectattr('is_peak') | list or frames)[0].file.split('/')[-1] }}"{% endif %}></video>
+      {% else %}
+      <div class="deleted-video">
+        <p>The clip video was deleted to free space. Summary, storyboard, frames and questions are still here.</p>
+        <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small primary">Download it again</button></form>
+      </div>
+      {% endif %}
       <p class="muted" style="margin:.5rem 0 0"><small>
         {{ clip.width }}×{{ clip.height }} {{ clip.fps | int }}fps · {{ clip.vcodec }}/{{ clip.acodec }} · {{ clip.size_bytes | mb }}
         · stream {{ clip.zero_s | ts }}–{{ (clip.zero_s + clip.duration_s) | ts }}
         · <a href="https://youtu.be/{{ video.video_id }}?t={{ clip.zero_s | int }}" target="_blank" rel="noopener">YouTube ↗</a>
+        {% if clip.uploaded_at %}· ☁ on Drive since {{ clip.uploaded_at | when }}{% if video.drive_url and video.drive_url.startswith('https://') %} (<a href="{{ video.drive_url }}" target="_blank" rel="noopener">open stream folder ↗</a>){% endif %}{% endif %}
         <br>📁 <span class="mono">{{ clip.path }}</span> <button class="small" data-copy="{{ clip.path }}">copy path</button>
       </small></p>
       {% if frames %}
@@ -51,6 +93,22 @@
       </div>
       <p class="faint" style="margin:.3rem 0 0"><small>Click a frame to jump there. Blue border: Claude's thumbnail pick; orange: chat peak.</small></p>
       {% endif %}
+      {% elif preview %}
+      <div class="deleted-video">
+        <p>Not downloaded at full quality yet. Claude worked from these {{ preview.height or 360 }}p preview frames.</p>
+        <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small primary">Download full quality now</button></form>
+        <small class="muted">or ✓ Keep it and press <b>Clip kept</b> on the stream page</small>
+      </div>
+      <p class="muted" style="margin:.5rem 0 0"><small>stream {{ preview.zero_s | ts }}–{{ (preview.zero_s + preview.duration_s) | ts }}
+        · <a href="https://youtu.be/{{ video.video_id }}?t={{ preview.zero_s | int }}" target="_blank" rel="noopener">YouTube ↗</a></small></p>
+      <div class="frames">
+        {% for f in preview.frames %}{% set name = f.file.split('/')[-1] %}
+        <figure><a href="https://youtu.be/{{ video.video_id }}?t={{ f.stream_s | int }}" target="_blank" rel="noopener"><img src="/media/preview/{{ moment.id }}/{{ name }}" alt="frame at {{ f.clip_s }}s"
+          class="{{ 'thumb' if a and a.thumbnail and a.thumbnail.frame_file == f.file else ('peak' if f.is_peak else '') }}"></a>
+          <figcaption>{{ f.clip_s | ts }}{% if f.is_peak %} · peak{% endif %}{% if a and a.thumbnail and a.thumbnail.frame_file == f.file %} · thumbnail{% endif %}</figcaption></figure>
+        {% endfor %}
+      </div>
+      <p class="faint" style="margin:.3rem 0 0"><small>Click a frame to watch that moment on YouTube. Times are from the start of the moment.</small></p>
       {% else %}
       <p class="empty">Not clipped yet.</p>
       {% endif %}
@@ -66,8 +124,13 @@
       <p class="faint" style="margin:.4rem 0 0"><small>Stream times (h:mm:ss). Re-cutting downloads the new range and has Claude re-analyse it.</small></p>
       <div class="actions" style="margin-top:.6rem">
         <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small">Re-download</button></form>
-        <form method="post" action="/moment/{{ moment.id }}/reanalyze" class="inline"><button class="small">Ask Claude again</button></form>
+        {% if cfg.drive.enabled and clip %}<form method="post" action="/moment/{{ moment.id }}/upload" class="inline">
+          <button class="small">☁ {{ 'Upload again' if clip.uploaded_at else 'Upload this clip to Drive' }}</button></form>{% endif %}
       </div>
+      <form method="post" action="/moment/{{ moment.id }}/reanalyze" class="actions" style="margin-top:.5rem">
+        {{ claude_picker(cfg, claude_models, efforts, cfg.claude.redo_model, cfg.claude.redo_effort) }}
+        <button class="small">Analyse again</button>
+      </form>
       {% if a and a.cut %}
       <h3>Claude's suggested cut <small class="muted">(clip time — click to play)</small></h3>
       <ul>
@@ -97,6 +160,7 @@
       <p class="muted"><b>Context:</b> {{ a.context }}</p>
       <p class="muted"><b>Why it works:</b> {{ a.why_it_works }}</p>
     </div>
+    {{ ask_card() }}
     <div class="card">
       <h2>Titles</h2>
       <ul class="titles">{% for t in a.titles %}
@@ -107,6 +171,7 @@
     </div>
     {% else %}
     <div class="card"><p class="empty">No Claude analysis yet{% if not clip %} (clip it first){% endif %}.</p></div>
+    {% if clip or preview %}{{ ask_card() }}{% endif %}
     {% endif %}
   </div>
 </div>
@@ -140,6 +205,6 @@
   <h2>Source text</h2>
   {% if files['transcript.txt'] %}<details><summary>Transcript (clip time)</summary><pre class="text">{{ files['transcript.txt'] }}</pre></details>{% endif %}
   {% if files['chat_excerpt.txt'] %}<details><summary>Chat during the clip</summary><pre class="text">{{ files['chat_excerpt.txt'] }}</pre></details>{% endif %}
-  {% if a %}<p class="faint" style="margin:.6rem 0 0"><small>Analysed by {{ a.model }} at {{ a.created_at }} UTC. Check it before publishing.</small></p>{% endif %}
+  {% if a %}<p class="faint" style="margin:.6rem 0 0"><small>Analysed by {{ a.model }}{% if a._meta and a._meta.effort %} ({{ a._meta.effort }} effort){% endif %} at {{ a.created_at | when }}. Check it before publishing.</small></p>{% endif %}
 </div>
 {% endblock %}

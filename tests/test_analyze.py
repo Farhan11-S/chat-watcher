@@ -75,10 +75,30 @@ def test_command_is_locked_down(tmp_path):
         assert flag in cmd
     assert "--bare" not in cmd
     assert cmd[cmd.index("--output-format") + 1] == "json"
-    assert cmd[cmd.index("--model") + 1] == "opus" and cmd[cmd.index("--effort") + 1] == "medium"
+    assert cmd[cmd.index("--model") + 1] == "sonnet" and cmd[cmd.index("--effort") + 1] == "low"
     assert cmd[cmd.index("--tools") + 1] == "Read" and cmd[cmd.index("--add-dir") + 1] == str(tmp_path)
     no_read = r.command(DIGEST_SCHEMA, system="s", allow_read=False, read_dir=None)
     assert no_read[no_read.index("--tools") + 1] == "" and "--allowedTools" not in no_read
+    picked = r.command(MOMENT_SCHEMA, system="s", model="opus", effort="high")
+    assert picked[picked.index("--model") + 1] == "opus" and picked[picked.index("--effort") + 1] == "high"
+    # Questions: plain text (no schema), no tools unless web search is ticked; never a shell or WebFetch.
+    q = r.command(None, system="s")
+    assert "--json-schema" not in q and q[q.index("--tools") + 1] == "" and "--restricted" in q
+    web = r.command(None, system="s", tools=["WebSearch"])
+    assert web[web.index("--tools") + 1] == "WebSearch" and web[web.index("--allowedTools") + 1] == "WebSearch"
+
+
+def test_ask_returns_text(tmp_path):
+    body = ("assert '--json-schema' not in args\n"
+            "print(json.dumps({'is_error': False, 'result': '  Undertale lore: ' + stdin + '  ', "
+            "'modelUsage': {'claude-sonnet-5-5': {}}, 'usage': {'input_tokens': 7, 'output_tokens': 3}}))")
+    p = tmp_path / "claude"
+    p.write_text(f"#!{sys.executable}\nimport json, sys\nargs = sys.argv[1:]\nstdin = sys.stdin.read()\n" + body)
+    p.chmod(p.stat().st_mode | stat.S_IEXEC)
+    r = ClaudeRunner(ClaudeConfig(cli_path=str(p)))
+    res = r.ask("who is Sans?", system="s", cwd=tmp_path)
+    assert res.data == {"text": "Undertale lore: who is Sans?"} and res.model == "claude-sonnet-5-5"
+    assert res.usage["input"] == 7 and res.usage["output"] == 3
 
 
 def test_run_success_strips_api_key(tmp_path, monkeypatch):
@@ -212,15 +232,26 @@ class FakeRunner:
     def auth_status(self):
         return {"loggedIn": self.logged_in}
 
-    def run(self, prompt, schema, *, system, cwd, allow_read=False):
-        self.calls.append({"prompt": prompt, "schema": schema, "cwd": cwd, "allow_read": allow_read})
+    def run(self, prompt, schema, *, system, cwd, allow_read=False, model=None, effort=None):
+        self.calls.append({"prompt": prompt, "schema": schema, "cwd": cwd, "allow_read": allow_read,
+                           "model": model, "effort": effort})
         step = self.script.pop(0) if self.script else "ok"
         if isinstance(step, ClaudeError):
             raise step
+        name = f"claude-{model}" if model else "claude-sonnet-5-5"
         if schema is DIGEST_SCHEMA:
             ranks = sorted(int(x.split()[0][1:]) for x in prompt.splitlines() if x.startswith("#"))
-            return ClaudeResult(sample_digest(ranks), "claude-opus-5-5", 1, {})
-        return ClaudeResult(sample_analysis(), "claude-opus-5-5", 1, {})
+            return ClaudeResult(sample_digest(ranks), name, 1, {})
+        return ClaudeResult(sample_analysis(), name, 1, {})
+
+    def ask(self, prompt, *, system, cwd, model=None, effort=None, web_search=False):
+        self.calls.append({"prompt": prompt, "system": system, "cwd": cwd, "model": model,
+                           "effort": effort, "web_search": web_search})
+        step = self.script.pop(0) if self.script else "ok"
+        if isinstance(step, ClaudeError):
+            raise step
+        return ClaudeResult({"text": f"answer #{len(self.calls)}"}, f"claude-{model or 'sonnet'}", 1,
+                            {"usage": {"input_tokens": 10, "output_tokens": 5}})
 
 
 @pytest.fixture

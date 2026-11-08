@@ -132,6 +132,11 @@ def test_slug_and_dirs(tmp_path):
     d = video_dir(tmp_path, {"channel": "AZKi Channel", "title": "【歌枠】テスト",
                              "release_timestamp": 1700000000}, VID)
     assert d == tmp_path / "AZKi_Channel" / f"2023-11-14_{VID}_【歌枠】テスト"
+    # 2023-11-14 22:13 UTC is already the 15th in WIB
+    from zoneinfo import ZoneInfo
+    wib = video_dir(tmp_path, {"channel": "AZKi Channel", "title": "【歌枠】テスト",
+                               "release_timestamp": 1700000000}, VID, ZoneInfo("Asia/Jakarta"))
+    assert wib.name.startswith("2023-11-15_")
     assert moment_dirname(1, "song", [], 2711) == "01_song_45m11s"
     assert moment_dirname(12, "reaction", [{"signal": "laugh"}], 3650) == "12_laugh_1h00m50s"
 
@@ -204,6 +209,12 @@ def test_clip_video_end_to_end(scored, samples):
     forced = clip_video(cfg, conn, VID, ranks=[1], force=True, ytdlp=FakeYt(samples["clean"]))
     assert [o.rank for o in forced.outcomes] == [1] and forced.count("done") == 1
     assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 2
+
+    # A new time zone (or title) changes the computed folder name, but a re-clip keeps the
+    # stream's existing folder instead of starting a second one.
+    cfg.general.timezone = "Pacific/Kiritimati"   # UTC+14: may give another date in the name
+    redo = clip_video(cfg, conn, VID, ranks=[2], force=True, ytdlp=FakeYt(samples["clean"]))
+    assert redo.output_dir == run.output_dir and len(list(run.output_dir.parent.iterdir())) == 1
 
 
 def test_one_failure_does_not_stop_others(scored, samples):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +27,13 @@ def slug(text: str, max_len: int = 50) -> str:
     return t or "untitled"
 
 
-def video_dir(output_root: Path, info: dict[str, Any], video_id: str) -> Path:
+def video_dir(output_root: Path, info: dict[str, Any], video_id: str,
+              tz: tzinfo | None = timezone.utc) -> Path:
+    """output/<channel>/<date>_<id>_<title>; the date is the stream's start in tz."""
     channel = slug(info.get("channel") or info.get("uploader_id") or "unknown", 40)
     ts = info.get("release_timestamp") or info.get("timestamp")
     if ts:
-        day = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz).strftime("%Y-%m-%d")
     else:
         d = info.get("upload_date") or ""
         day = f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else "undated"

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
-STAGES = ("ingest", "score", "clip", "analyze", "upload")
+# frames = low-res previews (frames + text) for moments without a clip, so Claude can
+# analyse every moment before anything is downloaded at full quality.
+STAGES = ("ingest", "score", "clip", "frames", "analyze", "upload")
 
 
 def sql_time(dt: datetime) -> str:
@@ -18,28 +22,40 @@ def now() -> datetime:
 
 
 def enqueue(conn: sqlite3.Connection, video_pk: int, stage: str, *, moment_pk: int | None = None,
-            run_after: datetime | None = None, reset_attempts: bool = True) -> int | None:
+            run_after: datetime | None = None, reset_attempts: bool = True,
+            params: dict[str, Any] | None = None) -> int | None:
     """Queue (or re-queue) a stage, for the whole video or for one moment (redo a clip or
-    an analysis). A job that is currently running is left alone. Returns the job id, or
-    None if it was running."""
+    an analysis, upload one clip). A job that is currently running is left alone. Returns
+    the job id, or None if it was running.
+
+    params: options for this run only (e.g. which Claude model); re-queueing replaces them."""
     if stage not in STAGES:
         raise ValueError(f"Unknown stage {stage!r}")
-    if moment_pk is not None and stage not in ("clip", "analyze"):
-        raise ValueError("Only clip and analyze can run for a single moment")
+    if moment_pk is not None and stage not in ("clip", "analyze", "upload"):
+        raise ValueError("Only clip, analyze and upload can run for a single moment")
     row = conn.execute(
         """
-        INSERT INTO jobs (video_id, moment_id, stage, status, run_after)
-        VALUES (?, ?, ?, 'pending', ?)
+        INSERT INTO jobs (video_id, moment_id, stage, status, run_after, params_json)
+        VALUES (?, ?, ?, 'pending', ?, ?)
         ON CONFLICT (video_id, stage, COALESCE(moment_id, 0)) DO UPDATE SET
             status = 'pending', run_after = excluded.run_after, error = NULL,
+            params_json = excluded.params_json,
             attempts = CASE WHEN ? THEN 0 ELSE jobs.attempts END,
             updated_at = datetime('now')
         WHERE jobs.status != 'running'
         RETURNING id
         """,
-        (video_pk, moment_pk, stage, sql_time(run_after or now()), int(reset_attempts)),
+        (video_pk, moment_pk, stage, sql_time(run_after or now()),
+         json.dumps(params) if params else None, int(reset_attempts)),
     ).fetchone()
     return row["id"] if row else None
+
+
+def job_params(job: sqlite3.Row) -> dict[str, Any]:
+    try:
+        return json.loads(job["params_json"] or "{}")
+    except (IndexError, KeyError, json.JSONDecodeError):
+        return {}
 
 
 def claim(conn: sqlite3.Connection) -> sqlite3.Row | None:

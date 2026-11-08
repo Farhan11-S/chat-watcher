@@ -18,7 +18,7 @@
   <h2>Watched channels</h2>
   {% if channels %}
   <div class="table-wrap"><table>
-    <tr><th>Channel</th><th>Type</th><th class="num">Streams</th><th>Last check (UTC)</th><th></th></tr>
+    <tr><th>Channel</th><th>Type</th><th class="num">Streams</th><th>Last check</th><th></th></tr>
     {% for c in channels %}
     <tr>
       <td><a href="https://www.youtube.com/channel/{{ c.channel_id }}/streams" target="_blank" rel="noopener">{{ c.title }}</a><br>
@@ -28,7 +28,7 @@
           {% for t in ['auto', 'talk', 'gaming', 'karaoke'] %}<option {{ 'selected' if c.default_type == t }}>{{ t }}</option>{% endfor %}
         </select></form></td>
       <td class="num">{{ c.videos }}</td>
-      <td><small>{{ c.last_checked_at or 'never' }}</small></td>
+      <td><small>{{ c.last_checked_at | when if c.last_checked_at else 'never' }}</small></td>
       <td class="actions">
         <form method="post" action="/channels/{{ c.id }}/check" class="inline"><button class="small">Check now</button></form>
         {% if c.enabled %}
@@ -52,7 +52,7 @@
   <table>
     {% for d in discovered %}
     <tr><td>{% if d.action == 'queued' %}<a href="/video/{{ d.video_id }}">{{ d.title or d.video_id }}</a>{% else %}{{ d.title or d.video_id }}{% endif %}
-      <br><small class="muted">{{ d.channel_title or '' }} · {{ d.seen_at }}</small></td>
+      <br><small class="muted">{{ d.channel_title or '' }} · {{ d.seen_at | when }}</small></td>
       <td><span class="pill {{ 'done' if d.action == 'queued' else '' }}">{{ d.action }}</span></td>
       <td><small class="muted">{{ d.reason or '' }}</small></td></tr>
     {% endfor %}

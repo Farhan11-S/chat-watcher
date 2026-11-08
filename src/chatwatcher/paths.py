@@ -48,6 +48,10 @@ class VodFiles:
     def downloads(self) -> Path:     # scratch area for yt-dlp output
         return self.root / "_dl"
 
+    @property
+    def previews(self) -> Path:      # low-res frames + text per moment, for Claude
+        return self.root / "previews"
+
 
 def vod_files(cfg: Config, video_id: str) -> VodFiles:
     return VodFiles(cfg.paths.data_dir / "vods" / video_id)

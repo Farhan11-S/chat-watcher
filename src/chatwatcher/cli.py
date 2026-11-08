@@ -420,10 +420,13 @@ def channel_list(
     if not rows:
         typer.echo("No channels yet. Add one with `cw channel add @handle`.")
         return
-    typer.echo(f"{'ID':>3}  {'ON':<3} {'TYPE':<8} {'VIDEOS':>6}  {'LAST CHECK (UTC)':<19}  CHANNEL")
+    from chatwatcher.clock import fmt, zone
+    tz = zone(cfg)
+    typer.echo(f"{'ID':>3}  {'ON':<3} {'TYPE':<8} {'VIDEOS':>6}  {'LAST CHECK':<20}  CHANNEL")
     for r in rows:
+        checked = fmt(r["last_checked_at"], tz) if r["last_checked_at"] else "never"
         typer.echo(f"{r['id']:>3}  {'✓' if r['enabled'] else '-':<3} {r['default_type']:<8} {r['videos']:>6}  "
-                   f"{r['last_checked_at'] or 'never':<19}  {r['title']} ({r['handle'] or r['channel_id']})")
+                   f"{checked:<20}  {r['title']} ({r['handle'] or r['channel_id']})")
 
 
 def _toggle_channel(text: str, config: Path | None, enabled: int | None) -> None:
@@ -610,9 +613,11 @@ def jobs_cmd(
     if not rows:
         typer.echo("Queue is empty." + ("" if all_ else " (`--all` shows finished jobs)"))
         return
+    from chatwatcher.clock import fmt, zone
+    tz = zone(cfg)
     icon = {"running": "▶️ ", "pending": "⏳", "error": "❌", "done": "✅"}
     for r in rows:
-        when = f"at {r['run_after']}" if r["status"] == "pending" else ""
+        when = f"at {fmt(r['run_after'], tz)}" if r["status"] == "pending" else ""
         typer.echo(f"{icon[r['status']]} {r['yt_id']} {r['stage']:<8} try {r['attempts']} {when}  "
                    f"{(r['title'] or '')[:40]}")
         note = r["error"] or r["message"]

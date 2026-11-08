@@ -20,7 +20,8 @@ channel ─▶ ingest ─▶ score ─▶ clip ─▶ analyze ─▶ upload
 - **Clips are never re-encoded.** You get YouTube's best video and audio, losslessly
   cut, as mp4.
 - **Claude runs on your Claude subscription** through the `claude` CLI. No API key needed.
-- **Dashboard:** timeline per stream, clip player, storyboard, keep/skip, re-cut, re-analyse.
+- **Dashboard:** timeline per stream, clip player, storyboard, keep/skip, re-cut, re-analyse
+  with any model, ask Claude follow-up questions about a clip, and see disk and Drive space.
 
 ---
 
@@ -68,17 +69,40 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
    every 30 minutes. Upcoming and live streams are picked up once they end.
 2. **Streams** shows each stream's progress through ingest → score → clip → analyze
    (→ upload).
-3. **Open a stream:**
-   - a timeline of chat reactions, with each moment as a clickable band, and YouTube's
-     "most replayed" curve under it
-   - Claude's digest: highlights order, compilation titles, best Shorts
+3. **Open a stream and review its moments** on the embedded YouTube player:
+   - a button per moment under the player jumps straight to it; **Next / Prev** walk
+     through them, and clicking the chart jumps to any time
+   - **✓ Keep / ✗ Skip** next to the player (keys **K** / **S**, **U** undo, **N** / **P**
+     next / previous, **R** replay). After each choice it jumps to the next moment to review.
+     Every row of the moments table has ✓ / ✗ too.
+   - **Clip kept** downloads the moments you kept; Claude analyses them after.
+   - a timeline of chat reactions, YouTube's "most replayed" curve, and Claude's digest
+     (highlights order, compilation titles, best Shorts)
+
+   Claude has already analysed **every** moment by the time you open the stream: each
+   one gets a small 360p, video-only preview whose still frames Claude reads (only the
+   frames are kept, ~400 KB per moment). The moment buttons show Claude's rating, you can
+   go through them **by Claude's rating**, and **✓ Keep the N rated 7+** keeps Claude's
+   picks in one click. When you **Clip kept**, the full-quality clip reuses Claude's
+   analysis (times shifted to the new file), so it isn't asked again.
+
+   With `pipeline.auto_clip = false`, nothing is downloaded at full quality until you press
+   **Clip kept**. With `true`, the best `clip_top` moments are downloaded automatically.
+   `pipeline.preview_height = 0` turns previews off (Claude then only sees downloaded clips).
 4. **Open a moment:**
    - the clip player, and frames you click to jump to
    - Claude's summary, **titles and thumbnail text with copy buttons**, storyboard and
      captions
-   - **Keep / Skip** buttons
+   - **Keep / Skip** buttons (Skip also stops it from being downloaded or analysed)
    - **Re-cut**: type new start/end times; it re-downloads that range and Claude
      re-analyses it automatically
+   - **Analyse again** with another model or effort (e.g. `opus`, `high effort`) when the
+     default Sonnet analysis misses something
+   - **Ask Claude about this clip**: follow-up questions such as "what is supposed to happen
+     in Undertale here?" or "explain the jargon". Answers stay in a thread on the page and
+     never change the analysis. Tick *search the web* for recent VTuber news Claude may not
+     know. Each question costs about 5–10k tokens.
+   - **☁ Upload this clip to Drive** (when Drive is set up)
 5. **Edit.** Everything for a moment is in one folder:
 
 ```
@@ -153,12 +177,14 @@ Claude only sees what it needs:
 - ~9 still frames, which it can read but nothing else: no shell, no web, no
   plugins
 
-Expect **about 15k tokens per clip**, plus one digest call per stream. Every `cw analyze`
-prints its total.
+Every clip is analysed by **Sonnet at low effort** by default: about 10–15k tokens per clip,
+plus one digest call per stream. Every `cw analyze` prints its total. When a clip deserves a
+closer look, pick another model on its page (**Analyse again**) or redo a whole stream from
+the stream page.
 
-- `pipeline.analyze_top = 5`: only the 5 best clips per stream are analysed. You can
-  ask for more from the dashboard.
-- `claude.model = "sonnet"` makes a Pro/Max plan's limits go further than `opus`.
+- `pipeline.analyze_top = 5`: only analyse the 5 best clips per stream (default 0 = all).
+- `claude.model` / `claude.effort` set the default (`"sonnet"` / `"low"`); `"opus"` or a
+  higher effort uses much more of a Pro/Max plan's limits.
 - `claude.daily_moment_cap = 40` limits analyses per day.
 - **Hit a usage limit?** Remaining clips wait until your plan resets and then continue
   automatically.
@@ -181,6 +207,21 @@ prints its total.
 Streams are copied to `chat-watcher/<channel>/<stream>/` on Drive after processing.
 Re-runs only send new or changed files. **Nothing on Drive is ever deleted.**
 
+**Upload by hand instead:** turn *auto-upload* off on the **Settings** page (it wins over
+`drive.auto_upload` in `config.toml`, no restart needed). Then nothing goes to Drive until
+you press a button: **☁ Upload all** or **☁ Upload kept** (only clips marked ✓ Keep) on a
+stream page, or **☁ Upload this clip** on a clip page. Clips on Drive show a ☁.
+
+The **Storage** page shows how much space clips take on this computer and on Drive, per
+channel and per stream. Tick streams there to free space:
+- **Delete videos only** removes the clip videos (most of the space) and keeps summaries,
+  storyboards, frames and your questions. **Clip kept** on the stream page (or **Download it
+  again** on a clip page) brings them back.
+- **Delete streams** removes everything about them from this computer, and the channel
+  watcher won't fetch them again (add the URL by hand if you change your mind).
+
+Neither touches Google Drive.
+
 ---
 
 ## Tuning
@@ -195,6 +236,9 @@ Everything is in `config.toml`. Look at `config.example.toml` for every option.
 - **Wrong stream type:** set it per channel (dashboard or `--type`), or re-score a
   stream from its page.
 - **Clip padding:** `pre_roll_s` (default 25s), `min_clip_s`, `max_clip_s`.
+- **Time zone:** `general.timezone = "Asia/Jakarta"` shows every time in WIB (dashboard,
+  `cw` output, logs), dates new stream folders in WIB and resets the daily Claude cap at
+  WIB midnight. Empty = this computer's time zone. Times are still stored in UTC.
 
 ## Troubleshooting
 

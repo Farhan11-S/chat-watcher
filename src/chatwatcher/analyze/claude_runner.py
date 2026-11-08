@@ -2,8 +2,9 @@
 
 Never `--bare`: bare mode only accepts ANTHROPIC_API_KEY. Unless allowed in config, the
 API key variables are removed from the environment so the CLI can't bill the API.
-Claude gets one tool, Read, confined to the clip folder (to look at frames); no shell,
-no web, no user settings, MCP servers or slash commands.
+For clip analysis Claude gets one tool, Read, confined to the clip folder (to look at
+frames). Questions from the dashboard get no tools, or WebSearch only if the user ticks it.
+Never a shell, WebFetch, user settings, MCP servers or slash commands.
 """
 
 from __future__ import annotations
@@ -81,23 +82,26 @@ class ClaudeRunner:
         self.exe = exe
         self.cfg = cfg
 
-    def command(self, schema: dict[str, Any], *, system: str, allow_read: bool,
-                read_dir: Path | None) -> list[str]:
-        cmd = [
-            self.exe, "-p",
-            "--output-format", "json",
-            "--json-schema", json.dumps(schema, ensure_ascii=False),
-            "--model", self.cfg.model,
-            "--effort", self.cfg.effort,
+    def command(self, schema: dict[str, Any] | None, *, system: str, allow_read: bool = False,
+                read_dir: Path | None = None, model: str | None = None, effort: str | None = None,
+                tools: list[str] | None = None) -> list[str]:
+        """schema=None: plain-text answer. tools: extra built-in tools (e.g. WebSearch)."""
+        allowed = list(tools or []) + (["Read"] if allow_read else [])
+        cmd = [self.exe, "-p", "--output-format", "json"]
+        if schema is not None:
+            cmd += ["--json-schema", json.dumps(schema, ensure_ascii=False)]
+        cmd += [
+            "--model", model or self.cfg.model,
+            "--effort", effort or self.cfg.effort,
             "--system-prompt", system,
-            "--tools", "Read" if allow_read else "",
+            "--tools", ",".join(allowed),
             "--restricted", "--strict-mcp-config", "--disable-slash-commands",
             "--no-session-persistence", "--permission-mode", "dontAsk",
         ]
-        if allow_read:
-            cmd += ["--allowedTools", "Read"]
-            if read_dir:
-                cmd += ["--add-dir", str(read_dir)]
+        if allowed:
+            cmd += ["--allowedTools", ",".join(allowed)]
+        if allow_read and read_dir:
+            cmd += ["--add-dir", str(read_dir)]
         return cmd
 
     def auth_status(self) -> dict[str, Any]:
@@ -109,10 +113,8 @@ class ClaudeRunner:
         except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
             return {}
 
-    def run(self, prompt: str, schema: dict[str, Any], *, system: str, cwd: Path,
-            allow_read: bool = False) -> ClaudeResult:
-        cmd = self.command(schema, system=system, allow_read=allow_read,
-                           read_dir=cwd if allow_read else None)
+    def _invoke(self, cmd: list[str], prompt: str, cwd: Path) -> dict[str, Any]:
+        """Run the CLI and return its JSON result, or raise a classified ClaudeError."""
         try:
             proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace", cwd=cwd, env=_env(self.cfg),
@@ -132,7 +134,20 @@ class ClaudeRunner:
             if kind == "auth":
                 msg += " — run `claude auth login` once in a terminal."
             raise ClaudeError(f"claude: {msg[:500]}", kind=kind)
+        return out
 
+    def _result(self, data: dict[str, Any], out: dict[str, Any], model: str | None) -> ClaudeResult:
+        models = list((out.get("modelUsage") or {}).keys())
+        return ClaudeResult(data=data, model=models[0] if models else (model or self.cfg.model),
+                            duration_ms=out.get("duration_ms"), raw=out)
+
+    def run(self, prompt: str, schema: dict[str, Any], *, system: str, cwd: Path,
+            allow_read: bool = False, model: str | None = None,
+            effort: str | None = None) -> ClaudeResult:
+        """One structured answer matching `schema`. model/effort override the config."""
+        cmd = self.command(schema, system=system, allow_read=allow_read,
+                           read_dir=cwd if allow_read else None, model=model, effort=effort)
+        out = self._invoke(cmd, prompt, cwd)
         data = out.get("structured_output")
         if data is None:
             data = _json_from_text(out.get("result") or "")
@@ -141,9 +156,18 @@ class ClaudeRunner:
         missing = [k for k in schema.get("required", []) if k not in data]
         if missing:
             raise ClaudeError(f"claude output is missing {missing}", kind="bad_output")
-        models = list((out.get("modelUsage") or {}).keys())
-        return ClaudeResult(data=data, model=models[0] if models else self.cfg.model,
-                            duration_ms=out.get("duration_ms"), raw=out)
+        return self._result(data, out, model)
+
+    def ask(self, prompt: str, *, system: str, cwd: Path, model: str | None = None,
+            effort: str | None = None, web_search: bool = False) -> ClaudeResult:
+        """A plain-text answer (data = {"text": ...}). No tools, unless web_search."""
+        cmd = self.command(None, system=system, model=model, effort=effort,
+                           tools=["WebSearch"] if web_search else None)
+        out = self._invoke(cmd, prompt, cwd)
+        text = str(out.get("result") or "").strip()
+        if not text:
+            raise ClaudeError("claude returned an empty answer", kind="bad_output")
+        return self._result({"text": text}, out, model)
 
 
 def _json_from_text(text: str) -> Any:

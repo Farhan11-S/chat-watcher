@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import stage_pills, status_pill, flag %}
+{% from "_macros.html" import stage_pills, status_pill, flag, claude_picker %}
 {% block title %}{{ video.title or video.video_id }} · chat-watcher{% endblock %}
 {% block content %}
 {% set vtype = video.stream_type if video.stream_type != 'auto' else (video.detected_type or 'auto') %}
@@ -7,7 +7,7 @@
   <h1>{{ video.title or video.video_id }}</h1>
   <p class="muted" style="margin:.2rem 0 .6rem">
     {{ video.channel_title or '' }}{% if video.duration_s %} · {{ video.duration_s | ts }}{% endif %}
-    {% if video.published_at %} · {{ video.published_at[:10] }}{% endif %}
+    {% if video.published_at %} · {{ video.published_at | when }}{% endif %}
     · {{ vtype }}{% if video.message_count %} · {{ '{:,}'.format(video.message_count) }} chat messages{% endif %}
     · <a href="https://youtu.be/{{ video.video_id }}" target="_blank" rel="noopener">YouTube ↗</a>
     {% if video.drive_url and video.drive_url.startswith('https://') %} · <a href="{{ video.drive_url }}" target="_blank" rel="noopener">Google Drive ↗</a>{% elif video.drive_url %} · <span class="mono">{{ video.drive_url }}</span>{% endif %}
@@ -24,14 +24,86 @@
     <button class="small" data-copy="{{ video.output_dir }}">copy path</button></small></p>{% endif %}
 </div>
 
+{% if review %}
+{% set first = (review | selectattr('status', 'equalto', 'new') | list or review)[0] %}
+<div class="card" data-review data-video="{{ video.video_id }}">
+  <div class="review">
+    <div>
+      <div class="yt-frame"><div id="yt-player" data-start="{{ first.start | int }}"></div>
+        <p class="yt-fallback" data-yt-fallback hidden></p></div>
+      <div class="moment-strip" data-strip aria-label="Moments in stream order">
+        {%- for m in review %}
+        <button type="button" class="chip {{ m.status }}" data-goto="{{ m.id }}"
+                title="#{{ m.rank }} · {{ m.start | ts }}–{{ m.end | ts }}{% if m.worthiness %} · Claude {{ m.worthiness }}/10{% endif %}{% if m.title %} · {{ m.title }}{% endif %}">#{{ m.rank }}{% if m.kind == 'song' %}♪{% endif %} <span>{{ m.start | ts }}</span>{% if m.worthiness %} <b class="w w{{ m.worthiness }}">{{ m.worthiness }}</b>{% endif %}</button>
+        {%- endfor %}
+      </div>
+    </div>
+    <div class="review-panel" data-review-panel>
+      <div class="actions">
+        <span class="pill" data-r-rank></span><b data-r-time></b><span class="faint" data-r-len></span>
+        <span class="pill" data-r-status></span>
+      </div>
+      <h3 data-r-title></h3>
+      <div class="actions review-buttons">
+        <button type="button" class="keep" data-act="approved">✓ Keep <kbd>K</kbd></button>
+        <button type="button" class="skip" data-act="rejected">✗ Skip <kbd>S</kbd></button>
+        <button type="button" class="small" data-act="new">Undo <kbd>U</kbd></button>
+      </div>
+      <div class="actions">
+        <button type="button" class="small" data-nav="prev">◀ Prev <kbd>P</kbd></button>
+        <button type="button" class="small" data-nav="replay">↺ Replay <kbd>R</kbd></button>
+        <button type="button" class="small" data-nav="next">Next ▶ <kbd>N</kbd></button>
+        <a class="small" data-r-open href="#">clip page →</a>
+      </div>
+      <p class="muted r-summary" data-r-summary></p>
+      <p class="r-why"><b>Why it works:</b> <span data-r-whytext></span></p>
+      <details class="r-context"><summary><small>Context for a new viewer</small></summary><p class="muted" data-r-context></p></details>
+      <p class="r-meta"><small data-r-why></small><br><small class="muted" data-r-chat></small></p>
+      <form class="actions redo" data-redo-form>
+        {{ claude_picker(cfg, claude_models, efforts, cfg.claude.redo_model, cfg.claude.redo_effort) }}
+        <button class="small">↻ Analyse again</button>
+        <small class="faint" data-r-by></small>
+      </form>
+      <p class="r-redo" data-r-redo hidden></p>
+      <label class="muted auto-next"><input type="checkbox" data-auto-next checked>
+        <small>after Keep / Skip, jump to the next moment to review</small></label>
+      <div class="actions picks">
+        <label class="muted"><small>Go through them by</small>
+          <select data-order aria-label="Order for Next / Prev">
+            <option value="time">stream time</option><option value="claude">Claude's rating</option><option value="chat">chat score</option>
+          </select></label>
+      </div>
+      {% if review | selectattr('worthiness') | list %}
+      <div class="actions picks">
+        <button type="button" class="small" data-keep-picks>✓ Keep the <span data-pick-count>0</span> rated</button>
+        <select data-pick-min aria-label="Minimum Claude rating">{% for n in [9, 8, 7, 6, 5] %}<option value="{{ n }}" {{ 'selected' if n == 7 }}>{{ n }}+</option>{% endfor %}</select>
+        <small class="muted">by Claude that you haven't reviewed</small>
+      </div>
+      {% endif %}
+      <div class="review-foot">
+        <span data-r-progress></span>
+        <form method="post" action="/video/{{ video.video_id }}/clip" class="inline">
+          <button class="small primary" data-needs-kept {{ 'disabled' if not kept_all }}
+                  title="Download every moment marked ✓ Keep{{ ', then Claude analyses them' if cfg.pipeline.auto_analyze and cfg.claude.enabled }}"><span>Clip kept (<span data-kept-count>{{ kept_all }}</span>)</span></button></form>
+      </div>
+      <p class="faint" style="margin:.4rem 0 0"><small>Keys: <kbd>K</kbd> keep · <kbd>S</kbd> skip · <kbd>U</kbd> undo ·
+        <kbd>N</kbd>/<kbd>P</kbd> next/previous · <kbd>R</kbd> replay. They work when the video itself isn't focused
+        (click this panel first). Click the chart below to jump to any time.</small></p>
+    </div>
+  </div>
+  <script type="application/json" id="moments-data">{{ review | tojson }}</script>
+</div>
+{% endif %}
+
 {% if chart %}
 <div class="card">
   <h2>Moment score</h2>
   <div class="legend">
     <span><span class="sw" style="background:var(--series-1)"></span>combined chat reaction score</span>
-    <span><span class="sw" style="background:var(--moment); outline:1px solid var(--series-1)"></span>moment (click to open)</span>
+    <span><span class="sw" style="background:var(--moment); outline:1px solid var(--series-1)"></span>moment (click to play it above)</span>
     {% if vtype == 'karaoke' %}<span><span class="sw" style="background:var(--song)"></span>song ♪</span>{% endif %}
     <span>- - - minimum score {{ cfg.scoring.min_score }}</span>
+    <span class="faint">click anywhere to jump to that time</span>
   </div>
   <div class="chart-wrap" data-hover='{{ chart.hover }}'>{{ chart.svg | safe }}<div class="tooltip"></div></div>
   {% if heat %}
@@ -68,9 +140,14 @@
   <div class="actions" style="justify-content: space-between; margin-bottom:.5rem">
     <h2 style="margin:0">Moments</h2>
     <div class="actions">
-      <form method="post" action="/video/{{ video.video_id }}/clip" class="inline"><button class="small">Clip all</button></form>
-      <form method="post" action="/video/{{ video.video_id }}/analyze" class="inline"><button class="small">Analyze top {{ cfg.pipeline.analyze_top or 'all' }}</button></form>
-      {% if cfg.drive.enabled %}<form method="post" action="/video/{{ video.video_id }}/upload" class="inline"><button class="small">Upload to Drive</button></form>{% endif %}
+      <form method="post" action="/video/{{ video.video_id }}/clip" class="inline"><button class="small" data-needs-kept {{ 'disabled' if not kept_all }}
+        title="Download every moment marked ✓ Keep"><span>Clip kept (<span data-kept-count>{{ kept_all }}</span>)</span></button></form>
+      {% if cfg.drive.enabled %}
+      <form method="post" action="/video/{{ video.video_id }}/upload" class="inline"><button class="small">☁ Upload all</button></form>
+      <form method="post" action="/video/{{ video.video_id }}/upload" class="inline"><input type="hidden" name="kept_only" value="1">
+        <button class="small" data-needs-kept-clipped {{ 'disabled' if not kept }} title="Only the downloaded clips marked ✓ Keep, plus the stream digest"><span>☁ Upload kept (<span data-kept-clipped>{{ kept }}</span>)</span></button></form>
+      <a class="pill {{ 'ok' if auto_upload else '' }}" href="/settings" title="Change on the Settings page">auto-upload {{ 'on' if auto_upload else 'off' }}</a>
+      {% endif %}
       <form method="post" action="/video/{{ video.video_id }}/rescore" class="inline"
             onsubmit="return confirm('Re-scoring replaces all moments (approve/reject decisions too). Clip files already on disk are kept. Continue?')">
         <select name="stream_type">{% for t in ['auto', 'talk', 'gaming', 'karaoke'] %}<option {{ 'selected' if video.stream_type == t }}>{{ t }}</option>{% endfor %}</select>
@@ -78,20 +155,27 @@
       </form>
     </div>
   </div>
+  <form method="post" action="/video/{{ video.video_id }}/analyze" class="actions" style="margin-bottom:.6rem">
+    <small class="muted">Claude analysis:</small>
+    {{ claude_picker(cfg, claude_models, efforts) }}
+    <label class="muted"><input type="checkbox" name="redo" value="1"> <small>redo clips already analysed</small></label>
+    <button class="small">Analyze {{ 'top %d' % cfg.pipeline.analyze_top if cfg.pipeline.analyze_top else 'all clips' }}</button>
+  </form>
   {% if moments %}
   <div class="table-wrap"><table>
     <tr><th class="num">#</th><th>When</th><th class="num">Score</th><th>Why</th><th>Chat</th><th>Claude</th><th>Clip</th><th>Review</th></tr>
     {% for m in moments %}
-    <tr>
+    <tr data-row="{{ m.id }}">
       <td class="num"><a href="/moment/{{ m.id }}">#{{ m.rank }}</a>{% if m.kind == 'song' %} ♪{% endif %}</td>
-      <td><a href="/moment/{{ m.id }}">{{ m.start_s | ts }}–{{ m.end_s | ts }}</a><br><small class="muted">{{ (m.end_s - m.start_s) | int }}s</small></td>
+      <td><a href="/moment/{{ m.id }}" data-goto="{{ m.id }}" title="Play it above (Ctrl-click: open the clip page)">▶ {{ m.start_s | ts }}–{{ m.end_s | ts }}</a><br><small class="muted">{{ (m.end_s - m.start_s) | int }}s</small></td>
       <td class="num">{{ '%.2f' | format(m.score) }}</td>
       <td><small>{% for r in (m.reasons or [])[:3] %}{{ r.signal }} <span class="faint">{{ r.z }}</span>{{ ' · ' if not loop.last }}{% endfor %}</small></td>
       <td><small>{% for t, n in (m.top_messages or [])[:3] %}{{ t[:14] }}×{{ n }}{{ ', ' if not loop.last }}{% endfor %}</small></td>
-      <td>{% if m.analysis %}<small><b>{{ m.analysis.clip_worthiness }}/10</b> {{ m.analysis.category }}<br>{{ (m.analysis.titles[0].text if m.analysis.titles else '')[:60] }}</small>
+      <td data-claude-cell="{{ m.id }}">{% if m.analysis %}<small><b>{{ m.analysis.clip_worthiness }}/10</b> {{ m.analysis.category }}<br>{{ (m.analysis.titles[0].text if m.analysis.titles else '')[:60] }}</small>
           {% elif moment_jobs.get(m.id) %}<span class="pill pending">queued</span>{% else %}<span class="faint">–</span>{% endif %}</td>
-      <td>{% if m.clip_id %}<span class="pill done">{{ m.height }}p</span>{% else %}<span class="faint">–</span>{% endif %}</td>
-      <td>{{ status_pill(m.status) }}</td>
+      <td>{% if m.clip_id and not m.clip_exists %}<span class="pill" title="Deleted on the Storage page; Download it again from the clip page">video deleted</span>{% elif m.clip_id %}<span class="pill done">{{ m.height }}p</span>{% if m.uploaded_at %} <span title="on Google Drive since {{ m.uploaded_at | when }}">☁</span>{% endif %}{% else %}<span class="faint">–</span>{% endif %}</td>
+      <td class="nowrap"><span data-status-pill="{{ m.id }}">{{ status_pill(m.status) }}</span>
+        <button type="button" class="small icon keep" data-set="approved" data-moment="{{ m.id }}" title="Keep" aria-label="Keep #{{ m.rank }}">✓</button><button type="button" class="small icon skip" data-set="rejected" data-moment="{{ m.id }}" title="Skip" aria-label="Skip #{{ m.rank }}">✗</button></td>
     </tr>
     {% endfor %}
   </table></div>

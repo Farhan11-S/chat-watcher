@@ -19,8 +19,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
+from pydantic import BaseModel
 
-from chatwatcher import db, discover, jobs, store
+from chatwatcher import db, discover, jobs, prefs, storage, store
 from chatwatcher.config import Config
 from chatwatcher.ingest.ytdlp import extract_video_id
 from chatwatcher.paths import vod_files
@@ -30,6 +31,24 @@ from chatwatcher.web import charts, queries
 
 log = logging.getLogger("chatwatcher.web")
 HERE = Path(__file__).parent
+CLAUDE_MODELS = ("sonnet", "opus", "haiku")          # CLI aliases for the latest of each
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+class StatusIn(BaseModel):
+    status: str
+
+
+class RedoIn(BaseModel):
+    model: str = ""
+    effort: str = ""
+
+
+class AskIn(BaseModel):
+    question: str
+    model: str = ""
+    effort: str = ""
+    web: bool = False
 
 
 def _redirect(url: str, msg: str | None = None, error: str | None = None) -> RedirectResponse:
@@ -87,6 +106,13 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
     templates.env.filters["ts"] = lambda s: fmt_ts(s or 0)
     templates.env.filters["mb"] = lambda n: f"{(n or 0) / 1_048_576:.0f} MB"
     templates.env.filters["json"] = lambda v: Markup(json.dumps(v, ensure_ascii=False))
+    templates.env.filters["bytes"] = storage.fmt_bytes
+    # Stored times are UTC; show them in general.timezone (e.g. "2026-11-08 12:51 WIB").
+    from chatwatcher import clock
+    tz = clock.zone(cfg)
+    templates.env.filters["when"] = lambda v: clock.fmt(v, tz)
+    templates.env.filters["day"] = lambda v: clock.fmt(v, tz, date_only=True)
+    templates.env.globals["tzname"] = clock.zone_name(tz)
 
     def get_conn() -> Iterator[sqlite3.Connection]:
         # One connection per request; FastAPI may open, use and close it on different threads.
@@ -120,11 +146,24 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             login_cache["at"] = time.monotonic()
         return login_cache["notice"]
 
+    models = list(dict.fromkeys([cfg.claude.model, cfg.claude.redo_model, *CLAUDE_MODELS]))
+
+    def claude_choice(model: str, effort: str) -> dict[str, str]:
+        """Model/effort picked on a form; only known values reach the claude command line."""
+        out = {}
+        if model in models:
+            out["model"] = model
+        if effort in EFFORTS:
+            out["effort"] = effort
+        return out
+
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         ctx.setdefault("msg", request.query_params.get("msg"))
         ctx.setdefault("error", request.query_params.get("error"))
         return templates.TemplateResponse(request, name, {"worker": worker_status(), "cfg": cfg,
-                                                          "drive_login": drive_login(), **ctx})
+                                                          "drive_login": drive_login(),
+                                                          "claude_models": models, "efforts": EFFORTS,
+                                                          **ctx})
 
     # ── pages ────────────────────────────────────────────────────────────────
 
@@ -198,10 +237,16 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         if files.heatmap.is_file() and duration:
             heat = charts.heatmap_strip(json.loads(files.heatmap.read_text()), duration)
         ranks = {m["rank"]: m for m in d["moments"]}
-        return render(request, "video.html", **d, chart=chart, heat=heat, ranks=ranks)
+        kept = sum(1 for m in d["moments"] if m["status"] == "approved" and m["clip_id"])
+        kept_all = sum(1 for m in d["moments"] if m["status"] == "approved")
+        return render(request, "video.html", **d, chart=chart, heat=heat, ranks=ranks, kept=kept,
+                      kept_all=kept_all, review=_review_items(d["moments"]),
+                      auto_upload=prefs.auto_upload(cfg, conn))
 
     @app.post("/video/{video_id}/{action}")
-    def video_action(video_id: str, action: str, stream_type: str = Form("auto"), conn=Depends(get_conn)):
+    def video_action(video_id: str, action: str, stream_type: str = Form("auto"), model: str = Form(""),
+                     effort: str = Form(""), redo: str = Form(""), kept_only: str = Form(""),
+                     conn=Depends(get_conn)):
         v = store.get_video(conn, video_id)
         if v is None:
             raise HTTPException(404)
@@ -212,11 +257,31 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
                 jobs.enqueue(conn, v["id"], "ingest")
             store.upsert_video(conn, video_id, status="processing", error=None)
             return _redirect(back, msg="Queued again.")
-        if action in ("clip", "analyze", "upload"):
-            if action == "upload" and not cfg.drive.enabled:
-                return _redirect(back, error="Google Drive upload is off (drive.enabled = false in config.toml).")
-            jobs.enqueue(conn, v["id"], action)
-            return _redirect(back, msg=f"{action.capitalize()} queued.")
+        if action == "clip":
+            n = conn.execute("SELECT COUNT(*) FROM moments WHERE video_id = ? AND status = 'approved'",
+                             (v["id"],)).fetchone()[0]
+            if not n:
+                return _redirect(back, error="Mark the moments you want with ✓ Keep first.")
+            jobs.enqueue(conn, v["id"], "clip", params={"kept_only": True})
+            then = " Claude analyses them after." if cfg.pipeline.auto_analyze and cfg.claude.enabled else ""
+            return _redirect(back, msg=f"Downloading {n} kept moment(s).{then}")
+        if action == "analyze":
+            params = claude_choice(model, effort) | ({"redo": True} if redo else {})
+            jobs.enqueue(conn, v["id"], "analyze", params=params)
+            what = "Re-analysis of every clip" if redo else "Analysis"
+            return _redirect(back, msg=f"{what} queued ({params.get('model', cfg.claude.model)}, "
+                                       f"{params.get('effort', cfg.claude.effort)} effort).")
+        if action == "upload":
+            if not cfg.drive.enabled:
+                return _redirect(back, error="Google Drive isn't set up (drive.enabled = false in config.toml).")
+            if kept_only:
+                from chatwatcher.upload.drive import clip_folders
+                if not clip_folders(conn, video_id, kept_only=True):
+                    return _redirect(back, error="No downloaded clips are marked ✓ Keep yet.")
+                jobs.enqueue(conn, v["id"], "upload", params={"kept_only": True})
+                return _redirect(back, msg="Upload of the kept clips queued.")
+            jobs.enqueue(conn, v["id"], "upload")
+            return _redirect(back, msg="Upload queued.")
         if action == "rescore":
             from chatwatcher.scoring.service import ScoreError, score_video
             if stream_type in discover.STREAM_TYPES:
@@ -227,7 +292,8 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
                 return _redirect(back, error=str(e))
             if cfg.pipeline.auto_clip:
                 jobs.enqueue(conn, v["id"], "clip")
-            return _redirect(back, msg=f"Re-scored as {r.stream_type}: {len(r.moments)} moments. Clips queued.")
+            then = " Clips queued." if cfg.pipeline.auto_clip else " Review them, then press Clip kept."
+            return _redirect(back, msg=f"Re-scored as {r.stream_type}: {len(r.moments)} moments.{then}")
         raise HTTPException(400)
 
     @app.get("/moment/{pk}", response_class=HTMLResponse)
@@ -235,11 +301,74 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         d = queries.moment_detail(conn, pk)
         if d is None:
             raise HTTPException(404, "Unknown moment")
-        return render(request, "moment.html", **d)
+        from chatwatcher.analyze.ask import thread
+        return render(request, "moment.html", **d, chat=thread(conn, pk))
+
+    @app.post("/moment/{pk}/status")
+    def moment_status(pk: int, body: StatusIn, conn=Depends(get_conn)):
+        """Keep / Skip / Undo from the stream page's review panel, without a page load."""
+        if body.status not in ("approved", "rejected", "new"):
+            raise HTTPException(400)
+        m = conn.execute("SELECT video_id FROM moments WHERE id = ?", (pk,)).fetchone()
+        if m is None:
+            raise HTTPException(404)
+        conn.execute("UPDATE moments SET status = ? WHERE id = ?", (body.status, pk))
+        counts = conn.execute(
+            """SELECT SUM(m.status = 'approved') AS kept,
+                      SUM(m.status = 'approved' AND c.id IS NOT NULL) AS kept_clipped,
+                      SUM(m.status = 'new') AS to_review
+               FROM moments m LEFT JOIN clips c ON c.moment_id = m.id WHERE m.video_id = ?""",
+            (m["video_id"],)).fetchone()
+        return JSONResponse({"ok": True, "status": body.status, "kept": counts["kept"] or 0,
+                             "kept_clipped": counts["kept_clipped"] or 0, "to_review": counts["to_review"] or 0})
+
+    @app.post("/moment/{pk}/analyze")
+    def moment_redo(pk: int, body: RedoIn, conn=Depends(get_conn)):
+        """Analyse one moment again (e.g. with Opus) from the stream page's review panel."""
+        m = conn.execute("SELECT video_id FROM moments WHERE id = ?", (pk,)).fetchone()
+        if m is None:
+            raise HTTPException(404)
+        if not cfg.claude.enabled:
+            return JSONResponse({"ok": False, "error": "claude.enabled is false in config.toml."}, status_code=400)
+        params = claude_choice(body.model, body.effort)
+        jobs.enqueue(conn, m["video_id"], "analyze", moment_pk=pk, params=params)
+        ahead = conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'running') "
+                             "AND run_after <= datetime('now') AND NOT (moment_id = ? AND stage = 'analyze')",
+                             (pk,)).fetchone()[0]
+        return JSONResponse({"ok": True, "model": params.get("model", cfg.claude.model),
+                             "effort": params.get("effort", cfg.claude.effort), "ahead": ahead})
+
+    @app.get("/api/moment/{pk}")
+    def api_moment(pk: int, conn=Depends(get_conn)):
+        """The moment's latest analysis and its pending re-analysis, for the review panel."""
+        m = conn.execute("SELECT * FROM moments WHERE id = ?", (pk,)).fetchone()
+        if m is None:
+            raise HTTPException(404)
+        d = dict(m) | queries._j(m["features_json"], {})
+        d["analysis"] = queries.latest_analysis(conn, pk)
+        d["clip_id"] = None
+        job = conn.execute("SELECT status, error, message FROM jobs WHERE moment_id = ? AND stage = 'analyze'",
+                           (pk,)).fetchone()
+        return JSONResponse({"moment": _review_items([d])[0], "job": dict(job) if job else None})
+
+    @app.post("/moment/{pk}/ask")
+    def moment_ask(pk: int, body: AskIn, conn=Depends(get_conn)):
+        """Answer a follow-up question about the clip (takes 5-60 s; the page waits)."""
+        from chatwatcher.analyze.ask import AskError, ask
+        choice = claude_choice(body.model, body.effort)
+        try:
+            a = ask(cfg, conn, pk, body.question, runner=deps.claude if deps else None,
+                    web_search=body.web, **choice)
+        except AskError as e:
+            status = 404 if e.kind == "missing" else 400 if e.kind in ("error", "not_clipped", "disabled") else 503
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
+        return JSONResponse({"ok": True, "answer": a.text, "model": a.model,
+                             "tokens": a.usage.get("input", 0) + a.usage.get("cache_read", 0)
+                             + a.usage.get("cache_write", 0) + a.usage.get("output", 0)})
 
     @app.post("/moment/{pk}/{action}")
     def moment_action(pk: int, action: str, start: str = Form(""), end: str = Form(""),
-                      conn=Depends(get_conn)):
+                      model: str = Form(""), effort: str = Form(""), conn=Depends(get_conn)):
         m = conn.execute("SELECT * FROM moments WHERE id = ?", (pk,)).fetchone()
         if m is None:
             raise HTTPException(404)
@@ -260,10 +389,72 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             conn.execute("UPDATE moments SET start_s = ?, end_s = ? WHERE id = ?", (s, e, pk))
             jobs.enqueue(conn, m["video_id"], "clip", moment_pk=pk)
             return _redirect(back, msg=f"New cut {fmt_ts(s)}–{fmt_ts(e)} queued; Claude re-analyses it after.")
-        if action in ("reclip", "reanalyze"):
-            jobs.enqueue(conn, m["video_id"], "clip" if action == "reclip" else "analyze", moment_pk=pk)
+        if action == "reclip":
+            jobs.enqueue(conn, m["video_id"], "clip", moment_pk=pk)
             return _redirect(back, msg="Queued.")
+        if action == "reanalyze":
+            params = claude_choice(model, effort)
+            jobs.enqueue(conn, m["video_id"], "analyze", moment_pk=pk, params=params)
+            return _redirect(back, msg=f"Queued for {params.get('model', cfg.claude.model)} "
+                                       f"({params.get('effort', cfg.claude.effort)} effort).")
+        if action == "upload":
+            if not cfg.drive.enabled:
+                return _redirect(back, error="Google Drive isn't set up (drive.enabled = false in config.toml).")
+            jobs.enqueue(conn, m["video_id"], "upload", moment_pk=pk)
+            return _redirect(back, msg="Upload of this clip queued.")
+        if action == "clear-chat":
+            conn.execute("DELETE FROM moment_chats WHERE moment_id = ?", (pk,))
+            return _redirect(back + "#ask", msg="Conversation cleared.")
         raise HTTPException(400)
+
+    # ── storage ──────────────────────────────────────────────────────────────
+
+    drive_cache: dict[str, Any] = {"usage": None}
+    DRIVE_TTL_S = 15 * 60
+
+    def fresh_drive() -> storage.DriveUsage | None:
+        u = drive_cache["usage"]
+        return u if u is not None and time.time() - u.checked_at < DRIVE_TTL_S else None
+
+    @app.get("/storage", response_class=HTMLResponse)
+    def storage_page(request: Request, conn=Depends(get_conn)):
+        local = storage.local_usage(cfg, conn)
+        drive = fresh_drive() if cfg.drive.enabled else None
+        storage.merge(local, drive)
+        channels = sorted(local.channels, key=lambda b: -max(b.local, b.drive or 0))
+        streams = sorted(local.streams, key=lambda b: (-b.local, -(b.drive or 0)))
+        scale = max([1, *(b.local for b in channels), *((b.drive or 0) for b in channels)])
+        disk_parts = _segments([("chat-watcher", local.ours, "s1"), ("other files", local.other, "other"),
+                                ("free", local.disk_free, "free")], local.disk_total)
+        drive_parts = []
+        if drive and not drive.error and drive.total:
+            drive_parts = _segments([("chat-watcher", drive.ours, "s2"),
+                                     ("other files", drive.your_other + (drive.other or 0), "other"),
+                                     ("free", drive.free, "free")], drive.total)
+        return render(request, "storage.html", local=local, drive=drive, channels=channels, streams=streams,
+                      scale=scale, disk_parts=disk_parts, drive_parts=drive_parts, now=time.time(),
+                      drive_pending=cfg.drive.enabled and drive is None)
+
+    @app.post("/storage/delete")
+    def storage_delete(key: list[str] = Form([]), mode: str = Form(""), conn=Depends(get_conn)):
+        if mode not in ("videos", "all"):
+            raise HTTPException(400)
+        if not key:
+            return _redirect("/storage", error="Tick at least one stream first.")
+        r = storage.delete_streams(cfg, conn, key, videos_only=mode == "videos")
+        what = "clip videos of" if mode == "videos" else ""
+        msg = f"Freed {storage.fmt_bytes(r.freed)}: deleted the {what} {r.streams} stream(s)".replace("  ", " ")
+        msg += " from this computer." + (" Google Drive wasn't touched." if cfg.drive.enabled else "")
+        if r.skipped:
+            msg += " Skipped: " + "; ".join(r.skipped)
+        return _redirect("/storage", msg=msg) if r.streams else _redirect("/storage", error=msg)
+
+    @app.post("/storage/drive")
+    def storage_drive_refresh():
+        if not cfg.drive.enabled:
+            return _redirect("/storage", error="Google Drive isn't set up (drive.enabled = false in config.toml).")
+        drive_cache["usage"] = storage.drive_usage(cfg, rclone=deps.rclone if deps else None)
+        return _redirect("/storage")
 
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, conn=Depends(get_conn)):
@@ -278,12 +469,19 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         return _redirect("/jobs", msg="Queued again.")
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings(request: Request):
+    def settings(request: Request, conn=Depends(get_conn)):
         from chatwatcher.doctor import run_checks
         config = cfg.model_dump(mode="json")
         if config["youtube"].get("po_token"):
             config["youtube"]["po_token"] = "•••• (hidden)"
-        return render(request, "settings.html", checks=run_checks(cfg), config=config, source=cfg.source)
+        return render(request, "settings.html", checks=run_checks(cfg), config=config, source=cfg.source,
+                      auto_upload=prefs.auto_upload(cfg, conn))
+
+    @app.post("/settings/auto-upload")
+    def set_auto_upload(on: str = Form(""), conn=Depends(get_conn)):
+        prefs.put(conn, prefs.AUTO_UPLOAD, bool(on))
+        return _redirect("/settings", msg="Streams will be uploaded to Drive automatically." if on else
+                         "Auto-upload is off. Use the Upload buttons on a stream or clip page.")
 
     @app.get("/api/version")
     def api_version(conn=Depends(get_conn)):
@@ -300,6 +498,17 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         kind = "video/mp4" if p.suffix == ".mp4" else "video/x-matroska"
         return FileResponse(p, media_type=kind)
 
+    @app.get("/media/preview/{moment_id}/{name}")
+    def media_preview_frame(moment_id: int, name: str, conn=Depends(get_conn)):
+        p_row = conn.execute("SELECT folder FROM previews WHERE moment_id = ?", (moment_id,)).fetchone()
+        if not p_row:
+            raise HTTPException(404)
+        frames = (Path(p_row["folder"]) / "frames").resolve()
+        p = (frames / name).resolve()
+        if p.parent != frames or p.suffix != ".jpg" or not p.is_file():
+            raise HTTPException(404)
+        return FileResponse(p, media_type="image/jpeg")
+
     @app.get("/media/frame/{clip_id}/{name}")
     def media_frame(clip_id: int, name: str, conn=Depends(get_conn)):
         c = conn.execute("SELECT folder FROM clips WHERE id = ?", (clip_id,)).fetchone()
@@ -312,6 +521,37 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         return FileResponse(p, media_type="image/jpeg")
 
     return app
+
+
+def _review_items(moments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What the stream page's player panel needs per moment, in stream order."""
+    out = []
+    for m in sorted(moments, key=lambda m: m["start_s"]):
+        a = m.get("analysis") or {}
+        out.append({
+            "id": m["id"], "rank": m["rank"], "start": m["start_s"], "end": m["end_s"], "peak": m["peak_s"],
+            "status": m["status"], "kind": m["kind"], "score": round(m["score"], 2),
+            "reasons": [r["signal"] for r in (m.get("reasons") or [])[:4]],
+            "chat": [[t, n] for t, n in (m.get("top_messages") or [])[:5]],
+            "title": (a.get("titles") or [{}])[0].get("text", ""), "summary": a.get("summary", ""),
+            "why": a.get("why_it_works", ""), "context": a.get("context", ""),
+            "worthiness": a.get("clip_worthiness"), "category": a.get("category"),
+            "model": a.get("model"), "effort": (a.get("_meta") or {}).get("effort"),
+            "analysed_at": a.get("created_at"), "aid": a.get("_id"),
+            "clipped": bool(m.get("clip_id")),
+        })
+    return out
+
+
+def _segments(parts: list[tuple[str, int | None, str]], total: int) -> list[dict[str, Any]]:
+    """Blocks of a segmented bar; zero-sized parts draw nothing."""
+    out = []
+    for name, value, cls in parts:
+        if value and value > 0 and total:
+            share = value / total
+            out.append({"name": name, "value": value, "cls": cls, "pct": share * 100,
+                        "label": f"{share * 100:.0f}%" if share >= 0.12 else ""})
+    return out
 
 
 def _parse_ts(text: str) -> float:

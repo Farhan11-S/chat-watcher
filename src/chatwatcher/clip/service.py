@@ -91,7 +91,12 @@ def clip_video(
         raise ClipError(f"No moments to clip for {video_id}. Run `cw score {video_id}` first.")
 
     info = json.loads(files.info.read_text(encoding="utf-8"))
-    out_dir = video_dir(cfg.paths.output_dir, info, video_id)
+    # Keep a stream's folder once it exists, even if its title or the time zone changes.
+    if row["output_dir"] and Path(row["output_dir"]).is_dir():
+        out_dir = Path(row["output_dir"])
+    else:
+        from chatwatcher.clock import zone
+        out_dir = video_dir(cfg.paths.output_dir, info, video_id, zone(cfg))
     out_dir.mkdir(parents=True, exist_ok=True)
     store.upsert_video(conn, video_id, output_dir=str(out_dir))
     run = ClipRun(video_id=video_id, output_dir=out_dir)
@@ -155,7 +160,9 @@ def clip_video(
                     event(m["rank"], f"failed: {str(e).strip().splitlines()[0][:150]}")
                 else:
                     _save_clip(conn, m, outcome)
-                    event(m["rank"], "done")
+                    from chatwatcher.analyze.service import carry_analysis
+                    reused = carry_analysis(conn, m["id"], outcome.folder)
+                    event(m["rank"], "done" + (" (kept Claude's analysis from the preview)" if reused else ""))
                 run.outcomes.append(outcome)
     finally:
         shutil.rmtree(files.downloads, ignore_errors=True)  # holds signed, expiring URLs

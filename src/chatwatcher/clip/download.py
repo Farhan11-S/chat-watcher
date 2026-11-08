@@ -51,10 +51,19 @@ class ClipFile:
         return round(stream_s - self.zero_s, 3)
 
 
+def preview_attempts(height: int) -> list[tuple[str, str]]:
+    """Low-res, video-only first (Claude reads captions, not audio); never full quality."""
+    return [(f"bv*[height<={height}]", f"res:{height},+br"),
+            (f"b[height<={height}]", f"res:{height},+br"),
+            ("wv*", "+res,+br")]
+
+
 def download_clip(yt: YtDlp, info_json: Path, start_s: float, end_s: float, dest_stem: Path,
-                  cfg: ClipConfig, *, on_line: LineFn | None = None) -> ClipFile:
+                  cfg: ClipConfig, *, on_line: LineFn | None = None,
+                  attempts: list[tuple[str, str]] | None = None) -> ClipFile:
     """Download [start_s, end_s] into dest_stem.<mp4|mkv>. info_json is a full yt-dlp -J
-    dump (reused so each clip doesn't re-fetch the watch page)."""
+    dump (reused so each clip doesn't re-fetch the watch page). attempts: (format, sort)
+    pairs to try instead of the configured best-quality ones."""
     if end_s <= start_s:
         raise ValueError(f"Bad range {start_s}-{end_s}")
     tmp = dest_stem.parent / f".dl_{dest_stem.name}"
@@ -71,7 +80,7 @@ def download_clip(yt: YtDlp, info_json: Path, start_s: float, end_s: float, dest
     try:
         raw = None
         errors: list[str] = []
-        for fmt, sort in _attempts(cfg):
+        for fmt, sort in attempts or _attempts(cfg):
             for old in tmp.iterdir():
                 old.unlink()
             try:

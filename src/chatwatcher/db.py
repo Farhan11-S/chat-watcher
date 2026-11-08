@@ -152,6 +152,38 @@ MIGRATIONS: list[str] = [
         seen_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    # 6 — per-job options, per-clip Drive uploads, and Q&A with Claude about a moment
+    """
+    ALTER TABLE jobs ADD COLUMN params_json TEXT;          -- e.g. {"model": "opus", "effort": "high"}
+    ALTER TABLE clips ADD COLUMN uploaded_at TEXT;         -- when this clip's folder last went to Drive
+
+    CREATE TABLE moment_chats (
+        id          INTEGER PRIMARY KEY,
+        moment_id   INTEGER NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+        role        TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        text        TEXT NOT NULL,
+        model       TEXT,
+        usage_json  TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_moment_chats ON moment_chats(moment_id, id);
+
+    -- Streams uploaded before this version: their clips are on Drive already.
+    UPDATE clips SET uploaded_at = datetime('now') WHERE moment_id IN (
+        SELECT m.id FROM moments m JOIN videos v ON v.id = m.video_id WHERE v.drive_url IS NOT NULL);
+    """,
+    # 7 — low-res previews: frames + text for Claude, made for every moment before you review
+    """
+    CREATE TABLE previews (
+        moment_id    INTEGER PRIMARY KEY REFERENCES moments(id) ON DELETE CASCADE,
+        folder       TEXT NOT NULL,                     -- data/vods/<id>/previews/<NN_label>/
+        zero_s       REAL NOT NULL,                     -- stream time at preview time 0
+        duration_s   REAL NOT NULL,
+        height       INTEGER,
+        frames_json  TEXT NOT NULL DEFAULT '[]',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

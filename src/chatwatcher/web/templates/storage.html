@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}Storage · chat-watcher{% endblock %}
+{% block autorefresh %}0{% endblock %}
+{% macro segbar(parts, label) -%}
+<div class="segbar" role="img" aria-label="{{ label }}: {% for p in parts %}{{ p.name }} {{ p.value | bytes }} ({{ '%.1f' | format(p.pct) }}%){{ ', ' if not loop.last }}{% endfor %}">
+  {%- for p in parts %}
+  <span class="seg {{ p.cls }}" style="flex: {{ p.pct }} 1 0" tabindex="0"
+        data-tip="{{ p.name }} · {{ p.value | bytes }} ({{ '%.1f' | format(p.pct) }}%)">{{ p.label }}</span>
+  {%- endfor %}
+</div>
+<div class="legend">
+  {%- for p in parts %}<span><span class="sw seg-{{ p.cls }}"></span>{{ p.name }}</span>{% endfor -%}
+</div>
+{%- endmacro %}
+{% block content %}
+<div class="tiles">
+  <div class="tile"><div class="n">{{ local.disk_free | bytes }}</div><div class="l">free on this disk (of {{ local.disk_total | bytes }})</div></div>
+  <div class="tile"><div class="n">{{ local.ours | bytes }}</div><div class="l">chat-watcher on this disk</div></div>
+  {% if cfg.drive.enabled %}
+  <div class="tile"><div class="n">{{ (drive.ours if drive and not drive.error else none) | bytes }}</div><div class="l">chat-watcher on Google Drive</div></div>
+  <div class="tile"><div class="n">{{ (drive.free if drive and not drive.error else none) | bytes }}</div><div class="l">free on Google Drive</div></div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>This computer</h2>
+  {{ segbar(disk_parts, "Disk space") }}
+  <p class="muted" style="margin:.5rem 0 0"><small>
+    chat-watcher: {{ local.clip_bytes | bytes }} of clips, {{ (local.output_bytes - local.clip_bytes) | bytes }} of frames, storyboards and text
+    (<span class="mono">{{ cfg.paths.output_dir }}</span>), and {{ local.data_bytes | bytes }} of chat, captions and the database
+    (<span class="mono">{{ cfg.paths.data_dir }}</span>{% if not local.data_on_same_disk %}, on another disk{% endif %}).
+  </small></p>
+</div>
+
+{% if cfg.drive.enabled %}
+<div class="card">
+  <div class="actions" style="justify-content: space-between">
+    <h2 style="margin:0">Google Drive</h2>
+    <form method="post" action="/storage/drive" class="inline"><button class="small">↻ Check again</button></form>
+  </div>
+  {% if drive_pending %}
+  <p class="muted" data-drive-refresh>Asking Google Drive… (a few seconds)</p>
+  {% elif drive.error %}
+  <div class="flash err" style="margin:.6rem 0 0">{{ drive.error }}</div>
+  {% else %}
+  <div style="margin-top:.6rem">
+  {% if drive_parts %}{{ segbar(drive_parts, "Google Drive space") }}{% endif %}
+  </div>
+  <p class="muted" style="margin:.5rem 0 0"><small>
+    chat-watcher: {{ drive.ours | bytes }} in {{ '{:,}'.format(drive.files) }} files under <span class="mono">{{ cfg.drive.remote }}:{{ cfg.drive.folder }}</span>.
+    Other files: {{ drive.your_other | bytes }} of your other Drive files{% if drive.other %} and {{ drive.other | bytes }} in Gmail, Photos and the rest of the account{% endif %}.
+    {% if drive.trashed %}Trash holds {{ drive.trashed | bytes }}.{% endif %}
+    {% if not drive.total %}This account reports no storage limit.{% endif %}
+    Checked {{ ((now - drive.checked_at) / 60) | int }} min ago.
+  </small></p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>By channel</h2>
+  {% if channels %}
+  {% set show_drive = drive and not drive.error %}
+  {% if show_drive %}
+  <div class="legend"><span><span class="sw seg-s1"></span>on this computer</span><span><span class="sw seg-s2"></span>on Google Drive</span></div>
+  {% endif %}
+  <div class="hbars">
+    {% for c in channels %}
+    <div class="hb-row">
+      <div class="hb-label">{{ c.label }}</div>
+      <div class="hb-bars">
+        <div class="hb-line"><span class="hb s1{{ ' zero' if not c.local }}" style="width: calc((100% - 5.5rem) * {{ c.local / scale }})" tabindex="0"
+             data-tip="{{ c.label }} · on this computer · {{ c.local | bytes }}"></span><span class="hb-val">{{ c.local | bytes if c.local else 'none here' }}</span></div>
+        {% if show_drive %}
+        <div class="hb-line"><span class="hb s2{{ ' zero' if not c.drive }}" style="width: calc((100% - 5.5rem) * {{ (c.drive or 0) / scale }})" tabindex="0"
+             data-tip="{{ c.label }} · on Google Drive · {{ (c.drive or 0) | bytes }}"></span><span class="hb-val">{{ c.drive | bytes if c.drive else 'not on Drive' }}</span></div>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">Nothing clipped yet.</p>
+  {% endif %}
+</div>
+
+{% set drive_known = drive and not drive.error %}
+{% set local_streams = streams | selectattr('local') | list %}
+{% set drive_only = streams | rejectattr('local') | list %}
+<div class="card">
+  <h2>Streams on this computer</h2>
+  {% if local_streams %}
+  <p class="faint" style="margin:-.4rem 0 .6rem"><small>Tick streams to free space on this computer.
+    <b>Delete videos only</b> removes the clip videos and keeps summaries, storyboards, frames and your questions; download
+    them again any time with <b>Clip kept</b> (stream page) or <b>Download it again</b> (clip page). <b>Delete streams</b> removes everything, and the channel watcher won't fetch
+    them again.{% if cfg.drive.enabled %} Google Drive copies are never touched.{% endif %}</small></p>
+  <form method="post" action="/storage/delete" data-delete-form data-drive="{{ 1 if cfg.drive.enabled else 0 }}">
+    <div class="actions delete-bar">
+      <span class="muted" data-selection>Nothing selected</span>
+      <span style="flex:1"></span>
+      <button class="small" name="mode" value="videos" disabled data-needs-selection>Delete videos only</button>
+      <button class="small danger" name="mode" value="all" disabled data-needs-selection>Delete streams</button>
+    </div>
+    <div class="table-wrap"><table>
+      <tr><th style="width:2rem"><input type="checkbox" data-select-all aria-label="Select all streams"></th>
+        <th>Stream</th><th class="num">Clip videos</th><th class="num">On this computer</th>{% if cfg.drive.enabled %}<th class="num">On Google Drive</th>{% endif %}</tr>
+      {% for s in local_streams %}
+      {% set on_drive = (s.drive or 0) > 0 if drive_known else (s.drive_url is not none) %}
+      <tr>
+        <td><input type="checkbox" name="key" value="{{ s.key }}" aria-label="Select {{ s.label }}"
+              data-size="{{ s.local }}" data-clips="{{ s.clips }}" data-on-drive="{{ 1 if on_drive else 0 }}"></td>
+        <td>{% if s.video_id %}<a href="/video/{{ s.video_id }}">{{ s.label }}</a>{% else %}{{ s.label }}{% endif %}<br>
+          <small class="muted">{{ (channels | selectattr('key', 'equalto', s.channel) | map(attribute='label') | first) or s.channel }}</small></td>
+        <td class="num">{{ s.clips | bytes if s.clips else '–' }}</td>
+        <td class="num">{{ s.local | bytes }}</td>
+        {% if cfg.drive.enabled %}<td class="num">{% if drive_known %}{{ s.drive | bytes if s.drive else 'not on Drive' }}{% elif s.drive_url %}☁ uploaded{% else %}–{% endif %}</td>{% endif %}
+      </tr>
+      {% endfor %}
+    </table></div>
+  </form>
+  {% else %}
+  <p class="empty">Nothing from chat-watcher takes space on this computer right now{% if local.data_bytes %}
+    (apart from {{ local.data_bytes | bytes }} of database and chat data){% endif %}.</p>
+  {% endif %}
+</div>
+
+{% if drive_only %}
+<div class="card">
+  <h2>Only on Google Drive <small class="muted">· {{ drive_only | length }} stream{{ 's' if drive_only | length != 1 }},
+    {{ drive_only | sum(attribute='drive') | bytes }}</small></h2>
+  <p class="faint" style="margin:-.4rem 0 .6rem"><small>Deleted from this computer (or uploaded from another one). chat-watcher
+    never deletes anything on Drive; remove these in Google Drive if you don't need them.</small></p>
+  <div class="table-wrap"><table>
+    <tr><th>Stream</th><th class="num">On Google Drive</th></tr>
+    {% for s in drive_only %}
+    <tr>
+      <td>{{ s.label }}{% if s.youtube_id %} <a href="https://youtu.be/{{ s.youtube_id }}" target="_blank" rel="noopener">YouTube ↗</a>{% endif %}<br>
+        <small class="muted">{{ (channels | selectattr('key', 'equalto', s.channel) | map(attribute='label') | first) or s.channel }}</small></td>
+      <td class="num">{{ s.drive | bytes }}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+</div>
+{% endif %}
+{% endblock %}

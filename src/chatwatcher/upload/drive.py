@@ -104,6 +104,28 @@ class Rclone:
                            "(https://rclone.org/drive/#making-your-own-client-id) to keep uploads working")
         return notices
 
+    def about(self) -> dict[str, int]:
+        """Account storage: total, used, trashed, other (Gmail, Photos…), free — in bytes."""
+        try:
+            data = json.loads(self._run(["about", f"{self.remote}:", "--json"], timeout=60) or "{}")
+        except json.JSONDecodeError as e:
+            raise RcloneError("rclone about returned something unexpected") from e
+        return {k: int(v) for k, v in data.items() if isinstance(v, (int, float))}
+
+    def list_files(self, path: str) -> list[dict]:
+        """Every file under remote:path (Path relative to it, Size). Empty if it doesn't exist."""
+        try:
+            out = self._run(["lsjson", "-R", "--files-only", "--fast-list", "--no-modtime", "--no-mimetype",
+                             f"{self.remote}:{path}"], timeout=300)
+        except RcloneError as e:
+            if re.search(r"directory not found|not found", str(e), re.I) and e.kind == "error":
+                return []
+            raise
+        try:
+            return json.loads(out or "[]")
+        except json.JSONDecodeError as e:
+            raise RcloneError("rclone lsjson returned something unexpected") from e
+
     def login_fingerprint(self) -> str | None:
         """A short hash of the remote's refresh token. It changes when you sign in again
         (`rclone config reconnect`), so we can tell when the current sign-in started."""
@@ -115,13 +137,24 @@ class Rclone:
         return hashlib.sha256(token.encode()).hexdigest()[:16] if token else None
 
     def copy(self, local_dir: Path, dest_path: str, *, on_line: LineFn | None = None,
-             timeout: float = 4 * 3600) -> str:
-        """rclone copy local_dir → remote:dest_path. Returns rclone's last stats line."""
+             only: list[str] | None = None, timeout: float = 4 * 3600) -> str:
+        """rclone copy local_dir → remote:dest_path. Returns rclone's last stats line.
+
+        only: copy just these sub-folders of local_dir (plus the files directly in it,
+        e.g. the stream digest)."""
         cmd = [self.exe, "copy", str(local_dir), f"{self.remote}:{dest_path}",
                "--transfers", str(self.cfg.transfers), "--stats", "15s", "--stats-one-line",
                "--stats-log-level", "NOTICE"]
-        for pattern in _EXCLUDES:
-            cmd += ["--exclude", pattern]
+        if only is None:
+            for pattern in _EXCLUDES:
+                cmd += ["--exclude", pattern]
+        else:
+            # rclone wants one ordered --filter list (first match wins) instead of mixing
+            # --include and --exclude.
+            rules = [f"- {p}" for p in _EXCLUDES] + ["+ /*"]
+            rules += [f"+ /{_glob_escape(name)}/**" for name in only] + ["- **"]
+            for rule in rules:
+                cmd += ["--filter", rule]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                 encoding="utf-8", errors="replace", bufsize=1)
         timed_out = threading.Event()
@@ -176,6 +209,23 @@ class UploadError(Exception):
         self.kind = kind
 
 
+def _glob_escape(name: str) -> str:
+    """Folder names can contain glob characters (e.g. [ ] from stream titles)."""
+    return re.sub(r"([\\*?\[\]{}])", r"\\\1", name)
+
+
+def clip_folders(conn: sqlite3.Connection, video_id: str, *, ranks: list[int] | None = None,
+                 kept_only: bool = False) -> list[str]:
+    """Names of the downloaded clip folders to upload: some ranks, or the ones marked Keep."""
+    rows = conn.execute(
+        """SELECT m.rank, m.status, c.folder FROM moments m JOIN clips c ON c.moment_id = m.id
+           JOIN videos v ON v.id = m.video_id WHERE v.video_id = ? ORDER BY m.rank""",
+        (video_id,)).fetchall()
+    return [Path(r["folder"]).name for r in rows
+            if r["folder"] and Path(r["folder"]).is_dir()
+            and (not ranks or r["rank"] in ranks) and (not kept_only or r["status"] == "approved")]
+
+
 @dataclass
 class UploadResult:
     video_id: str
@@ -195,7 +245,10 @@ def dest_path_for(cfg: Config, out_dir: Path) -> str:
 
 
 def upload_video(cfg: Config, conn: sqlite3.Connection, url_or_id: str, *,
-                 rclone: Rclone | None = None, on_line: LineFn | None = None) -> UploadResult:
+                 rclone: Rclone | None = None, on_line: LineFn | None = None,
+                 folders: list[str] | None = None) -> UploadResult:
+    """Copy the stream's output folder to Drive. folders: only these clip folders (and the
+    stream-level files next to them)."""
     try:
         video_id = extract_video_id(url_or_id)
     except ValueError as e:
@@ -209,9 +262,14 @@ def upload_video(cfg: Config, conn: sqlite3.Connection, url_or_id: str, *,
     try:
         rc = rclone or Rclone(cfg.drive)
         dest = dest_path_for(cfg, out_dir)
-        stats = rc.copy(out_dir, dest, on_line=on_line)
+        stats = rc.copy(out_dir, dest, on_line=on_line, only=folders)
         url = rc.folder_link(dest)
     except RcloneError as e:
         raise UploadError(str(e), kind=e.kind) from e
     store.upsert_video(conn, video_id, drive_url=url)
+    for c in conn.execute("SELECT c.id, c.folder FROM clips c JOIN moments m ON m.id = c.moment_id "
+                          "WHERE m.video_id = ?", (v["id"],)).fetchall():
+        name = Path(c["folder"]).name if c["folder"] else None
+        if name and (out_dir / name).is_dir() and (folders is None or name in folders):
+            conn.execute("UPDATE clips SET uploaded_at = datetime('now') WHERE id = ?", (c["id"],))
     return UploadResult(video_id=video_id, local_dir=out_dir, dest=f"{rc.remote}:{dest}", url=url, stats=stats)

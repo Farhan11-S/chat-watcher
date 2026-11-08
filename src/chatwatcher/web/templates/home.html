@@ -31,7 +31,7 @@
       <td><a href="/video/{{ v.video_id }}">{{ v.title or v.video_id }}</a><br>
         <small>{{ v.channel_title or '' }}{% if v.duration_s %} · {{ v.duration_s | ts }}{% endif %}{% if v.detected_type %} · {{ v.stream_type if v.stream_type != 'auto' else v.detected_type }}{% endif %}</small></td>
       <td>{{ stage_pills(v.stages) }}</td>
-      <td class="num">{{ v.n_moments }}</td>
+      <td class="num">{{ v.n_moments }}{% if v.n_moments %}<br><small class="muted" title="kept · skipped · still to review">{{ v.n_kept }} ✓ · {{ v.n_skipped }} ✗{% if v.n_moments - v.n_kept - v.n_skipped %} · <b>{{ v.n_moments - v.n_kept - v.n_skipped }} to review</b>{% endif %}</small>{% endif %}</td>
       <td class="num">{{ v.n_clips }}</td>
       <td class="num">{{ v.n_analyses }}</td>
       <td>{{ status_pill(v.status) }}{% if v.error %}<br><small class="faint">{{ v.error[:90] }}</small>{% endif %}</td>
@@ -51,7 +51,7 @@
     <tr><td>{{ status_pill(j.status) }}</td>
       <td><a href="/video/{{ j.yt_id }}">{{ (j.title or j.yt_id)[:70] }}</a></td>
       <td>{{ j.stage }}{% if j.moment_rank %} #{{ j.moment_rank }}{% endif %}</td>
-      <td><small class="muted">{% if j.status == 'pending' %}at {{ j.run_after }} UTC{% endif %} {{ (j.error or '')[:100] }}</small></td></tr>
+      <td><small class="muted">{% if j.status == 'pending' %}at {{ j.run_after | when }}{% endif %} {{ (j.error or '')[:100] }}</small></td></tr>
     {% endfor %}
   </table>
 </div>

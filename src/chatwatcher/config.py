@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ENV_CONFIG = "CHATWATCHER_CONFIG"
 DEFAULT_CONFIG_FILE = "config.toml"
@@ -23,6 +23,23 @@ DEFAULT_CONFIG_FILE = "config.toml"
 class _Section(BaseModel):
     # Reject unknown keys so typos in config.toml fail loudly.
     model_config = ConfigDict(extra="forbid")
+
+
+class GeneralConfig(_Section):
+    # Time zone for every time shown (dashboard, `cw` output, logs), folder dates and the
+    # daily Claude cap. IANA name, e.g. "Asia/Jakarta" (WIB). Empty = this computer's.
+    timezone: str = ""
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, v: str) -> str:
+        if v.strip():
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+            try:
+                ZoneInfo(v.strip())
+            except (ZoneInfoNotFoundError, ValueError) as e:
+                raise ValueError(f"unknown time zone {v!r}; use a name like 'Asia/Jakarta'") from e
+        return v.strip()
 
 
 class PathsConfig(_Section):
@@ -56,7 +73,10 @@ class PipelineConfig(_Section):
     auto_clip: bool = True
     auto_analyze: bool = True
     clip_top: int = Field(0, ge=0)       # clip the best N moments (0 = all scored)
-    analyze_top: int = Field(5, ge=0)    # Claude-analyse the best N clips (0 = all); saves plan usage
+    analyze_top: int = Field(0, ge=0)    # Claude-analyse the best N moments (0 = all)
+    # Moments that aren't downloaded get a low-res, video-only preview so Claude can look at
+    # them before you decide (only the frames are kept). 0 = analyse downloaded clips only.
+    preview_height: int = Field(360, ge=0, le=1080)
 
 
 class ScoringConfig(_Section):
@@ -93,8 +113,11 @@ class ClaudeConfig(_Section):
     """Summaries and storyboards via the `claude` CLI, i.e. your Claude subscription."""
     enabled: bool = True
     cli_path: str = "claude"
-    model: str = "opus"           # CLI alias for the latest model; "sonnet" stretches usage limits
-    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    model: str = "sonnet"         # CLI alias for the latest model; pick another per clip on the dashboard
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    # What "Analyse again" on one moment offers first: a stronger model for the ones that matter.
+    redo_model: str = "opus"
+    redo_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     daily_moment_cap: int = Field(40, ge=0)   # max moment analyses per day (0 = no cap)
     timeout_s: int = Field(600, ge=30)
     output_language: str = "English"          # summaries, storyboard, translations
@@ -120,6 +143,7 @@ class WebConfig(_Section):
 
 
 class Config(_Section):
+    general: GeneralConfig = Field(default_factory=GeneralConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     youtube: YouTubeConfig = Field(default_factory=YouTubeConfig)
     discover: DiscoverConfig = Field(default_factory=DiscoverConfig)

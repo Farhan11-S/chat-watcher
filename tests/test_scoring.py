@@ -127,7 +127,10 @@ def test_sentences_merge_broken_lines():
             Segment(3, 5, "曲なんだけど。"), Segment(8, 9, "次の話")]
     out = sentences(segs)
     assert [(s.start, s.end) for s in out] == [(0, 5), (8, 9)]
-    assert out[0].text.endswith("曲なんだけど。")
+    assert out[0].text.endswith("曲なんだけど。") and "作られた曲" in out[0].text
+    en = sentences([Segment(0, 2, "I hope you guys are going to"), Segment(2, 4, "go watch it."),
+                    Segment(4, 5, "Can"), Segment(5, 6, "you believe it?"), Segment(6, 7, "草"), Segment(7, 8, "w")])
+    assert [s.text for s in en] == ["I hope you guys are going to go watch it.", "Can you believe it?", "草w"]
 
 
 def test_snap():
