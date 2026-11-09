@@ -2,8 +2,8 @@
 # Relative paths are resolved from this file's folder.
 
 [general]
-timezone = ""          # e.g. "Asia/Jakarta" (WIB) for every time shown, folder dates and the daily
-                       # Claude cap; empty = this computer's time zone
+timezone = ""          # e.g. "Asia/Jakarta" (WIB) for every time shown and folder dates;
+                       # empty = this computer's time zone
 
 [paths]
 data_dir = "data"      # database, raw chat, captions, heatmap
@@ -55,6 +55,27 @@ merge_output_format = "mp4/mkv"
 max_concurrent = 2
 frames_per_clip = 8
 
+[edit]                         # the dashboard editor's "Render edit"
+crf = 18                       # x264 quality: lower = better and bigger; 17-20 looks lossless
+preset = "veryfast"            # x264 speed: ultrafast … veryslow (slower = smaller file, same look)
+audio_bitrate = "192k"
+loudness_lufs = -14.0          # YouTube plays at -14 LUFS; 0 = leave the loudness as is
+fade_ms = 30                   # tiny audio fade at every cut so cuts don't click
+snap_s = 1.5                   # how far Claude's cut points may move to land in a pause
+
+[transcribe]                   # Whisper speech to text on each downloaded clip (pip install faster-whisper)
+enabled = true
+auto = true                    # after each clip downloads; false = only the editor's 🎙 button
+model = "large-v3-turbo"       # or "small": about a third faster, more misheard words
+language = ""                  # "" = detect per line (mixed English/Indonesian is fine); or "en", "id", "ja"
+threads = 0                    # CPU threads; 0 = all
+
+[subtitles]                    # burned into the editor's render, from Whisper's word timings
+on = true                      # for new edits (karaoke clips start off); each edit has its own switch
+size = "normal"                # small | normal | large
+position = "bottom"            # bottom | top
+font = "Noto Sans CJK JP"      # any installed font; this one also has Japanese
+
 [claude]
 enabled = true
 cli_path = "claude"            # uses your Claude subscription login (`claude auth login`); never --bare
@@ -62,7 +83,8 @@ model = "sonnet"               # default for every clip; the dashboard can redo 
 effort = "low"                 # low | medium | high | xhigh | max (more = deeper, uses more of your plan)
 redo_model = "opus"            # what "Analyse again" on one moment picks first
 redo_effort = "medium"
-daily_moment_cap = 40          # max moment analyses per day (0 = no cap)
+moment_cap = 50                # max moment analyses in any 5 hours (0 = no cap); extra clips
+moment_cap_hours = 5           # wait until the oldest one in the window is older than this
 timeout_s = 600
 output_language = "English"    # summaries, storyboards, caption translations
 title_languages = ["ja", "en"]

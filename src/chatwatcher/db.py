@@ -184,6 +184,117 @@ MIGRATIONS: list[str] = [
         created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    # 8 — the dashboard editor: your cut of each clip, and a 'render' job to make it.
+    # SQLite can't change a CHECK, so the jobs table is rebuilt with the new stage.
+    """
+    CREATE TABLE edits (
+        moment_id        INTEGER PRIMARY KEY REFERENCES moments(id) ON DELETE CASCADE,
+        segments_json    TEXT NOT NULL,       -- [[start_s, end_s, gain_db], …] stream time, play order
+        source           TEXT,                -- what you started from: long | short | whole
+        proposed_json    TEXT,                -- Claude's cut when you started (to compare with yours)
+        rendered_json    TEXT,                -- the segments edit.mp4 was made from
+        render_progress  REAL,                -- 0..1 while rendering
+        rendered_at      TEXT,
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE jobs_new (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id   INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        stage       TEXT NOT NULL
+                    CHECK (stage IN ('ingest','score','clip','frames','analyze','digest','upload','render')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        run_after   TEXT NOT NULL DEFAULT (datetime('now')),
+        error       TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at  TEXT,
+        finished_at TEXT,
+        message     TEXT,
+        params_json TEXT
+    );
+    INSERT INTO jobs_new (id, video_id, moment_id, stage, status, attempts, run_after, error,
+                          created_at, updated_at, started_at, finished_at, message, params_json)
+        SELECT id, video_id, moment_id, stage, status, attempts, run_after, error,
+               created_at, updated_at, started_at, finished_at, message, params_json FROM jobs;
+    DROP TABLE jobs;
+    ALTER TABLE jobs_new RENAME TO jobs;
+    CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
+    CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
+    """,
+    # 9 — sound effects: your library, and the effects placed in each edit
+    """
+    CREATE TABLE sounds (
+        id           TEXT PRIMARY KEY,                -- short name Claude uses, e.g. 'faaah'
+        name         TEXT NOT NULL,
+        description  TEXT NOT NULL DEFAULT '',        -- when to use it (Claude reads this)
+        tags         TEXT NOT NULL DEFAULT '',
+        source       TEXT NOT NULL DEFAULT '',        -- where it's from, and its license
+        file         TEXT NOT NULL,                   -- under data/sounds/
+        duration_s   REAL NOT NULL,
+        gain_db      REAL NOT NULL DEFAULT 0,         -- volume when placed (0 = about her voice)
+        original     TEXT,                            -- the uploaded file's name
+        added_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    ALTER TABLE edits ADD COLUMN effects_json TEXT NOT NULL DEFAULT '[]';   -- stream time, like segments
+    """,
+    # 10 — named boxes on the picture (e.g. "face") that zoom effects aim at, drawn once per channel
+    """
+    CREATE TABLE regions (
+        scope       TEXT NOT NULL,                    -- 'channel:<UC id>', or 'video:<id>' without a channel
+        name        TEXT NOT NULL,                    -- 'face', 'game', …
+        x REAL NOT NULL, y REAL NOT NULL,             -- top left, as fractions of the frame
+        w REAL NOT NULL, h REAL NOT NULL,
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (scope, name)
+    );
+    """,
+    # 11 — a 'transcribe' job: Whisper speech to text on each downloaded clip (jobs rebuilt
+    # for the new stage, as in 8)
+    """
+    CREATE TABLE jobs_new (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id   INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        stage       TEXT NOT NULL
+                    CHECK (stage IN ('ingest','score','clip','transcribe','frames','analyze','digest','upload','render')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        run_after   TEXT NOT NULL DEFAULT (datetime('now')),
+        error       TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at  TEXT,
+        finished_at TEXT,
+        message     TEXT,
+        params_json TEXT
+    );
+    INSERT INTO jobs_new (id, video_id, moment_id, stage, status, attempts, run_after, error,
+                          created_at, updated_at, started_at, finished_at, message, params_json)
+        SELECT id, video_id, moment_id, stage, status, attempts, run_after, error,
+               created_at, updated_at, started_at, finished_at, message, params_json FROM jobs;
+    DROP TABLE jobs;
+    ALTER TABLE jobs_new RENAME TO jobs;
+    CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
+    CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
+    """,
+    # 12 — subtitles: your edited lines (stream time; NULL = built from Whisper's words) and their style
+    """
+    ALTER TABLE edits ADD COLUMN subs_json TEXT;
+    ALTER TABLE edits ADD COLUMN subs_style_json TEXT;
+    """,
+    # 13 — names Claude must spell right in subtitles (VTubers, games, catchphrases), per channel
+    """
+    CREATE TABLE names (
+        scope       TEXT PRIMARY KEY,                 -- 'channel:<UC id>', or 'video:<id>' (as regions)
+        terms_json  TEXT NOT NULL DEFAULT '[]',
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

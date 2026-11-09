@@ -15,6 +15,11 @@ from typing import Any
 from chatwatcher.config import Config
 
 
+# Video files in a clip folder: the download and your rendered edit. "Delete clip videos"
+# removes these; everything else (summaries, storyboards, frames) stays.
+CLIP_FILES = ("clip.mp4", "clip.mkv", "edit.mp4")
+
+
 def dir_size(path: Path) -> tuple[int, int]:
     """(bytes, bytes in clip files) under path. Symlinks are not followed."""
     total = clips = 0
@@ -25,7 +30,7 @@ def dir_size(path: Path) -> tuple[int, int]:
             except OSError:
                 continue
             total += size
-            if name.startswith("clip.") and name.endswith((".mp4", ".mkv")):
+            if name in CLIP_FILES:
                 clips += size
     return total, clips
 
@@ -206,7 +211,6 @@ def fmt_bytes(n: int | float | None) -> str:
 
 # ── freeing space ────────────────────────────────────────────────────────────
 
-CLIP_FILES = ("clip.mp4", "clip.mkv")
 
 
 @dataclass

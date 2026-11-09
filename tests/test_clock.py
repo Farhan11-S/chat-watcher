@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from chatwatcher import clock, db
-from chatwatcher.analyze.service import analyses_today
+from chatwatcher.analyze.service import cap_wait, recent_analyses
 from chatwatcher.config import Config, GeneralConfig
 
 WIB = ZoneInfo("Asia/Jakarta")
@@ -27,17 +27,22 @@ def test_config_timezone():
         GeneralConfig(timezone="Mars/Olympus")
 
 
-def test_daily_cap_counts_the_local_day(tmp_path):
+def test_cap_counts_the_last_5_hours(tmp_path):
     conn = db.open_db(tmp_path / "t.db")
     conn.execute("INSERT INTO videos (id, video_id) VALUES (1, 'abcdefghijk')")
     conn.execute("INSERT INTO moments (id, video_id, rank, score, start_s, end_s, peak_s) VALUES (1, 1, 1, 1, 0, 9, 5)")
-    start = datetime.fromisoformat(clock.today_start_utc(WIB)).replace(tzinfo=timezone.utc)
-    assert start.astimezone(WIB).strftime("%H:%M") == "00:00"
-    for t in (start - timedelta(minutes=1), start + timedelta(minutes=1)):           # yesterday WIB, today WIB
+    now = datetime(2026, 11, 8, 12, 0, tzinfo=timezone.utc)
+    for ago in (timedelta(hours=6), timedelta(hours=4), timedelta(hours=1), timedelta(minutes=10)):
         conn.execute("INSERT INTO analyses (video_id, moment_id, analysis_json, created_at) VALUES (1, 1, '{}', ?)",
-                     (t.strftime("%Y-%m-%d %H:%M:%S"),))
-    assert analyses_today(conn, WIB) == 1
-    left = clock.until_midnight(WIB)
-    assert timedelta(minutes=5) < left <= timedelta(days=1, minutes=5)
-    assert (datetime.now(timezone.utc) + left).astimezone(WIB).strftime("%H:%M") in ("00:05", "00:04")
+                     ((now - ago).strftime("%Y-%m-%d %H:%M:%S"),))
+    assert len(recent_analyses(conn, 5, now)) == 3                 # the 6-hour-old one is out of the window
+    cfg = Config()
+    cfg.claude.moment_cap, cfg.claude.moment_cap_hours = 4, 5
+    assert cap_wait(cfg, conn, now) == timedelta(0)                # 3 of 4 used
+    cfg.claude.moment_cap = 3
+    assert cap_wait(cfg, conn, now) == timedelta(hours=1, minutes=2)    # the 4-hour-old one leaves in 1 h
+    cfg.claude.moment_cap = 2                                      # lowered below what's used: two must leave
+    assert cap_wait(cfg, conn, now) == timedelta(hours=4, minutes=2)
+    cfg.claude.moment_cap = 0                                      # no cap
+    assert cap_wait(cfg, conn, now) == timedelta(0)
     conn.close()

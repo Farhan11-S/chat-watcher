@@ -308,12 +308,12 @@ def test_flaky_output_is_retried_once(clipped):
     assert [o.status for o in run.outcomes] == ["done", "error"]
 
 
-def test_daily_cap(clipped):
+def test_moment_cap(clipped):
     cfg, conn = clipped
-    cfg.claude.daily_moment_cap = 1
+    cfg.claude.moment_cap = 1
     run = analyze_video(cfg, conn, VID, top=3, runner=FakeRunner())
     assert [o.status for o in run.outcomes] == ["done", "deferred", "deferred"]
-    assert "daily cap" in run.outcomes[1].message
+    assert "cap of 1 analyses per 5 hours" in run.outcomes[1].message
 
 
 def test_auth_problems_stop_the_run(clipped):

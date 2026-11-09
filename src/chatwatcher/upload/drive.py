@@ -24,7 +24,7 @@ from chatwatcher.tools import resolve_exe
 
 LineFn = Callable[[str], None]
 
-_EXCLUDES = [".dl_*/**", "*.part", "*.tmp", ".DS_Store"]
+_EXCLUDES = [".dl_*/**", ".render_*/**", "waveform.json", "*.part", "*.tmp", ".DS_Store"]
 
 
 class RcloneError(Exception):

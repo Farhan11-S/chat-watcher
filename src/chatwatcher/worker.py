@@ -11,6 +11,7 @@ import logging
 import signal
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -55,7 +56,18 @@ class Worker:
         self.deps = deps or Deps()
         self.idle_s = idle_s
         self.stop = threading.Event()
+        self._poked = threading.Event()
         self._lock_file: IO | None = None
+
+    def poke(self) -> None:
+        """Look at the queue now instead of after the idle wait (e.g. you pressed Render)."""
+        self._poked.set()
+
+    def _idle(self) -> None:
+        end = time.monotonic() + self.idle_s
+        while not (self.stop.is_set() or self._poked.is_set()) and time.monotonic() < end:
+            self.stop.wait(min(0.5, max(0.0, end - time.monotonic())))
+        self._poked.clear()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -103,7 +115,7 @@ class Worker:
                 if job is None:
                     if once:
                         break
-                    self.stop.wait(self.idle_s)
+                    self._idle()
                     continue
                 self.process(conn, job)
                 processed += 1
@@ -162,7 +174,10 @@ class Worker:
             # clip is on Drive and auto-upload is on, refresh it there (rclone only sends
             # what changed).
             from chatwatcher.analyze.service import analysis_matches
-            if stage == "clip" and stage_enabled(self.cfg, "analyze") and not analysis_matches(conn, moment_pk):
+            if stage == "clip" and stage_enabled(self.cfg, "transcribe"):
+                jobs.enqueue(conn, video["id"], "transcribe", moment_pk=moment_pk)   # then analyse, below
+            elif stage in ("clip", "transcribe") and stage_enabled(self.cfg, "analyze") \
+                    and not analysis_matches(conn, moment_pk):
                 jobs.enqueue(conn, video["id"], "analyze", moment_pk=moment_pk)
             elif stage != "upload" and stage_enabled(self.cfg, "upload", conn) and conn.execute(
                     "SELECT 1 FROM clips WHERE moment_id = ? AND uploaded_at IS NOT NULL",
@@ -173,7 +188,10 @@ class Worker:
             set_video_status(conn, vid, "processing" if busy else "done")
             return
         nxt = None if out.details.get("stop") else jobs.next_stage(stage)
-        while nxt and not stage_enabled(self.cfg, nxt, conn):
+
+        def skipped(s: str) -> bool:      # transcribe only ever follows a clip download
+            return not stage_enabled(self.cfg, s, conn) or (s == "transcribe" and stage != "clip")
+        while nxt and skipped(nxt):
             if nxt == "frames" and not stage_enabled(self.cfg, "clip"):
                 # No clips and no previews: nothing for Claude to look at. Wait for the user
                 # to review the moments and press "Clip kept".

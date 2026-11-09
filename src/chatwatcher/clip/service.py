@@ -139,6 +139,8 @@ def clip_video(
         folder.mkdir(parents=True, exist_ok=True)
         event(m["rank"], f"downloading {m['end_s'] - m['start_s']:.0f}s…")
         clip = download_clip(yt, info_json, m["start_s"], m["end_s"], folder / "clip", cfg.clip)
+        from chatwatcher.subs.transcribe import forget
+        forget(folder)                    # a new download: Whisper's old words no longer match
         frame_list = (extract_frames(clip, folder / "frames", cfg.clip.frames_per_clip, m["peak_s"])
                       if frames else [])
         write_chat_excerpt(folder / "chat_excerpt.txt", messages, clip)

@@ -63,20 +63,126 @@
   </div>
 </div>
 
+{% if clip and clip.exists %}
+<div class="card editor" id="edit" data-editor="{{ moment.id }}">
+  <div class="ed-top">
+    <div class="ed-player">
+      <video controls preload="auto" src="/media/clip/{{ clip.id }}"
+             {% if frames %}poster="/media/frame/{{ clip.id }}/{{ (frames | selectattr('is_peak') | list or frames)[0].file.split('/')[-1] }}"{% endif %}></video>
+      <canvas class="ed-stage" data-ed-stage hidden aria-hidden="true"></canvas>
+      <div class="ed-subs" data-ed-subs hidden aria-hidden="true"></div>
+      <div class="ed-regions" data-ed-regions hidden></div>
+    </div>
+    <div class="ed-side">
+      <div class="ed-head">
+        <h2>Edit</h2>
+        <span class="muted" data-ed-total></span>
+      </div>
+      <div class="actions ed-presets">
+        <small class="muted">Start from</small>
+        <button type="button" class="small" data-ed-preset="long">Claude's cut</button>
+        <button type="button" class="small" data-ed-preset="short">Claude's short</button>
+        <button type="button" class="small" data-ed-preset="whole">Whole clip</button>
+      </div>
+      <details class="ed-notes" data-ed-notes hidden><summary>Claude's editing notes</summary><p data-ed-notes-text></p></details>
+      <div class="ed-tx" data-ed-tx></div>
+      <div class="ed-lines" data-ed-lines><p class="faint"><small>Loading the transcript…</small></p></div>
+    </div>
+  </div>
+
+  <div class="ed-toolbar">
+    <div class="actions">
+      <button type="button" class="primary small" data-ed-act="play-edit" title="Play your edit from the start (Enter)">▶ Play edit</button>
+      <button type="button" class="small" data-ed-act="toggle" title="Play / pause (Space)">⏯</button>
+      <span class="mono ed-time" data-ed-time>0:00.00</span>
+    </div>
+    <div class="actions">
+      <button type="button" class="small" data-ed-act="add" title="New segment at the playhead">+ Segment</button>
+      <button type="button" class="small" data-ed-act="split" title="Split the selected segment at the playhead (S)">✂ Split</button>
+      <button type="button" class="small" data-ed-act="undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
+      <label class="muted" title="Cuts you drag, and Claude's cuts, land in the nearest pause instead of mid-word. Hold Shift while dragging to skip it.">
+        <input type="checkbox" data-ed-snap checked> <small>snap to pauses</small></label>
+      <label class="muted"><small>zoom</small>
+        <select data-ed-zoom aria-label="Timeline zoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select></label>
+    </div>
+  </div>
+  <div class="ed-scroll" data-ed-scroll>
+    <div class="ed-spacer" data-ed-spacer>
+      <canvas data-ed-canvas aria-label="Timeline: Claude's storyboard beats, the waveform with your segments, sounds, zooms, shakes and flashes, and subtitle lines"></canvas>
+    </div>
+    <p class="ed-loading" data-ed-loading>Reading the audio…</p>
+  </div>
+  <div class="ed-fxbar">
+    <div class="actions">
+      <b class="ed-fx-title">Effects</b>
+      <button type="button" class="small" data-ed-act="add-fx" title="Add a sound effect at the playhead (F)">+ Sound</button>
+      <button type="button" class="small" data-ed-add="punch" title="Instant zoom on a region, e.g. her face when she realises (Z)">+ Punch-in</button>
+      <button type="button" class="small" data-ed-add="push" title="Slow zoom towards a region, building up to a moment">+ Push-in</button>
+      <button type="button" class="small" data-ed-add="shake" title="Camera shake on an impact or a scream (X)">+ Shake</button>
+      <button type="button" class="small" data-ed-add="flash" title="A quick white, red or black flash">+ Flash</button>
+      <button type="button" class="small" data-ed-act="regions" title="Draw the boxes zooms aim at (her face, the game…), once per channel">▢ Regions</button>
+    </div>
+    <div class="actions">
+      <button type="button" class="small" data-ed-act="suggest" title="Claude places sounds from your library, and zooms, shakes and flashes, on this cut">✨ Suggest effects</button>
+      <select data-ed-intensity aria-label="How many effects Claude may add" title="How many effects Claude may add">
+        <option value="light">light</option><option value="normal" selected>normal</option><option value="heavy">heavy</option></select>
+      <button type="button" class="small" data-ed-act="clear-claude" title="Remove Claude's effects; yours stay">Clear Claude's</button>
+    </div>
+    <small class="muted" data-ed-fx-status></small>
+  </div>
+  <div class="ed-fxbar ed-subbar">
+    <div class="actions">
+      <b class="ed-fx-title">Subtitles</b>
+      <label class="muted" title="Burn the subtitles into edit.mp4 (the .srt is made either way)"><input type="checkbox" data-sub-on> <small>burn in</small></label>
+      <label class="muted"><small>size</small>
+        <select data-sub-size aria-label="Subtitle size"><option value="small">small</option><option value="normal">normal</option><option value="large">large</option></select></label>
+      <label class="muted"><small>at the</small>
+        <select data-sub-pos aria-label="Subtitle position"><option value="bottom">bottom</option><option value="top">top</option></select></label>
+      <button type="button" class="small" data-ed-act="sub-add" title="A new subtitle line at the playhead">+ Line</button>
+      <button type="button" class="small" data-ed-act="sub-rebuild" title="Start over from Whisper's words (Ctrl+Z undoes)">↻ From transcript</button>
+      <button type="button" class="small" data-ed-act="sub-polish" title="Claude fixes misheard words and names, punctuation and filler, translates lines that aren't in English, and marks punch words. Your own lines stay. One Claude call.">✨ Clean up</button>
+    </div>
+    <small class="muted" data-ed-sub-status></small>
+    <details class="ed-names" data-ed-names>
+      <summary><small>Names Claude spells right (<span data-ed-names-count>0</span>)</small></summary>
+      <p class="faint"><small>For every stream of this channel: people, games, catchphrases. Claude adds the names it finds;
+        a name you fix by retyping a line is added too. One per line or comma-separated.</small></p>
+      <textarea data-ed-names-text rows="3" aria-label="Names Claude spells right"></textarea>
+      <div class="actions"><button type="button" class="small" data-ed-act="names-save">Save names</button></div>
+    </details>
+  </div>
+  <div class="ed-chips" data-ed-chips></div>
+
+  <div class="ed-bottom">
+    <div class="ed-selected" data-ed-selected></div>
+    <div class="ed-render" data-ed-render>
+      <div class="actions">
+        <button type="button" class="primary" data-ed-act="render">Render edit</button>
+        <small class="muted" data-ed-saved></small>
+      </div>
+      <div class="ed-render-state" data-ed-render-state></div>
+    </div>
+  </div>
+  <p class="faint ed-keys"><small>
+    <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> 0.1 s (<kbd>Shift</kbd> 1 s) · <kbd>I</kbd>/<kbd>O</kbd> start/end here ·
+    <kbd>S</kbd> split · <kbd>F</kbd> add sound · <kbd>Z</kbd> punch-in · <kbd>X</kbd> shake · <kbd>[</kbd><kbd>]</kbd> previous/next segment · <kbd>Del</kbd> delete · <kbd>Enter</kbd> play edit · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo
+  </small></p>
+</div>
+{% endif %}
+
 <div class="grid-2">
   <div>
     <div class="card">
       {% if clip %}
       {% if clip.exists %}
-      <video controls preload="metadata" src="/media/clip/{{ clip.id }}"
-             {% if frames %}poster="/media/frame/{{ clip.id }}/{{ (frames | selectattr('is_peak') | list or frames)[0].file.split('/')[-1] }}"{% endif %}></video>
+      <h2>Clip</h2>
       {% else %}
       <div class="deleted-video">
         <p>The clip video was deleted to free space. Summary, storyboard, frames and questions are still here.</p>
         <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small primary">Download it again</button></form>
       </div>
       {% endif %}
-      <p class="muted" style="margin:.5rem 0 0"><small>
+      <p class="muted" style="margin:{{ '0' if clip.exists else '.5rem 0 0' }}"><small>
         {{ clip.width }}×{{ clip.height }} {{ clip.fps | int }}fps · {{ clip.vcodec }}/{{ clip.acodec }} · {{ clip.size_bytes | mb }}
         · stream {{ clip.zero_s | ts }}–{{ (clip.zero_s + clip.duration_s) | ts }}
         · <a href="https://youtu.be/{{ video.video_id }}?t={{ clip.zero_s | int }}" target="_blank" rel="noopener">YouTube ↗</a>
@@ -115,13 +221,14 @@
     </div>
 
     <div class="card">
-      <h2>Cut</h2>
+      <h2>Download range</h2>
       <form method="post" action="/moment/{{ moment.id }}/cut" class="actions">
         <label>start <input type="text" name="start" value="{{ moment.start_s | ts }}" style="width:6.5rem"></label>
         <label>end <input type="text" name="end" value="{{ moment.end_s | ts }}" style="width:6.5rem"></label>
         <button>Re-cut clip</button>
       </form>
-      <p class="faint" style="margin:.4rem 0 0"><small>Stream times (h:mm:ss). Re-cutting downloads the new range and has Claude re-analyse it.</small></p>
+      <p class="faint" style="margin:.4rem 0 0"><small>Stream times (h:mm:ss). Use this when the moment needs more of the stream
+        than was downloaded: it downloads the new range and has Claude re-analyse it. To trim inside the clip, use the editor above.</small></p>
       <div class="actions" style="margin-top:.6rem">
         <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small">Re-download</button></form>
         {% if cfg.drive.enabled and clip %}<form method="post" action="/moment/{{ moment.id }}/upload" class="inline">
@@ -131,11 +238,11 @@
         {{ claude_picker(cfg, claude_models, efforts, cfg.claude.redo_model, cfg.claude.redo_effort) }}
         <button class="small">Analyse again</button>
       </form>
-      {% if a and a.cut %}
-      <h3>Claude's suggested cut <small class="muted">(clip time — click to play)</small></h3>
+      {% if a and a.cut and not (clip and clip.exists) %}
+      <h3>Claude's suggested cut <small class="muted">(clip time)</small></h3>
       <ul>
-        <li>Long-form: <a href="#" data-seek="{{ a.cut.long_in }}">{{ a.cut.long_in | ts }}</a> → {{ a.cut.long_out | ts }}</li>
-        {% if a.cut.short_in is not none %}<li>Short: <a href="#" data-seek="{{ a.cut.short_in }}">{{ a.cut.short_in | ts }}</a> → {{ a.cut.short_out | ts }} · {{ a.vertical_crop }}</li>{% endif %}
+        <li>Long-form: {{ a.cut.long_in | ts }} → {{ a.cut.long_out | ts }}</li>
+        {% if a.cut.short_in is not none %}<li>Short: {{ a.cut.short_in | ts }} → {{ a.cut.short_out | ts }} · {{ a.vertical_crop }}</li>{% endif %}
         {% if a.cut.notes %}<li class="muted">{{ a.cut.notes }}</li>{% endif %}
         <li>Hook: {{ a.hook }}</li>
       </ul>
@@ -208,3 +315,4 @@
   {% if a %}<p class="faint" style="margin:.6rem 0 0"><small>Analysed by {{ a.model }}{% if a._meta and a._meta.effort %} ({{ a._meta.effort }} effort){% endif %} at {{ a.created_at | when }}. Check it before publishing.</small></p>{% endif %}
 </div>
 {% endblock %}
+{% block scripts %}{% if clip and clip.exists %}<script src="/static/editor.js"></script>{% endif %}{% endblock %}

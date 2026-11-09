@@ -56,6 +56,14 @@ def test_unknown_key_rejected(tmp_path):
         load_config(f)
 
 
+def test_old_daily_cap_explains_the_new_one(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text("[claude]\ndaily_moment_cap = 25\n")
+    with pytest.raises(ValidationError, match="replaced by claude.moment_cap"):
+        load_config(f)
+    assert (Config().claude.moment_cap, Config().claude.moment_cap_hours) == (50, 5)
+
+
 def test_instances_do_not_share_sections():
     a, b = Config(), Config()
     a.paths.data_dir = Path("/x")

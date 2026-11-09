@@ -9,7 +9,9 @@ from typing import Any
 
 # frames = low-res previews (frames + text) for moments without a clip, so Claude can
 # analyse every moment before anything is downloaded at full quality.
-STAGES = ("ingest", "score", "clip", "frames", "analyze", "upload")
+STAGES = ("ingest", "score", "clip", "transcribe", "frames", "analyze", "upload")
+# Only ever run for one moment, when you ask on the dashboard; never part of the pipeline.
+MOMENT_STAGES = ("render",)
 
 
 def sql_time(dt: datetime) -> str:
@@ -29,10 +31,12 @@ def enqueue(conn: sqlite3.Connection, video_pk: int, stage: str, *, moment_pk: i
     the job id, or None if it was running.
 
     params: options for this run only (e.g. which Claude model); re-queueing replaces them."""
-    if stage not in STAGES:
+    if stage not in STAGES + MOMENT_STAGES:
         raise ValueError(f"Unknown stage {stage!r}")
-    if moment_pk is not None and stage not in ("clip", "analyze", "upload"):
-        raise ValueError("Only clip, analyze and upload can run for a single moment")
+    if moment_pk is not None and stage not in ("clip", "transcribe", "analyze", "upload", *MOMENT_STAGES):
+        raise ValueError("Only clip, transcribe, analyze, upload and render can run for a single moment")
+    if moment_pk is None and stage in MOMENT_STAGES:
+        raise ValueError(f"{stage} runs for one moment at a time")
     row = conn.execute(
         """
         INSERT INTO jobs (video_id, moment_id, stage, status, run_after, params_json)
@@ -59,13 +63,14 @@ def job_params(job: sqlite3.Row) -> dict[str, Any]:
 
 
 def claim(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    """Take the next due job and mark it running (atomic)."""
+    """Take the next due job and mark it running (atomic). Renders go first: you're
+    waiting for them on the dashboard, while the rest of the queue is background work."""
     return conn.execute(
         """
         UPDATE jobs SET status = 'running', attempts = attempts + 1,
                         started_at = datetime('now'), updated_at = datetime('now')
         WHERE id = (SELECT id FROM jobs WHERE status = 'pending' AND run_after <= datetime('now')
-                    ORDER BY run_after, id LIMIT 1)
+                    ORDER BY stage = 'render' DESC, run_after, id LIMIT 1)
         RETURNING *
         """
     ).fetchone()

@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ENV_CONFIG = "CHATWATCHER_CONFIG"
 DEFAULT_CONFIG_FILE = "config.toml"
@@ -26,8 +26,8 @@ class _Section(BaseModel):
 
 
 class GeneralConfig(_Section):
-    # Time zone for every time shown (dashboard, `cw` output, logs), folder dates and the
-    # daily Claude cap. IANA name, e.g. "Asia/Jakarta" (WIB). Empty = this computer's.
+    # Time zone for every time shown (dashboard, `cw` output, logs) and folder dates.
+    # IANA name, e.g. "Asia/Jakarta" (WIB). Empty = this computer's.
     timezone: str = ""
 
     @field_validator("timezone")
@@ -109,6 +109,35 @@ class ClipConfig(_Section):
     frames_per_clip: int = Field(8, ge=1)
 
 
+class EditConfig(_Section):
+    # The dashboard's editor: cuts are frame-exact, so the edit is re-encoded once.
+    crf: int = Field(18, ge=0, le=51)          # x264 quality: lower = better and bigger; 17-20 looks lossless
+    preset: str = "veryfast"                   # x264 speed: ultrafast … veryslow (slower = smaller file)
+    audio_bitrate: str = "192k"
+    loudness_lufs: float = Field(-14.0, le=0)  # YouTube plays at -14 LUFS; 0 = leave the loudness as is
+    fade_ms: int = Field(30, ge=0, le=1000)    # tiny audio fade at every cut so cuts don't click
+    snap_s: float = Field(1.5, ge=0, le=5)     # how far Claude's cut points may move to land in a pause
+
+
+class TranscribeConfig(_Section):
+    """Speech to text on each downloaded clip with Whisper (faster-whisper), on this computer:
+    a word-by-word transcript for subtitles. Needs `pip install faster-whisper`; models are
+    downloaded once into <data_dir>/models."""
+    enabled: bool = True
+    auto: bool = True                 # after each clip downloads; False = only the editor's button
+    model: str = "large-v3-turbo"     # or "small": about a third faster, more misheard words
+    language: str = ""                # "" = detect per line (handles mixed English/Indonesian); or "en", "id", "ja"
+    threads: int = Field(0, ge=0)     # CPU threads; 0 = all
+
+
+class SubtitlesConfig(_Section):
+    """Subtitles in the editor's render, built from Whisper's word timings."""
+    on: bool = True                                    # burned into new edits (karaoke clips start off)
+    size: Literal["small", "normal", "large"] = "normal"
+    position: Literal["bottom", "top"] = "bottom"
+    font: str = "Noto Sans CJK JP"                     # any installed font; this one also has Japanese
+
+
 class ClaudeConfig(_Section):
     """Summaries and storyboards via the `claude` CLI, i.e. your Claude subscription."""
     enabled: bool = True
@@ -118,11 +147,22 @@ class ClaudeConfig(_Section):
     # What "Analyse again" on one moment offers first: a stronger model for the ones that matter.
     redo_model: str = "opus"
     redo_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
-    daily_moment_cap: int = Field(40, ge=0)   # max moment analyses per day (0 = no cap)
+    # At most moment_cap analyses in any moment_cap_hours (a rolling window, like Claude's 5-hour
+    # limit). Extra clips wait until the oldest analysis in the window is older than that.
+    moment_cap: int = Field(50, ge=0)                     # 0 = no cap
+    moment_cap_hours: float = Field(5, gt=0, le=168)
     timeout_s: int = Field(600, ge=30)
     output_language: str = "English"          # summaries, storyboard, translations
     title_languages: list[str] = Field(default_factory=lambda: ["ja", "en"])
     allow_api_key: bool = False   # False: ANTHROPIC_API_KEY is removed so the CLI uses the subscription
+
+    @model_validator(mode="before")
+    @classmethod
+    def _renamed(cls, data):
+        if isinstance(data, dict) and "daily_moment_cap" in data:
+            raise ValueError("claude.daily_moment_cap was replaced by claude.moment_cap: analyses per "
+                             "claude.moment_cap_hours (default 50 per 5 hours)")
+        return data
 
 
 class DriveConfig(_Section):
@@ -150,6 +190,9 @@ class Config(_Section):
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     clip: ClipConfig = Field(default_factory=ClipConfig)
+    edit: EditConfig = Field(default_factory=EditConfig)
+    transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
+    subtitles: SubtitlesConfig = Field(default_factory=SubtitlesConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     drive: DriveConfig = Field(default_factory=DriveConfig)
     web: WebConfig = Field(default_factory=WebConfig)

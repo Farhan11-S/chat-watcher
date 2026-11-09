@@ -1,12 +1,12 @@
 """Analyze clipped moments with Claude: analysis.json + storyboard.md per clip, plus a
-stream digest. One Claude call at a time, with a daily cap, pausing on usage limits."""
+stream digest. One Claude call at a time, capped per 5 hours, pausing on usage limits."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import timezone, tzinfo
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -145,12 +145,28 @@ def carry_analysis(conn: sqlite3.Connection, moment_pk: int, folder: Path) -> bo
     return True
 
 
-def analyses_today(conn: sqlite3.Connection, tz: tzinfo | None = timezone.utc) -> int:
-    """Analyses since midnight in the display time zone (the daily cap's day)."""
-    from chatwatcher.clock import today_start_utc
-    return conn.execute(
-        "SELECT COUNT(*) FROM analyses WHERE moment_id IS NOT NULL AND created_at >= ?",
-        (today_start_utc(tz),)).fetchone()[0]
+CAP_SETTING = "claude.moment_cap"     # named in the deferred message; the pipeline looks for it
+_SQL_TIME = "%Y-%m-%d %H:%M:%S"       # SQLite datetime('now'), UTC
+
+
+def recent_analyses(conn: sqlite3.Connection, hours: float, now: datetime | None = None) -> list[datetime]:
+    """When each moment analysis in the last `hours` ran (UTC), oldest first: the cap's window."""
+    now = now or datetime.now(timezone.utc)
+    since = (now - timedelta(hours=hours)).strftime(_SQL_TIME)
+    rows = conn.execute("SELECT created_at FROM analyses WHERE moment_id IS NOT NULL AND created_at >= ? "
+                        "ORDER BY created_at", (since,))
+    return [datetime.strptime(r[0], _SQL_TIME).replace(tzinfo=timezone.utc) for r in rows]
+
+
+def cap_wait(cfg: Config, conn: sqlite3.Connection, now: datetime | None = None) -> timedelta:
+    """How long until the cap lets another analysis run (zero if it already does)."""
+    cap, hours = cfg.claude.moment_cap, cfg.claude.moment_cap_hours
+    now = now or datetime.now(timezone.utc)
+    times = recent_analyses(conn, hours, now)
+    if not cap or len(times) < cap:
+        return timedelta(0)
+    frees_at = times[len(times) - cap] + timedelta(hours=hours)     # once this one leaves the window
+    return max(frees_at - now, timedelta(0)) + timedelta(minutes=2)
 
 
 def _call(runner: ClaudeRunner, *args, attempts: int = 2, **kwargs) -> ClaudeResult:
@@ -238,9 +254,8 @@ def analyze_video(
                            "terminal (it uses your Claude subscription).", kind="auth")
 
     run = AnalyzeRun(video_id=video_id)
-    cap = cfg.claude.daily_moment_cap
-    from chatwatcher.clock import zone
-    used_today = analyses_today(conn, zone(cfg))
+    cap, hours = cfg.claude.moment_cap, cfg.claude.moment_cap_hours
+    used = len(recent_analyses(conn, hours))
     stop_reason: str | None = None
     new_analyses = 0
 
@@ -256,8 +271,8 @@ def analyze_video(
         if stop_reason:
             run.outcomes.append(AnalyzeOutcome(r["rank"], "deferred", stop_reason, folder=folder))
             continue
-        if cap and used_today >= cap:
-            stop_reason = f"daily cap of {cap} analyses reached (claude.daily_moment_cap)"
+        if cap and used >= cap:
+            stop_reason = f"cap of {cap} analyses per {hours:g} hours reached ({CAP_SETTING})"
             run.outcomes.append(AnalyzeOutcome(r["rank"], "deferred", stop_reason, folder=folder))
             continue
 
@@ -293,7 +308,7 @@ def analyze_video(
         (folder / "storyboard.md").write_text(render_moment(a, meta), encoding="utf-8")
         conn.execute("INSERT INTO analyses (video_id, moment_id, model, analysis_json) VALUES (?, ?, ?, ?)",
                      (video["id"], r["id"], res.model, json.dumps(a, ensure_ascii=False)))
-        used_today += 1
+        used += 1
         new_analyses += 1
         run.outcomes.append(_outcome(r["rank"], "done", a, folder))
         event(r["rank"], "done")

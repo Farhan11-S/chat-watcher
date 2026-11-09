@@ -57,8 +57,10 @@ def stage_map(conn: sqlite3.Connection, video_pk: int, *, with_upload: bool = Fa
         "analyze": conn.execute("SELECT 1 FROM analyses WHERE video_id = ? AND moment_id IS NOT NULL "
                                 "LIMIT 1", (video_pk,)).fetchone() is not None,
         "upload": bool(v and v["drive_url"]),
+        "transcribe": False,
     }
-    stages = [s for s in STAGES if s != "upload" or with_upload or "upload" in by or have["upload"]]
+    stages = [s for s in STAGES if (s != "upload" or with_upload or "upload" in by or have["upload"])
+              and (s != "transcribe" or "transcribe" in by)]   # shown once it has run for this stream
     return {s: by.get(s, {"status": "done" if have[s] else "none"}) for s in stages}
 
 

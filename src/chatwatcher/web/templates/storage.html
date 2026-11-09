@@ -86,7 +86,8 @@
 
 {% set drive_known = drive and not drive.error %}
 {% set local_streams = streams | selectattr('local') | list %}
-{% set drive_only = streams | rejectattr('local') | list %}
+{# A stream that's just started has an empty folder here and nothing on Drive yet (or Drive isn't loaded): it's in neither list. #}
+{% set drive_only = streams | rejectattr('local') | selectattr('drive') | list %}
 <div class="card">
   <h2>Streams on this computer</h2>
   {% if local_streams %}

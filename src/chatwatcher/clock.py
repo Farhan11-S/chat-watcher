@@ -55,17 +55,3 @@ def fmt(value: Any, tz: tzinfo | None, *, date_only: bool = False, seconds: bool
 
 def zone_name(tz: tzinfo | None) -> str:
     return abbr(datetime.now(timezone.utc).astimezone(tz))
-
-
-def today_start_utc(tz: tzinfo | None) -> str:
-    """Local midnight today, as a UTC SQLite timestamp (for 'today' counts)."""
-    now = datetime.now(timezone.utc).astimezone(tz)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def until_midnight(tz: tzinfo | None, *, after: timedelta = timedelta(minutes=5)) -> timedelta:
-    """Time until just after the next local midnight (when daily caps reset)."""
-    now = datetime.now(timezone.utc).astimezone(tz)
-    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return tomorrow + after - now

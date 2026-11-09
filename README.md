@@ -90,12 +90,57 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
    **Clip kept**. With `true`, the best `clip_top` moments are downloaded automatically.
    `pipeline.preview_height = 0` turns previews off (Claude then only sees downloaded clips).
 4. **Open a moment:**
-   - the clip player, and frames you click to jump to
+   - **the editor** (once the clip is downloaded): Claude's cut on a waveform timeline,
+     with each edge already moved to the nearest pause so it doesn't start mid-word.
+     Claude's storyboard beats (hook, payoff, …) sit above the waveform and the transcript
+     sits beside the player.
+     - drag an edge (it snaps to a pause; hold **Shift** to place it exactly), or nudge it
+       by ½ s, 0.1 s or one frame
+     - **✂ Split** (key **S**) at the playhead, **+ Segment**, **↑ Earlier / ↓ Later** to
+       reorder (e.g. open on the payoff), **volume** per segment (e.g. −15 dB on a screech)
+     - click a transcript line to jump there; **⇤ / ⇥** start or end the selected segment
+       at that line
+     - **▶ Play edit** (Enter) plays your cut as it will come out, skipping the gaps
+     - start over from **Claude's cut**, **Claude's short** or the **whole clip**;
+       **Ctrl+Z** undoes. Changes save by themselves.
+     - **sound effects** (from your library, see **Sounds** below) sit in a lane under the
+       waveform. **+ Sound** (key **F**) adds one at the playhead; drag it to move it. Orange
+       ticks mark sudden loud moments (a scream, a crash) and sounds snap to them. Per sound:
+       which sound, its volume, and **her voice under it** (lowers the clip while it plays).
+       **▶ Play edit** plays the sounds too.
+     - **zooms, shakes and flashes** sit in a second lane:
+       - **+ Punch-in** (key **Z**): an instant zoom on a region, e.g. her face when she
+         realises, then straight back
+       - **+ Push-in**: a slow, eased zoom that builds up to a moment
+       - **+ Shake** (key **X**): camera shake, light / normal / heavy
+       - **+ Flash**: white, red or black, fading out
+
+       Drag one to move it, drag its right end to change how long it lasts, or set its
+       length, region, zoom, strength or colour in the panel. Punch-ins, shakes and flashes
+       snap to the orange ticks like sounds do. The player shows the zoom while the
+       playhead is inside one, so you see the result without rendering.
+     - **▢ Regions**: drag a box on the picture around her face (and the game, chat…)
+       once per channel; every stream of that channel uses it. Zooms aim at the centre of
+       their region, and **⤢ fill** zooms until the region fills the frame. Redraw a box
+       and every zoom that uses it follows.
+     - **✨ Suggest effects** (light / normal / heavy): Claude places sounds from your
+       library and zooms, shakes and flashes aimed at your regions, with a reason for
+       each, e.g. a fail sound + shake + red flash on the screech, a punch-in on her face
+       for a line to camera. Your own effects stay and Claude builds around them; asking
+       again replaces only Claude's. **Clear Claude's** removes them. One suggestion is
+       one Claude call (about 10–20k tokens).
+     - **Render edit** makes `edit.mp4` next to `clip.mp4`: frame-exact cuts, a tiny
+       fade at each cut so nothing clicks, smooth zooms, shakes and flashes, your sounds
+       mixed in, loudness levelled to YouTube's −14 LUFS. It
+       goes ahead of other queued work and takes roughly a fifth of the edit's length
+       for 720p (more for 1080p60). Watch it on the page, download it, or copy its path.
+   - frames you click to jump to
    - Claude's summary, **titles and thumbnail text with copy buttons**, storyboard and
      captions
    - **Keep / Skip** buttons (Skip also stops it from being downloaded or analysed)
-   - **Re-cut**: type new start/end times; it re-downloads that range and Claude
-     re-analyses it automatically
+   - **Download range**: type new stream start/end times when the moment needs more of
+     the stream than was downloaded; it re-downloads that range and Claude re-analyses it
+     automatically
    - **Analyse again** with another model or effort (e.g. `opus`, `high effort`) when the
      default Sonnet analysis misses something
    - **Ask Claude about this clip**: follow-up questions such as "what is supposed to happen
@@ -110,6 +155,8 @@ output/<channel>/<date>_<video id>_<title>/
   stream_digest.md            ← Claude's plan for the whole stream
   01_laugh_1h00m50s/
     clip.mp4                  ← best quality, ready for your editor
+    edit.mp4                  ← your cut from the dashboard editor (after Render edit)
+    edit.srt                  ← its subtitles, for YouTube's CC
     storyboard.md             ← summary, cut points, titles, shot list, captions
     analysis.json             ← the same, machine-readable
     frames/                   ← stills; one is Claude's thumbnail pick
@@ -135,6 +182,77 @@ All storyboard and caption times are **seconds from the start of `clip.mp4`**.
 Video IDs starting with `-` work as-is (`cw run -k8EZv9wkAs`).
 
 ---
+
+## Transcripts (Whisper)
+
+Each downloaded clip is transcribed on this computer with Whisper, right after it
+downloads: her speech as text with a time for every word, the start of subtitles. It
+works for streams YouTube hasn't captioned (often the case right after a stream ends) and
+for mixed English/Indonesian. Install it once:
+
+```bash
+pip install -e ".[subtitles]"
+```
+
+The model (`large-v3-turbo`, 1.6 GB) downloads into `data/models/` the first time. On a
+4-core CPU a 3-minute clip takes about 1½ minutes; renders you queue go first. In the
+clip folder:
+
+```
+words.json                ← every line and word with start and end (clip seconds)
+transcript.txt            ← Whisper's lines; the editor, "Analyse again" and "Ask Claude" use it
+transcript.youtube.txt    ← the YouTube auto-caption excerpt it replaced
+```
+
+The editor shows where the transcript came from, with **🎙 Transcribe** for clips you
+downloaded before, or **🎙 Again**. `[transcribe] model = "small"` is about a third faster
+with more misheard words; `auto = false` transcribes only when you press the button.
+Claude's first analysis happens on the preview frames, before the clip is downloaded, so
+it still works from the YouTube captions (or chat only, when there are none).
+
+## Subtitles
+
+Once a clip is transcribed, the editor turns Whisper's words into subtitle lines: a new
+line at each pause or sentence, never more than two lines on screen, each held a moment
+after its last word. They show over the player while you play, sit in their own lane on
+the timeline, and replace the transcript in the list beside the player.
+
+- **Retype a line** by clicking it in the list (Enter keeps it, Esc undoes it). Put
+  `*stars*` around a word to make it yellow.
+- **Retime** by dragging a line's edges in the lane (they snap to Whisper's word times;
+  hold Shift to place them freely), or drag the middle to move it. Click a line for its
+  panel: nudge its start and end, **✂ Split** it at the playhead, **⤓ Join next**, or delete it.
+- **+ Line** adds one at the playhead; **↻ From transcript** starts over from Whisper's
+  words. Until you change a line, they follow the transcript, so **🎙 Again** updates them.
+- **Burn in**, **size** and **at the** bottom / top are per edit. Karaoke clips start with
+  burn-in off.
+- **✨ Clean up** (or **✨ Fix & translate** when the clip isn't in English): one Claude call
+  goes over the lines in your cut. It fixes misheard words and names (using chat, the
+  stream title and the channel's names), punctuation and capitals, drops filler, translates
+  lines that aren't in `claude.output_language`, and stars a punch word now and then. Every
+  line keeps its timing; Claude may only join a line with the next or drop a filler-only
+  one. Lines you typed stay as they are. Ctrl+Z undoes it.
+- **Names Claude spells right**: one list per channel (the talent, friends, games,
+  catchphrases), under the subtitles bar. Claude adds the names it finds, and a name you
+  fix by retyping a line (a capitalised word mid-sentence, or one like `holo1GP`) is added
+  too, so the next stream gets it right.
+
+**Render edit** burns them in (bold white with a black outline, over any zoom, so the text
+never zooms) and writes `edit.srt` next to `edit.mp4`, on the edit's timeline, for
+YouTube's CC. `[subtitles]` in the config sets the defaults and the font.
+
+## Sounds
+
+The **Sounds** page is your sound-effect library. Drop in files (mp3, wav, ogg, m4a, flac,
+or a short video, under 30 s each) and give each a **description of when to use it**:
+Claude reads it to pick sounds, e.g. *"bonk: someone says something dumb or gets
+corrected"*. Each file is cleaned up as it's added: silence at both ends is cut, so it
+plays exactly at its marker, and it's levelled so volume 0 is about as loud as normal
+talking. Files live in `data/sounds/`.
+
+Note where each sound came from. Meme sounds are often cut from shows or games, and short
+ones rarely get a Content ID claim, but they can. freesound.org (CC0), Pixabay and the
+YouTube Audio Library are free to use.
 
 ## Keep it running
 
@@ -185,7 +303,9 @@ the stream page.
 - `pipeline.analyze_top = 5`: only analyse the 5 best clips per stream (default 0 = all).
 - `claude.model` / `claude.effort` set the default (`"sonnet"` / `"low"`); `"opus"` or a
   higher effort uses much more of a Pro/Max plan's limits.
-- `claude.daily_moment_cap = 40` limits analyses per day.
+- `claude.moment_cap = 50` allows at most 50 analyses in any 5 hours
+  (`claude.moment_cap_hours`), like the plan's 5-hour limit. Extra clips wait for a slot
+  and then continue automatically.
 - **Hit a usage limit?** Remaining clips wait until your plan resets and then continue
   automatically.
 - `ANTHROPIC_API_KEY` is ignored on purpose, so nothing is ever billed to the API.
@@ -237,8 +357,8 @@ Everything is in `config.toml`. Look at `config.example.toml` for every option.
   stream from its page.
 - **Clip padding:** `pre_roll_s` (default 25s), `min_clip_s`, `max_clip_s`.
 - **Time zone:** `general.timezone = "Asia/Jakarta"` shows every time in WIB (dashboard,
-  `cw` output, logs), dates new stream folders in WIB and resets the daily Claude cap at
-  WIB midnight. Empty = this computer's time zone. Times are still stored in UTC.
+  `cw` output, logs) and dates new stream folders in WIB. Empty = this computer's time
+  zone. Times are still stored in UTC.
 
 ## Troubleshooting
 

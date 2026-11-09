@@ -487,3 +487,21 @@ def test_analyse_one_moment_again_from_the_review_panel(site):
     assert after["job"]["status"] == "done"
     assert client.post("/moment/99999/analyze", json={}).status_code == 404
     assert client.get("/api/moment/99999").status_code == 404
+
+
+def test_storage_page_with_a_stream_that_just_started(site, monkeypatch):
+    from pathlib import Path
+    from chatwatcher import storage
+    cfg, conn, client, _ = site
+    out = Path(store.get_video(conn, VID)["output_dir"])
+    fresh = out.parent / "2026-11-08_abcdefghijk_new_stream"
+    fresh.mkdir()                                   # folder made, nothing downloaded yet
+    cfg.drive.enabled = True                        # Drive on, usage not loaded yet
+    r = client.get("/storage")
+    assert r.status_code == 200 and "Only on Google Drive" not in r.text
+    fake = storage.DriveUsage(checked_at=__import__("time").time(), total=10**12, used=10**9, other=0,
+                              free=10**12 - 10**9, ours=0, files=0, by_path={})
+    monkeypatch.setattr(storage, "drive_usage", lambda cfg, rclone=None: fake)
+    client.post("/storage/drive")                   # loaded: the new stream has 0 bytes there too
+    r = client.get("/storage")
+    assert r.status_code == 200 and "Only on Google Drive" not in r.text

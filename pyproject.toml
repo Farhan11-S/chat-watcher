@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx2"]
+subtitles = ["faster-whisper>=1.2.1"]    # Whisper speech to text on clips (models: ~0.5-1.6 GB, downloaded once)
 
 [project.scripts]
 cw = "chatwatcher.cli:app"

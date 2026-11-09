@@ -10,6 +10,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from chatwatcher import store
@@ -24,6 +25,7 @@ class Deps:
     ytdlp: Any = None             # YtDlp-like; None = build from config
     claude: Any = None            # ClaudeRunner-like; None = build from config
     rclone: Any = None            # Rclone-like; None = build from config
+    whisper: Any = None           # subs.transcribe.Engine-like; None = faster-whisper from config
 
 
 @dataclass
@@ -65,10 +67,12 @@ def run_stage(cfg: Config, conn: sqlite3.Connection, video_id: str, stage: str, 
         row = conn.execute("SELECT rank FROM moments WHERE id = ?", (moment_id,)).fetchone()
         if row is None:
             return StageOutcome("error", "moment no longer exists (the video was re-scored)")
-        return {"clip": _clip, "analyze": _analyze, "upload": _upload}[stage](
+        if stage == "render":
+            return _render(cfg, conn, moment_id, say)
+        return {"clip": _clip, "transcribe": _transcribe, "analyze": _analyze, "upload": _upload}[stage](
             cfg, conn, video_id, attempt, deps, say, rank=row["rank"], **_opts(stage, params))
-    fn = {"ingest": _ingest, "score": _score, "clip": _clip, "frames": _frames, "analyze": _analyze,
-          "upload": _upload}[stage]
+    fn = {"ingest": _ingest, "score": _score, "clip": _clip, "transcribe": _transcribe, "frames": _frames,
+          "analyze": _analyze, "upload": _upload}[stage]
     return fn(cfg, conn, video_id, attempt, deps, say, **_opts(stage, params))
 
 
@@ -142,6 +146,46 @@ def _clip(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
     return StageOutcome("done", msg)
 
 
+def _transcribe(cfg, conn, video_id, attempt, deps, say, rank: int | None = None) -> StageOutcome:
+    """Whisper on each downloaded clip that has no words yet; rank: (re)do that one clip.
+    Between clips it gives way to a render you queued, then carries on."""
+    from chatwatcher.subs.transcribe import TranscribeError, Whisper, available, transcribe_clip, WORDS_FILE
+    if deps.whisper is None and not available():
+        return StageOutcome("skip", "Whisper isn't installed (pip install faster-whisper)")
+    rows = conn.execute(
+        """SELECT m.rank, c.path, c.folder FROM clips c JOIN moments m ON m.id = c.moment_id
+           JOIN videos v ON v.id = m.video_id WHERE v.video_id = ?""" + (" AND m.rank = ?" if rank else "")
+        + " ORDER BY m.rank", (video_id, rank) if rank else (video_id,)).fetchall()
+    todo = [r for r in rows if Path(r["path"]).is_file()
+            and (rank or not (Path(r["folder"] or Path(r["path"]).parent) / WORDS_FILE).is_file())]
+    if not todo:
+        return StageOutcome("done", "nothing to transcribe" if not rows else "every clip already transcribed")
+    try:
+        engine = deps.whisper or Whisper(cfg)
+    except TranscribeError as e:
+        return StageOutcome("error", str(e))
+    done, failed, langs = 0, [], set()
+    for i, r in enumerate(todo):
+        if i and conn.execute("SELECT 1 FROM jobs WHERE stage = 'render' AND status = 'pending' "
+                              "AND run_after <= datetime('now') LIMIT 1").fetchone():
+            return StageOutcome("retry", f"{done} transcribed; paused for a render, the rest follow",
+                                timedelta(seconds=1))
+        clip = Path(r["path"])
+        try:
+            d = transcribe_clip(cfg, Path(r["folder"] or clip.parent), clip, engine=engine,
+                                say=lambda m, k=r["rank"]: say(f"#{k}: {m}"))
+        except TranscribeError as e:
+            failed.append(f"#{r['rank']} {e}")
+            continue
+        done += 1
+        langs.add(d["language"])
+        say(f"#{r['rank']}: {len(d['lines'])} lines in {d['took_s']:.0f}s ({d['language']})")
+    msg = f"{done} transcribed" + (f" ({', '.join(sorted(l for l in langs if l))})" if langs else "")
+    if failed:
+        msg += f", {len(failed)} failed: " + "; ".join(failed)[:400]
+    return StageOutcome("done" if done or not failed else "error", msg)
+
+
 def _frames(cfg, conn, video_id, attempt, deps, say) -> StageOutcome:
     """Low-res previews of the moments that aren't downloaded, for Claude."""
     from chatwatcher.clip.preview import PreviewError, preview_video
@@ -182,8 +226,9 @@ def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
         msg += f" ({run.usage['output']:,} output tokens)"
     if deferred:
         reason = next(o.message for o in run.outcomes if o.status == "deferred")
-        from chatwatcher.clock import until_midnight, zone
-        wait = until_midnight(zone(cfg)) if "daily cap" in reason else usage_reset_delay(reason)
+        from chatwatcher.analyze.service import CAP_SETTING, cap_wait
+        wait = (max(cap_wait(cfg, conn), timedelta(minutes=2)) if CAP_SETTING in reason
+                else usage_reset_delay(reason))
         return StageOutcome("retry", f"{msg}; {reason[:200]}", wait)
     if errors and not done and attempt < 3:
         return StageOutcome("retry", msg, timedelta(minutes=30))
@@ -219,12 +264,37 @@ def _upload(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
     return StageOutcome("done", f"{what} to {r.dest}" + (f" ({r.stats})" if r.stats else ""))
 
 
+def _render(cfg, conn, moment_id: int, say) -> StageOutcome:
+    """Your edit from the dashboard editor → edit.mp4 next to clip.mp4."""
+    from chatwatcher.clip.media import MediaError
+    from chatwatcher.edit.service import EditError, render_moment
+    try:
+        r = render_moment(cfg, conn, moment_id)
+    except (EditError, MediaError) as e:
+        return StageOutcome("error", str(e))
+    msg = f"edit rendered: {r['duration_s']:.1f}s, {r['size_bytes'] / 1_048_576:.1f} MB"
+    if r["sounds"]:
+        msg += f", {r['sounds']} sound effect(s)"
+    if r.get("visuals"):
+        msg += f", {r['visuals']} zoom/shake/flash"
+    if r.get("subtitles"):
+        msg += f", {r['subtitles']} subtitle line(s)"
+    if r["missing"]:
+        msg += f"; skipped sounds no longer in the library: {', '.join(r['missing'])}"
+    if r.get("missing_regions"):
+        msg += f"; zoomed on the centre, no region called {', '.join(r['missing_regions'])}"
+    return StageOutcome("done", msg)
+
+
 # ── bookkeeping shared by the worker and `cw run` ─────────────────────────────
 
 def stage_enabled(cfg: Config, stage: str, conn: sqlite3.Connection | None = None) -> bool:
     """Does this stage run automatically? (conn: read the dashboard's auto-upload switch.)"""
     if stage == "clip":
         return cfg.pipeline.auto_clip
+    if stage == "transcribe":
+        from chatwatcher.subs.transcribe import available
+        return cfg.transcribe.enabled and cfg.transcribe.auto and available()
     if stage == "frames":
         return bool(cfg.pipeline.preview_height) and cfg.pipeline.auto_analyze and cfg.claude.enabled
     if stage == "analyze":

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -22,6 +22,7 @@ from markupsafe import Markup
 from pydantic import BaseModel
 
 from chatwatcher import db, discover, jobs, prefs, storage, store
+from chatwatcher.clip.media import MediaError
 from chatwatcher.config import Config
 from chatwatcher.ingest.ytdlp import extract_video_id
 from chatwatcher.paths import vod_files
@@ -40,6 +41,34 @@ class StatusIn(BaseModel):
 
 
 class RedoIn(BaseModel):
+    model: str = ""
+    effort: str = ""
+
+
+class EditIn(BaseModel):
+    segments: Any = None      # [[start, end, gain_db], …] clip time; checked by edit.service
+    source: str | None = None
+    effects: Any = None       # [{t, sound, gain, duck, …}] clip time; None = keep the saved ones
+    subs: Any = None          # [{t0, t1, text, by}] clip time; None = keep (or keep building them from the words)
+    subs_style: Any = None    # {on, size, position}
+
+
+class RegionsIn(BaseModel):
+    regions: Any = None       # [{name, x, y, w, h}] as fractions of the frame
+
+
+class PolishIn(EditIn):
+    model: str = ""
+    effort: str = ""
+
+
+class NamesIn(BaseModel):
+    terms: Any = None         # the whole list (replaces it)
+    add: Any = None           # or terms to add
+
+
+class SuggestIn(EditIn):
+    intensity: str = "normal"
     model: str = ""
     effort: str = ""
 
@@ -366,6 +395,152 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
                              "tokens": a.usage.get("input", 0) + a.usage.get("cache_read", 0)
                              + a.usage.get("cache_write", 0) + a.usage.get("output", 0)})
 
+    # ── editor ───────────────────────────────────────────────────────────────
+
+    def edit_error(e: Exception) -> JSONResponse:
+        from chatwatcher.edit.service import EditError
+        status = 500
+        if isinstance(e, EditError):
+            status = 404 if e.kind == "not_clipped" else 400
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
+
+    def with_worker(state: dict[str, Any]) -> dict[str, Any]:
+        return state | {"worker": worker_status()}
+
+    @app.get("/api/moment/{pk}/edit")
+    def api_edit(pk: int, conn=Depends(get_conn)):
+        """Waveform, pauses, Claude's cuts, your saved cut and the render's state."""
+        from chatwatcher.edit.service import EditError, load
+        try:
+            d = load(cfg, conn, pk)
+        except (EditError, MediaError) as e:
+            return edit_error(e)
+        d["render"] = with_worker(d["render"])
+        return JSONResponse({"ok": True, **d})
+
+    @app.post("/moment/{pk}/edit")
+    def edit_save(pk: int, body: EditIn, conn=Depends(get_conn)):
+        from chatwatcher.edit.service import EditError, render_state, save
+        try:
+            segs = save(cfg, conn, pk, body.segments, body.source, body.effects, body.subs, body.subs_style)
+        except (EditError, MediaError) as e:
+            return edit_error(e)
+        return JSONResponse({"ok": True, "segments": segs, "render": with_worker(render_state(conn, pk, cfg=cfg))})
+
+    @app.post("/moment/{pk}/render")
+    def edit_render(pk: int, body: EditIn, conn=Depends(get_conn)):
+        """Save the cut and queue the render (it goes ahead of other queued work)."""
+        from chatwatcher.edit.service import EditError, render_state, save
+        m = conn.execute("SELECT video_id FROM moments WHERE id = ?", (pk,)).fetchone()
+        if m is None:
+            raise HTTPException(404)
+        try:
+            save(cfg, conn, pk, body.segments, body.source, body.effects, body.subs, body.subs_style)
+        except (EditError, MediaError) as e:
+            return edit_error(e)
+        if jobs.enqueue(conn, m["video_id"], "render", moment_pk=pk) is None:
+            return JSONResponse({"ok": False, "error": "A render of this clip is running. Press Render again "
+                                                       "when it's done to include your latest changes."},
+                                status_code=409)
+        if state["worker"]:
+            state["worker"].poke()
+        return JSONResponse({"ok": True, "render": with_worker(render_state(conn, pk, cfg=cfg))})
+
+    @app.post("/moment/{pk}/effects/suggest")
+    def edit_suggest(pk: int, body: SuggestIn, conn=Depends(get_conn)):
+        """Save the cut, then have Claude place sounds and camera effects on it (10-60 s; the page waits)."""
+        from chatwatcher.edit.service import EditError, render_state, save
+        from chatwatcher.edit.suggest import SuggestError, suggest
+        try:
+            save(cfg, conn, pk, body.segments, body.source, body.effects, body.subs, body.subs_style)
+            r = suggest(cfg, conn, pk, intensity=body.intensity, runner=deps.claude if deps else None,
+                        **claude_choice(body.model, body.effort))
+        except (EditError, MediaError) as e:
+            return edit_error(e)
+        except SuggestError as e:
+            return JSONResponse({"ok": False, "error": str(e), "kind": e.kind},
+                                status_code=503 if e.kind in ("usage_limit", "timeout") else 400)
+        return JSONResponse({"ok": True, "effects": r.effects, "added": r.added, "dropped": r.dropped,
+                             "added_sounds": r.added_sounds, "added_visual": r.added_visual,
+                             "note": r.note, "model": r.model, "render": with_worker(render_state(conn, pk, cfg=cfg))})
+
+    @app.post("/moment/{pk}/subs/polish")
+    def subs_polish(pk: int, body: PolishIn, conn=Depends(get_conn)):
+        """Save the edit, then have Claude fix (and translate) its subtitle lines (10-60 s; the page waits)."""
+        from chatwatcher.edit.service import EditError, render_state, save
+        from chatwatcher.subs.polish import PolishError, polish
+        try:
+            save(cfg, conn, pk, body.segments, body.source, body.effects, body.subs, body.subs_style)
+            r = polish(cfg, conn, pk, runner=deps.claude if deps else None, **claude_choice(body.model, body.effort))
+        except (EditError, MediaError) as e:
+            return edit_error(e)
+        except PolishError as e:
+            return JSONResponse({"ok": False, "error": str(e), "kind": e.kind},
+                                status_code=503 if e.kind in ("usage_limit", "timeout") else 400)
+        return JSONResponse({"ok": True, "subs": r.subs, "changed": r.changed, "joined": r.joined, "dropped": r.dropped,
+                             "names": r.names, "names_added": r.names_added, "note": r.note, "model": r.model,
+                             "render": with_worker(render_state(conn, pk, cfg=cfg))})
+
+    @app.post("/moment/{pk}/names")
+    def subs_names(pk: int, body: NamesIn, conn=Depends(get_conn)):
+        """The names Claude must spell right, for every stream of this moment's channel."""
+        from chatwatcher.edit import regions
+        from chatwatcher.subs import names
+        try:
+            scope, _label = regions.scope_for(conn, pk)
+        except regions.RegionError:
+            raise HTTPException(404)
+        if body.terms is not None:
+            return JSONResponse({"ok": True, "names": names.put(conn, scope, body.terms), "added": []})
+        have, added = names.add(conn, scope, body.add or [])
+        return JSONResponse({"ok": True, "names": have, "added": added})
+
+    @app.post("/moment/{pk}/transcribe")
+    def edit_transcribe(pk: int, conn=Depends(get_conn)):
+        """Queue Whisper on this clip (again). It goes behind the job that's running."""
+        from chatwatcher.edit.service import EditError, clip_ref, transcript_state
+        from chatwatcher.subs.transcribe import available
+        try:
+            clip = clip_ref(conn, pk)
+        except EditError as e:
+            return edit_error(e)
+        if not cfg.transcribe.enabled or not (available() or (deps and deps.whisper)):
+            return JSONResponse({"ok": False, "error": "Whisper isn't installed: run `pip install faster-whisper` "
+                                                       "in the app's environment, then restart."}, status_code=400)
+        m = conn.execute("SELECT video_id FROM moments WHERE id = ?", (pk,)).fetchone()
+        jobs.enqueue(conn, m["video_id"], "transcribe", moment_pk=pk)
+        if state["worker"]:
+            state["worker"].poke()
+        return JSONResponse({"ok": True, "transcript": transcript_state(cfg, conn, pk, clip)})
+
+    @app.get("/api/moment/{pk}/transcript")
+    def api_transcript(pk: int, conn=Depends(get_conn)):
+        from chatwatcher.edit.service import EditError, clip_ref, subtitles, transcript_lines, transcript_state
+        try:
+            clip = clip_ref(conn, pk)
+        except EditError as e:
+            return edit_error(e)
+        return JSONResponse({"ok": True, "transcript": transcript_state(cfg, conn, pk, clip),
+                             "lines": transcript_lines(clip.folder), **subtitles(cfg, conn, pk, clip)})
+
+    @app.post("/moment/{pk}/regions")
+    def edit_regions(pk: int, body: RegionsIn, conn=Depends(get_conn)):
+        """Replace the boxes zooms aim at, for every stream of this moment's channel."""
+        from chatwatcher.edit import regions
+        from chatwatcher.edit.service import render_state
+        try:
+            scope, label = regions.scope_for(conn, pk)
+            boxes = regions.replace(conn, scope, body.regions)
+        except regions.RegionError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return JSONResponse({"ok": True, "regions": boxes, "scope": label,
+                             "render": with_worker(render_state(conn, pk, cfg=cfg))})
+
+    @app.get("/api/moment/{pk}/render")
+    def api_render(pk: int, conn=Depends(get_conn)):
+        from chatwatcher.edit.service import render_state
+        return JSONResponse({"ok": True, "render": with_worker(render_state(conn, pk, cfg=cfg))})
+
     @app.post("/moment/{pk}/{action}")
     def moment_action(pk: int, action: str, start: str = Form(""), end: str = Form(""),
                       model: str = Form(""), effort: str = Form(""), conn=Depends(get_conn)):
@@ -456,6 +631,91 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         drive_cache["usage"] = storage.drive_usage(cfg, rclone=deps.rclone if deps else None)
         return _redirect("/storage")
 
+    # ── sound library ────────────────────────────────────────────────────────
+
+    @app.get("/sounds", response_class=HTMLResponse)
+    def sounds_page(request: Request, conn=Depends(get_conn)):
+        from chatwatcher.edit import sounds
+        rows = sounds.list_sounds(conn)
+        used: dict[str, int] = {}
+        for r in conn.execute("SELECT effects_json FROM edits WHERE effects_json != '[]'"):
+            for fx in json.loads(r["effects_json"]):
+                used[fx.get("sound", "")] = used.get(fx.get("sound", ""), 0) + 1
+        return render(request, "sounds.html", sounds=rows, used=used, pack=sounds.starter_status(conn))
+
+    @app.post("/sounds/upload")
+    def sounds_upload(files: list[UploadFile] = File(...), description: str = Form(""), tags: str = Form(""),
+                      source: str = Form(""), conn=Depends(get_conn)):
+        from chatwatcher.edit import sounds
+        tmp_dir = sounds.sounds_dir(cfg) / ".upload"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        added, failed, skipped = [], [], []
+        for f in files:
+            if not f.filename:
+                continue
+            suffix = Path(f.filename).suffix[:10]
+            tmp = tmp_dir / f"in_{time.time_ns()}{suffix}"
+            try:
+                size = 0
+                with open(tmp, "wb") as out:
+                    while chunk := f.file.read(1 << 20):
+                        size += len(chunk)
+                        if size > sounds.MAX_UPLOAD_BYTES:
+                            raise sounds.SoundError("bigger than 25 MB")
+                        out.write(chunk)
+                known = sounds.starter_for(f.filename, size)    # a starter-pack file: details filled in
+                if known and sounds.already_imported(conn, known):
+                    skipped.append(known["name"])
+                    continue
+                k = known or {}
+                original = known["file"] + suffix.lower() if known else f.filename
+                s = sounds.import_sound(cfg, conn, tmp, original=original, name=k.get("name", ""),
+                                        description=description or k.get("description", ""),
+                                        tags=tags or k.get("tags", ""), source=source or k.get("source", ""))
+                added.append(s["id"])
+            except (sounds.SoundError, MediaError) as e:
+                failed.append(f"{f.filename}: {e}")
+            finally:
+                tmp.unlink(missing_ok=True)
+        if not added and not failed and not skipped:
+            return _redirect("/sounds", error="Pick one or more sound files first.")
+        msg = f"Added {len(added)} sound(s): {', '.join(added)}." if added else ""
+        if skipped:
+            msg += f" Already in your library: {', '.join(skipped)}."
+        if added and not description and conn.execute(
+                "SELECT 1 FROM sounds WHERE description = '' AND id IN (%s)" % ",".join("?" * len(added)),
+                added).fetchone():
+            msg += " Give each one a description, so Claude knows when to use it."
+        if failed:
+            return _redirect("/sounds", error=(msg + "\nCouldn't add: " + "; ".join(failed)).strip())
+        return _redirect("/sounds", msg=msg.strip())
+
+    @app.post("/sounds/{sound_id}/save")
+    def sounds_save(sound_id: str, name: str = Form(""), description: str = Form(""), tags: str = Form(""),
+                    source: str = Form(""), gain_db: float = Form(0.0), conn=Depends(get_conn)):
+        from chatwatcher.edit import sounds
+        try:
+            sounds.update_sound(conn, sound_id, name=name, description=description, tags=tags,
+                                source=source, gain_db=gain_db)
+        except sounds.SoundError as e:
+            return _redirect("/sounds", error=str(e))
+        return _redirect(f"/sounds#s-{sound_id}", msg=f"Saved {sound_id}.")
+
+    @app.post("/sounds/{sound_id}/delete")
+    def sounds_delete(sound_id: str, conn=Depends(get_conn)):
+        from chatwatcher.edit import sounds
+        sounds.delete_sound(cfg, conn, sound_id)
+        return _redirect("/sounds", msg=f"Deleted {sound_id}.")
+
+    @app.get("/media/sound/{sound_id}")
+    def media_sound(sound_id: str, conn=Depends(get_conn)):
+        from chatwatcher.edit import sounds
+        s = sounds.get_sound(conn, sound_id) if sounds.valid_id(sound_id) else None
+        p = sounds.sound_path(cfg, s) if s else None
+        if not p or not p.is_file() or p.parent != sounds.sounds_dir(cfg):
+            raise HTTPException(404)
+        return FileResponse(p, media_type="audio/flac")
+
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_page(request: Request, conn=Depends(get_conn)):
         return render(request, "jobs.html", rows=jobs.list_jobs(conn, include_done=True, limit=200))
@@ -497,6 +757,29 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         p = Path(c["path"])
         kind = "video/mp4" if p.suffix == ".mp4" else "video/x-matroska"
         return FileResponse(p, media_type=kind)
+
+    @app.get("/media/edit/{moment_id}")
+    def media_edit(moment_id: int, dl: int = 0, conn=Depends(get_conn)):
+        from chatwatcher.edit.service import EDIT_FILE
+        c = conn.execute(
+            """SELECT c.folder, v.video_id FROM clips c JOIN moments m ON m.id = c.moment_id
+               JOIN videos v ON v.id = m.video_id WHERE c.moment_id = ?""", (moment_id,)).fetchone()
+        if not c or not c["folder"] or not (Path(c["folder"]) / EDIT_FILE).is_file():
+            raise HTTPException(404)
+        p = Path(c["folder"]) / EDIT_FILE
+        name = f"{c['video_id']}_{p.parent.name}_edit.mp4" if dl else None
+        return FileResponse(p, media_type="video/mp4", filename=name)
+
+    @app.get("/media/edit-srt/{moment_id}")
+    def media_edit_srt(moment_id: int, conn=Depends(get_conn)):
+        from chatwatcher.edit.service import SRT_FILE
+        c = conn.execute(
+            """SELECT c.folder, v.video_id FROM clips c JOIN moments m ON m.id = c.moment_id
+               JOIN videos v ON v.id = m.video_id WHERE c.moment_id = ?""", (moment_id,)).fetchone()
+        if not c or not c["folder"] or not (Path(c["folder"]) / SRT_FILE).is_file():
+            raise HTTPException(404)
+        p = Path(c["folder"]) / SRT_FILE
+        return FileResponse(p, media_type="application/x-subrip", filename=f"{c['video_id']}_{p.parent.name}_edit.srt")
 
     @app.get("/media/preview/{moment_id}/{name}")
     def media_preview_frame(moment_id: int, name: str, conn=Depends(get_conn)):
