@@ -58,10 +58,12 @@ def test_wrap_balances_two_lines():
     assert lines.runs(b, True)[0][0] == ("runs right across the middle", True)
 
 
-def test_preview_wraps_like_the_render():
+@pytest.mark.parametrize("rules", [(lines.MAX_LINE, 2), (lines.SHORT_LINE, lines.SHORT_LINES), (lines.TITLE_LINE, 3)])
+def test_preview_wraps_like_the_render(rules):
     node = shutil.which("node")
     if not node:
         pytest.skip("node isn't installed")
+    max_line, max_lines = rules
     js = EDITOR_JS.read_text(encoding="utf-8")
     start, end = js.index("  const WIDE = "), js.index("  const curSub = ")
     rnd = random.Random(3)
@@ -70,11 +72,12 @@ def test_preview_wraps_like_the_render():
     samples += ["リミッター入れといてよかったちょっと待ってよ本当に", "x" * 50]
     script = (f"const D = {{ sub_layout: {{ max_line: {lines.MAX_LINE} }} }};\n{js[start:end]}\n"
               f"const S = {json.dumps(samples, ensure_ascii=False)};\n"
-              "console.log(JSON.stringify(S.map(t => { let on = false; return wrapSub(t).map(l => { const [r, a] = runsOf(l, on); on = a; return r; }); })));")
+              f"console.log(JSON.stringify(S.map(t => {{ let on = false; return wrapSub(t, {max_line}, {max_lines})"
+              ".map(l => { const [r, a] = runsOf(l, on); on = a; return r; }); })));")
     got = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
     for text, js_lines in zip(samples, got):
         on, want = False, []
-        for line in wrap(text):
+        for line in wrap(text, max_line, max_lines):
             r, on = lines.runs(line, on)
             want.append([[p, h] for p, h in r])
         assert js_lines == want, text

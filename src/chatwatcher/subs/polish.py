@@ -131,16 +131,16 @@ def apply(cues: list[dict[str, Any]], out: list[dict[str, Any]], ids: set[str]) 
 
 
 def polish(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, runner: ClaudeRunner | None = None,
-           model: str | None = None, effort: str | None = None) -> Polished:
+           model: str | None = None, effort: str | None = None, kind: str = "long") -> Polished:
     """Have Claude fix (and translate) the subtitle lines in the saved cut; saves them."""
     if not cfg.claude.enabled:
         raise PolishError("claude.enabled is false in the config.", "disabled")
     clip = service.clip_ref(conn, moment_pk)
-    row = conn.execute("SELECT * FROM edits WHERE moment_id = ?", (moment_pk,)).fetchone()
+    row = service._stored(conn, moment_pk, kind)
     if row is None:
         raise PolishError("Save a cut first.", "invalid")
     segs = service._to_clip(json.loads(row["segments_json"]), clip)
-    cues, _source, _style = service.current_subs(cfg, row, clip)
+    cues, _source, _style = service.current_subs(cfg, row, clip, kind)
     in_cut = [c for c in cues if any(c["t0"] < e and c["t1"] > s for s, e, *_ in segs)]
     if not in_cut:
         raise PolishError("No subtitle lines in your cut. Transcribe the clip with 🎙 first.", "no_subs")
@@ -158,7 +158,7 @@ def polish(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, runner: Cla
         runner = runner or ClaudeRunner(cfg.claude)
         res = runner.run(prompt, schema([c["id"] for c in in_cut]),
                          system=SYSTEM.format(language=cfg.claude.output_language), cwd=clip.folder,
-                         model=model, effort=effort)
+                         model=model or cfg.claude.edit_model, effort=effort or cfg.claude.edit_effort)
     except ClaudeError as e:
         hint = {"usage_limit": "Claude's usage limit is reached; try again after it resets.",
                 "auth": "The claude CLI isn't logged in. Run `claude auth login` in a terminal.",
@@ -166,8 +166,7 @@ def polish(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, runner: Cla
         raise PolishError(hint or str(e), e.kind) from e
 
     new, changed, joined, dropped = apply(cues, res.data.get("lines") or [], {c["id"] for c in in_cut})
-    service.save(cfg, conn, moment_pk, segs, None, None, subs=new)
+    service.save(cfg, conn, moment_pk, segs, None, None, subs=new, kind=kind)
     all_names, added = name_list.add(conn, scope, res.data.get("names") or [])
-    saved, _s, _st = service.current_subs(cfg, conn.execute("SELECT * FROM edits WHERE moment_id = ?",
-                                                            (moment_pk,)).fetchone(), clip)
+    saved, _s, _st = service.current_subs(cfg, service._stored(conn, moment_pk, kind), clip, kind)
     return Polished(saved, changed, joined, dropped, all_names, added, str(res.data.get("note") or ""), res.model)

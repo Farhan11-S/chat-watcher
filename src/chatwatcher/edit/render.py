@@ -134,12 +134,17 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
            has_audio: bool = True, sounds: list[SoundCue] | None = None,
            visuals: list[Visual] | None = None, subs: list[dict] | None = None,
            sub_style: dict | None = None, size: tuple[int, int] = (0, 0), font: str | None = None,
+           intro: Path | None = None, intro_s: float = 0.0, layout: str | None = None, title: str = "",
            on_progress: Callable[[float], None] | None = None) -> Rendered:
     """segments: [[start, end, gain_db], …] in src time, in play order. sounds: effects
     placed on the edit's timeline (ignored if the clip has no audio). visuals: zooms,
     shakes and flashes in src time, so they stay on the same moment wherever it plays.
     subs: subtitle cues in src time, burned in over the picture (after any zoom), in
-    sub_style; size: the video's width and height, for the subtitles' scale."""
+    sub_style; size: the video's width and height, for the subtitles' scale. intro: a video
+    played first (scaled to size, re-encoded like the segments), intro_s of it; sounds
+    must already be placed after it. layout: an ffmpeg graph from [0:v] to [base] that
+    builds a Short's picture (edit.layout.graph); size is then the Short's, the visuals are
+    in its frame, and title shows in its top band."""
     from chatwatcher.subs import lines
     if not segments:
         raise MediaError("nothing to render")
@@ -153,10 +158,24 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
         # Whole frames per segment, and audio cut to exactly the same length, so sound and
         # picture can't drift apart over many cuts.
         seg_lengths = lengths(segments, fps)
-        total = sum(seg_lengths)
+        intro_s = max(1, round(intro_s * fps)) / fps if intro else 0.0
+        total = sum(seg_lengths) + intro_s
         encode_share = 0.85 if has_audio and cfg.loudness_lufs else 0.97
         done = 0.0
         parts = []
+        if intro:
+            part = tmp / "intro.mkv"
+            w, h = size if size[0] and size[1] else (probe(src).width, probe(src).height)
+            args = ["-v", "error", "-i", str(intro), "-t", f"{intro_s:.6f}", "-map", "0:v:0",
+                    "-vf", f"scale={w}:{h}:flags=lanczos,setsar=1,fps={fps:.6g}",
+                    "-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf), "-pix_fmt", "yuv420p"]
+            if has_audio:
+                args += ["-map", "0:a:0", "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
+                         "-af", f"apad,atrim=0:{intro_s:.6f}"]
+            _ffmpeg(args + [str(part)], timeout=600)
+            parts.append(part)
+            done = intro_s
+            report(done / total * encode_share)
         for i, ((s, _e, gain), length) in enumerate(zip(segments, seg_lengths)):
             part = tmp / f"part{i:03d}.mkv"
             args = ["-v", "error", "-ss", f"{s:.3f}", "-i", str(src), "-t", f"{length:.6f}",
@@ -164,12 +183,17 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                     "-pix_fmt", "yuv420p"]
             vf = video_filter(local(visuals or [], s, length), fps, length)
             shown = lines.local(subs or [], s, length)
-            if shown:       # relative name: ffmpeg runs in tmp, so no path escaping in the filter
-                (tmp / f"part{i:03d}.ass").write_text(lines.ass(shown, sub_style or {}, *size, font=font or lines.FONT),
-                                                     encoding="utf-8")
+            if shown or title:       # relative name: ffmpeg runs in tmp, so no path escaping in the filter
+                (tmp / f"part{i:03d}.ass").write_text(
+                    lines.ass(shown, sub_style or {}, *size, font=font or lines.FONT, title=title, title_until=length),
+                    encoding="utf-8")
                 vf = (vf + "," if vf else "") + f"ass=part{i:03d}.ass"
-            if vf:          # in a file: the expressions can be longer than a command line allows
-                script = tmp / f"part{i:03d}.vf"
+            script = tmp / f"part{i:03d}.vf"      # in a file: the expressions can be longer than a command line allows
+            if layout:
+                script.write_text(f"{layout};[base]{vf or 'null'}[v]", encoding="utf-8")
+                args[args.index("0:v:0")] = "[v]"
+                args += ["-/filter_complex", str(script)]
+            elif vf:
                 script.write_text(vf, encoding="utf-8")
                 args += ["-/vf", str(script)]
             if has_audio:

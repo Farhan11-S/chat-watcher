@@ -15,9 +15,9 @@ from typing import Any
 from chatwatcher.config import Config
 
 
-# Video files in a clip folder: the download and your rendered edit. "Delete clip videos"
-# removes these; everything else (summaries, storyboards, frames) stays.
-CLIP_FILES = ("clip.mp4", "clip.mkv", "edit.mp4")
+# Video files in a clip folder: the download, your rendered edit, Short and intro. "Delete clip
+# videos" removes these; everything else (summaries, storyboards, frames, thumbnail) stays.
+CLIP_FILES = ("clip.mp4", "clip.mkv", "edit.mp4", "short.mp4", "intro.mp4")
 
 
 def dir_size(path: Path) -> tuple[int, int]:
@@ -280,22 +280,40 @@ def delete_streams(cfg: Config, conn: sqlite3.Connection, keys: list[str], *,
             res.streams += 1
             continue
 
-        res.freed += dir_size(folder)[0]
-        shutil.rmtree(folder)
-        channel_dir = folder.parent
-        if channel_dir != cfg.paths.output_dir and not any(channel_dir.iterdir()):
-            channel_dir.rmdir()
         if v is not None:
-            work = cfg.paths.data_dir / "vods" / v["video_id"]
-            if work.is_dir() and not work.is_symlink() and _inside(cfg.paths.data_dir, work):
-                res.freed += dir_size(work)[0]
-                shutil.rmtree(work)
-            # Seen-but-deleted: the watcher skips video ids it has a `discovered` row for.
-            conn.execute(
-                """INSERT INTO discovered (video_id, channel_id, title, duration_s, action, reason)
-                   VALUES (?, ?, ?, ?, 'skipped', 'deleted from the Storage page')
-                   ON CONFLICT (video_id) DO UPDATE SET action = 'skipped', reason = excluded.reason""",
-                (v["video_id"], v["channel_id"], v["title"], v["duration_s"]))
-            conn.execute("DELETE FROM videos WHERE id = ?", (v["id"],))   # moments, clips, analyses, jobs, Q&A go too
+            res.freed += remove_video(cfg, conn, v, "deleted from the Storage page")
+        else:
+            res.freed += _remove_dir(cfg, folder)
         res.streams += 1
     return res
+
+
+def _remove_dir(cfg: Config, folder: Path) -> int:
+    """Delete a stream's output folder (and its channel folder once empty). Returns bytes freed."""
+    if not folder.is_dir() or folder.is_symlink() or not _inside(cfg.paths.output_dir, folder):
+        return 0
+    freed = dir_size(folder)[0]
+    shutil.rmtree(folder)
+    channel_dir = folder.parent
+    if channel_dir.resolve() != cfg.paths.output_dir.resolve() and not any(channel_dir.iterdir()):
+        channel_dir.rmdir()
+    return freed
+
+
+def remove_video(cfg: Config, conn: sqlite3.Connection, v: sqlite3.Row, reason: str) -> int:
+    """Remove a stream from this computer and the dashboard: its folder, its working data
+    (chat, captions), its moments, clips and queue jobs. It's remembered as seen, so the
+    channel watcher doesn't fetch it again. Google Drive isn't touched. Returns bytes freed."""
+    freed = _remove_dir(cfg, Path(v["output_dir"])) if v["output_dir"] else 0
+    work = cfg.paths.data_dir / "vods" / v["video_id"]
+    if work.is_dir() and not work.is_symlink() and _inside(cfg.paths.data_dir, work):
+        freed += dir_size(work)[0]
+        shutil.rmtree(work)
+    # Seen-but-removed: the watcher skips video ids it has a `discovered` row for.
+    conn.execute(
+        """INSERT INTO discovered (video_id, channel_id, title, duration_s, action, reason)
+           VALUES (?, ?, ?, ?, 'skipped', ?)
+           ON CONFLICT (video_id) DO UPDATE SET action = 'skipped', reason = excluded.reason""",
+        (v["video_id"], v["channel_id"], v["title"], v["duration_s"], reason))
+    conn.execute("DELETE FROM videos WHERE id = ?", (v["id"],))   # moments, clips, analyses, jobs, Q&A go too
+    return freed

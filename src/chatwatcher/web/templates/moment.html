@@ -76,6 +76,13 @@
     <div class="ed-side">
       <div class="ed-head">
         <h2>Edit</h2>
+        <div class="ed-kinds" role="tablist" aria-label="Which edit">
+          <button type="button" class="small on" role="tab" aria-selected="true" data-ed-kind="long"
+                  title="The 16:9 edit: edit.mp4">Long 16:9</button>
+          <button type="button" class="small" role="tab" aria-selected="false" data-ed-kind="short"
+                  title="A 9:16 Short of this clip, with its own cut, effects, subtitles and layout: short.mp4">Short 9:16</button>
+        </div>
+        <small class="muted" data-ed-kind-note></small>
         <span class="muted" data-ed-total></span>
       </div>
       <div class="actions ed-presets">
@@ -84,9 +91,35 @@
         <button type="button" class="small" data-ed-preset="short">Claude's short</button>
         <button type="button" class="small" data-ed-preset="whole">Whole clip</button>
       </div>
+      <div class="ed-layout" data-ed-layout hidden>
+        <div class="actions">
+          <small class="muted">Layout</small>
+          <button type="button" class="small" data-lay-type="crop" title="A tall window cut from the stream, centred on her">Crop</button>
+          <button type="button" class="small" data-lay-type="stack" title="Two boxes stacked: the game on top, her face below (draw them with ▢ Regions)">Stack</button>
+          <button type="button" class="small" data-lay-type="fit" title="The whole frame across the middle, over a blurred copy">Fit + blur</button>
+        </div>
+        <div class="ed-lay-row" data-lay-for="crop">
+          <label><small>Left ↔ right</small><input type="range" min="0" max="1" step="0.005" data-lay="x" aria-label="Crop position, left to right"></label>
+          <label><small>Zoom</small><input type="range" min="1" max="2.5" step="0.05" data-lay="scale" aria-label="Crop zoom"></label>
+          <label><small>Up ↕ down</small><input type="range" min="0" max="1" step="0.01" data-lay="y" aria-label="Crop position, top to bottom (when zoomed)"></label>
+          <span class="actions" data-lay-centre></span>
+        </div>
+        <div class="ed-lay-row" data-lay-for="stack">
+          <label><small>Top</small><select data-lay="top" aria-label="Top box"></select></label>
+          <label><small>Bottom</small><select data-lay="bottom" aria-label="Bottom box"></select></label>
+          <label><small>Split</small><input type="range" min="0.3" max="0.7" step="0.01" data-lay="split" aria-label="Top part's share of the height"></label>
+        </div>
+        <div class="ed-lay-row">
+          <label class="ed-lay-title"><small>Title</small><input type="text" maxlength="100" data-lay="title"
+                 placeholder="Text in the top band (optional)" title="*stars* around a word make it yellow"></label>
+          <span class="actions" data-lay-titles></span>
+        </div>
+        <small class="faint" data-lay-hint></small>
+      </div>
       <details class="ed-notes" data-ed-notes hidden><summary>Claude's editing notes</summary><p data-ed-notes-text></p></details>
       <div class="ed-tx" data-ed-tx></div>
       <div class="ed-lines" data-ed-lines><p class="faint"><small>Loading the transcript…</small></p></div>
+      <small class="ed-list-msg" data-ed-list-msg role="status" hidden></small>
     </div>
   </div>
 
@@ -167,6 +200,75 @@
     <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> 0.1 s (<kbd>Shift</kbd> 1 s) · <kbd>I</kbd>/<kbd>O</kbd> start/end here ·
     <kbd>S</kbd> split · <kbd>F</kbd> add sound · <kbd>Z</kbd> punch-in · <kbd>X</kbd> shake · <kbd>[</kbd><kbd>]</kbd> previous/next segment · <kbd>Del</kbd> delete · <kbd>Enter</kbd> play edit · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo
   </small></p>
+</div>
+
+<div class="maker-row">
+<div class="card maker" id="intro" data-intro="{{ moment.id }}">
+  <div class="maker-head">
+    <h2>Intro</h2>
+    <label class="muted" title="Render edit puts the intro in front of your cut (it renders the intro first if it changed)">
+      <input type="checkbox" data-in-on> <small>start edit.mp4 with it</small></label>
+    <span class="spacer"></span>
+    <a class="muted" href="/brand"><small>brand: <span data-in-brand>…</span> ✎</small></a>
+  </div>
+  <p class="faint maker-help"><small>Teasers from this clip → a glitch into your colours → your logo and name. They're picked from
+    your edit: the loudest lines, Claude's hook and payoff, and a <b>blast</b> (shake + red tint) on the biggest scream with the
+    line that leads into it. Click a time to play it.</small></p>
+  <div class="maker-list" data-in-list><p class="faint"><small>Loading…</small></p></div>
+  <div class="actions">
+    <button type="button" class="small" data-in-act="add" title="A teaser from the subtitle line at the editor's playhead">+ Teaser at playhead</button>
+    <button type="button" class="small" data-in-act="auto" title="Forget your changes and pick from the edit again (they then follow the edit)">↻ Pick again</button>
+    <button type="button" class="small" data-in-act="play" title="Play the teasers one after another in the editor's player">▶ Play teasers</button>
+    <span class="muted" data-in-total></span>
+  </div>
+  <div class="actions maker-go">
+    <button type="button" class="primary" data-in-act="render">Render intro</button>
+    <small class="muted" data-in-saved></small>
+  </div>
+  <div data-in-state></div>
+</div>
+
+<div class="card maker" id="thumb" data-thumb="{{ moment.id }}">
+  <div class="maker-head">
+    <h2>Thumbnail</h2>
+    <div class="ed-kinds" role="tablist" aria-label="Which picture">
+      <button type="button" class="small on" role="tab" aria-selected="true" data-th-shape="wide"
+              title="The video's thumbnail: thumbnail.jpg, 1280×720">Video 16:9</button>
+      <button type="button" class="small" role="tab" aria-selected="false" data-th-shape="tall"
+              title="The Short's cover: short_cover.jpg, 1080×1920, in the Short's layout">Short 9:16</button>
+    </div>
+    <span class="spacer"></span>
+    <small class="muted" data-th-saved></small>
+  </div>
+  <div class="thumb-view" data-th-view>
+    <img data-th-img alt="Thumbnail preview" width="1280" height="720">
+    <span class="thumb-busy" data-th-busy hidden>drawing…</span>
+  </div>
+  <p class="faint maker-help"><small data-th-help>Click the picture to centre the zoom there.</small></p>
+  <label class="thumb-text"><span><small>Text · <code>*stars*</code> make a word {{ 'yellow' }} · Enter starts a new line</small></span>
+    <textarea data-th-text rows="2" maxlength="120" aria-label="Thumbnail text"></textarea></label>
+  <div class="actions">
+    <small class="muted">Frame <span class="mono" data-th-t></span></small>
+    <button type="button" class="small" data-th-act="playhead" title="Use the frame at the editor's playhead">Use playhead frame</button>
+    <button type="button" class="small" data-th-act="claude" title="Claude's frame and text, zoomed on the face box">Claude's pick</button>
+  </div>
+  <div class="actions">
+    <label class="muted thumb-zoom"><small>zoom <span data-th-zoomv></span></small>
+      <input type="range" min="1" max="3" step="0.05" data-th-zoom aria-label="Zoom"></label>
+    <label class="muted"><small>style</small>
+      <select data-th-style aria-label="Style"><option value="band">band</option><option value="shade">shade</option><option value="clean">clean</option></select></label>
+    <label class="muted" data-th-only="wide"><small>text on the</small>
+      <select data-th-side aria-label="Text side"><option value="auto">free side</option><option value="left">left</option><option value="right">right</option></select></label>
+    <label class="muted" data-th-only="tall" hidden><small>text at the</small>
+      <select data-th-place aria-label="Text position"><option value="top">top</option><option value="middle">middle</option><option value="bottom">bottom (above YouTube's title)</option></select></label>
+    <label class="muted"><input type="checkbox" data-th-logo> <small>badge</small></label>
+    <label class="muted"><input type="checkbox" data-th-tilt> <small>tilt</small></label>
+  </div>
+  <div class="actions maker-go">
+    <button type="button" class="primary" data-th-act="save" data-th-save>Save thumbnail.jpg</button>
+    <span data-th-links></span>
+  </div>
+</div>
 </div>
 {% endif %}
 
@@ -315,4 +417,4 @@
   {% if a %}<p class="faint" style="margin:.6rem 0 0"><small>Analysed by {{ a.model }}{% if a._meta and a._meta.effort %} ({{ a._meta.effort }} effort){% endif %} at {{ a.created_at | when }}. Check it before publishing.</small></p>{% endif %}
 </div>
 {% endblock %}
-{% block scripts %}{% if clip and clip.exists %}<script src="/static/editor.js"></script>{% endif %}{% endblock %}
+{% block scripts %}{% if clip and clip.exists %}<script src="{{ asset('editor.js') }}"></script><script src="{{ asset('maker.js') }}"></script>{% endif %}{% endblock %}

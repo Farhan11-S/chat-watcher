@@ -18,6 +18,10 @@
     {% if video.status == 'error' or stages.values() | selectattr('status', 'equalto', 'error') | list %}
     <form method="post" action="/video/{{ video.video_id }}/retry" class="inline"><button class="small">↻ Retry</button></form>
     {% endif %}
+    <span style="flex:1"></span>
+    <form method="post" action="/video/{{ video.video_id }}/remove" class="inline"
+          onsubmit="return confirm('Remove this stream? Its clips, edits and summaries on this computer and its queue jobs are deleted, and the channel watcher won\'t fetch it again. Google Drive isn\'t touched.')">
+      <button class="small danger" title="Delete this stream from the dashboard and this computer">✕ Remove stream</button></form>
   </div>
   {% if video.error %}<p class="faint" style="margin:.5rem 0 0; white-space:pre-wrap">{{ video.error }}</p>{% endif %}
   {% if video.output_dir %}<p style="margin:.5rem 0 0"><small class="muted">📁 <span class="mono">{{ video.output_dir }}</span>

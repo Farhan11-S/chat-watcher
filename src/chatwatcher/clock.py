@@ -3,7 +3,7 @@ against) and shown in one time zone: general.timezone, or this computer's when e
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -51,6 +51,19 @@ def fmt(value: Any, tz: tzinfo | None, *, date_only: bool = False, seconds: bool
     if date_only:
         return local.strftime("%Y-%m-%d")
     return local.strftime("%Y-%m-%d %H:%M" + (":%S" if seconds else "")) + " " + abbr(local)
+
+
+def local_days(start: date, end: date, tz: tzinfo | None) -> tuple[str, str]:
+    """The UTC span (SQLite format) of local days start..end, both included: to compare
+    with datetime(stored time)."""
+    def utc(d: date) -> str:
+        midnight = datetime.combine(d, time.min, tzinfo=tz) if tz else datetime.combine(d, time.min).astimezone()
+        return midnight.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return utc(start), utc(end + timedelta(days=1))
+
+
+def today(tz: tzinfo | None) -> date:
+    return datetime.now(timezone.utc).astimezone(tz).date()
 
 
 def zone_name(tz: tzinfo | None) -> str:

@@ -22,22 +22,35 @@
 </div>
 
 <div class="card">
-  <h2>Streams</h2>
+  <div class="streams-head">
+    <h2>Streams{% if flt.on %} <small class="muted">· {{ flt.label }} · {{ videos | length }}</small>{% endif %}</h2>
+    <form method="get" action="/" class="actions stream-filter" aria-label="Filter streams by date">
+      <a class="btn small{{ ' on' if flt.day == 'today' }}" href="/?day=today" title="Streams that started today ({{ tzname }})">Today</a>
+      <a class="btn small{{ ' on' if flt.day == 'yesterday' }}" href="/?day=yesterday">Yesterday</a>
+      <label class="muted"><small>from</small> <input type="date" name="from" value="{{ flt['from'] }}" max="{{ flt.today }}"></label>
+      <label class="muted"><small>to</small> <input type="date" name="to" value="{{ flt['to'] }}" max="{{ flt.today }}"></label>
+      <button class="small">Show</button>
+      {% if flt.on %}<a class="btn small" href="/">All streams</a>{% endif %}
+    </form>
+  </div>
   {% if videos %}
   <div class="table-wrap"><table>
-    <tr><th>Stream</th><th>Progress</th><th class="num">Moments</th><th class="num">Clips</th><th class="num">Storyboards</th><th>Status</th></tr>
+    <tr><th>Stream</th><th>Progress</th><th class="num">Moments</th><th class="num" title="Claude's highest rating (clip worthiness, 1-10) of a moment in this stream">Top rating</th><th class="num">Clips</th><th class="num">Storyboards</th><th>Status</th></tr>
     {% for v in videos %}
     <tr>
       <td><a href="/video/{{ v.video_id }}">{{ v.title or v.video_id }}</a><br>
-        <small>{{ v.channel_title or '' }}{% if v.duration_s %} · {{ v.duration_s | ts }}{% endif %}{% if v.detected_type %} · {{ v.stream_type if v.stream_type != 'auto' else v.detected_type }}{% endif %}</small></td>
+        <small>{{ v.channel_title or '' }}{% if v.published_at or v.added_at %} · {{ (v.published_at or v.added_at) | when }}{% endif %}{% if v.duration_s %} · {{ v.duration_s | ts }}{% endif %}{% if v.detected_type %} · {{ v.stream_type if v.stream_type != 'auto' else v.detected_type }}{% endif %}</small></td>
       <td>{{ stage_pills(v.stages) }}</td>
       <td class="num">{{ v.n_moments }}{% if v.n_moments %}<br><small class="muted" title="kept · skipped · still to review">{{ v.n_kept }} ✓ · {{ v.n_skipped }} ✗{% if v.n_moments - v.n_kept - v.n_skipped %} · <b>{{ v.n_moments - v.n_kept - v.n_skipped }} to review</b>{% endif %}</small>{% endif %}</td>
+      <td class="num toprate">{% if v.top %}<a href="/moment/{{ v.top.id }}" title="Moment #{{ v.top.rank }}{% if v.top.category %} · {{ v.top.category }}{% endif %}"><b class="{{ 'hi' if v.top.worthiness >= 8 else 'mid' if v.top.worthiness >= 6 else '' }}">{{ v.top.worthiness }}</b><small>/10</small></a><br><small class="muted">#{{ v.top.rank }}{% if v.top.n_great > 1 %} · {{ v.top.n_great }} rated 8+{% endif %}</small>{% else %}<small class="faint">—</small>{% endif %}</td>
       <td class="num">{{ v.n_clips }}</td>
       <td class="num">{{ v.n_analyses }}</td>
       <td>{{ status_pill(v.status) }}{% if v.error %}<br><small class="faint">{{ v.error[:90] }}</small>{% endif %}</td>
     </tr>
     {% endfor %}
   </table></div>
+  {% elif flt.on %}
+  <p class="empty">No streams {{ 'today' if flt.day == 'today' else 'yesterday' if flt.day == 'yesterday' else 'in that range' }}. <a href="/">Show all streams</a></p>
   {% else %}
   <p class="empty">No streams yet. Paste a VOD URL above, or watch a channel.</p>
   {% endif %}

@@ -157,7 +157,7 @@ def test_migration_keeps_jobs(tmp_path):
         conn.executescript(f"BEGIN; {db.MIGRATIONS[version - 1]}; PRAGMA user_version = {version}; COMMIT;")
     v = conn.execute("INSERT INTO videos (video_id) VALUES ('abcdefghijk')").lastrowid
     conn.execute("INSERT INTO jobs (video_id, stage, status, message, params_json) VALUES (?, 'clip', 'error', 'x', '{}')", (v,))
-    assert db.migrate(conn) == [8, 9, 10, 11, 12, 13]
+    assert db.migrate(conn) == [8, 9, 10, 11, 12, 13, 14, 15, 16]
     j = conn.execute("SELECT * FROM jobs").fetchone()
     assert (j["stage"], j["status"], j["message"], j["params_json"]) == ("clip", "error", "x", "{}")
     m = conn.execute("INSERT INTO moments (video_id, rank, score, start_s, end_s, peak_s) VALUES (?,1,1,0,30,10)",
@@ -252,7 +252,7 @@ class FakeSuggester:
         self.effects, self.visual, self.calls = effects, visual or [], []
 
     def run(self, prompt, schema, *, system, cwd, allow_read=False, model=None, effort=None):
-        self.calls.append({"prompt": prompt, "schema": schema, "system": system, "model": model})
+        self.calls.append({"prompt": prompt, "schema": schema, "system": system, "model": model, "effort": effort})
         return ClaudeResult({"effects": self.effects, "visual": self.visual, "note": "kept it light"},
                             "claude-test", 1, {})
 
@@ -268,6 +268,7 @@ def test_sounds_page_and_suggestions(site, tmp_path):  # noqa: F811
     d = client.post(f"/moment/{m}/effects/suggest", json=seg).json()
     assert d["ok"] and d["added"] == 0
     first = deps.claude.calls[0]
+    assert (first["model"], first["effort"]) == ("opus", "high")          # claude.edit_model / edit_effort
     assert first["schema"]["properties"]["effects"]["maxItems"] == 0 and "camera effects only" in first["prompt"]
 
     # Upload two sounds on the Sounds page.

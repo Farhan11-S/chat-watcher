@@ -2,6 +2,8 @@
 // split, reorder and set volume per segment, place sound effects and punch-ins,
 // push-ins, shakes and flashes (or let Claude place them), preview it all in the
 // browser, edit the subtitles Whisper's words give, then render edit.mp4 on the server.
+// The Short tab is a second edit of the same clip in 9:16 (its own cut, effects and
+// subtitles, plus a layout: crop / stack / fit), previewed on a canvas and rendered to short.mp4.
 // Everything here is clip time (seconds into clip.mp4).
 (function () {
   const root = document.querySelector("[data-editor]");
@@ -42,7 +44,12 @@
   let subs = [], subStyle = { on: true, size: "normal", position: "bottom" }, selSub = null;
   let subsMine = false;        // false: the lines follow Whisper's words (saved as "auto"); true: you changed them
   let subKey = "", listFor = null;
+  let kind = "long";           // which edit: long (edit.mp4) | short (short.mp4, 9:16)
+  let layout = null;           // the Short's layout (edit/layout.py)
+  let layEditing = false;      // a slider or the title is being changed (one undo step for the whole drag)
+  let comp = null, bgc = null; // the Short's preview: the picture before zoom, and the small blurred background
   try { snapOn = localStorage.getItem("cw-ed-snap") !== "0"; lastSound = localStorage.getItem("cw-ed-sound"); } catch (e) {}
+  try { if (localStorage.getItem("cw-ed-kind") === "short") kind = "short"; } catch (e) {}
   $("[data-ed-snap]").checked = snapOn;
 
   // ── helpers ──────────────────────────────────────────────────────────────
@@ -119,7 +126,49 @@
   // shows what the render will. A view is a centre and a half-size, as fractions of the frame.
   function centre(name) {
     const b = D.regions[name];
-    return b ? [b.x + b.w / 2, b.y + b.h / 2] : [0.5, 0.5];
+    if (!b) return [0.5, 0.5];
+    if (kind !== "short" || !layout) return [b.x + b.w / 2, b.y + b.h / 2];
+    return mapPoint(b.x + b.w / 2, b.y + b.h / 2, panels()) || [0.5, 0.5];     // where it lands on the Short
+  }
+
+  // ── the Short's layout: the same maths as panels() in edit/layout.py ──────
+  const isShort = () => kind === "short" && !!layout && !regionMode;
+  function fitBox([bx, by, bw, bh], aspect, sw, sh) {
+    let pw = bw * sw, ph = bh * sh;
+    if (pw / ph < aspect) pw = ph * aspect; else ph = pw / aspect;
+    if (pw > sw) { pw = sw; ph = sw / aspect; }
+    if (ph > sh) { pw = sh * aspect; ph = sh; }
+    const cx = (bx + bw / 2) * sw, cy = (by + bh / 2) * sh;
+    const x0 = Math.min(Math.max(cx - pw / 2, 0), sw - pw), y0 = Math.min(Math.max(cy - ph / 2, 0), sh - ph);
+    return [x0 / sw, y0 / sh, pw / sw, ph / sh];
+  }
+  const boxOf = name => { const b = name && D.regions[name]; return b ? [b.x, b.y, b.w, b.h] : [0, 0, 1, 1]; };
+  function panels() {
+    const [OW, OH] = D.layout_info.out;
+    const sw = video.videoWidth || D.layout_info.src[0], sh = video.videoHeight || D.layout_info.src[1];
+    const L = layout;
+    if (L.type === "stack") {
+      const s = L.split;
+      return [{ src: fitBox(boxOf(L.top), OW / (OH * s), sw, sh), dst: [0, 0, 1, s] },
+              { src: fitBox(boxOf(L.bottom), OW / (OH * (1 - s)), sw, sh), dst: [0, s, 1, 1 - s] }];
+    }
+    if (L.type === "fit") {
+      const h = OW * sh / sw / OH;
+      return [{ src: fitBox([0, 0, 1, 1], OW / OH, sw, sh), dst: [0, 0, 1, 1], blur: true },
+              { src: [0, 0, 1, 1], dst: [0, (1 - h) / 2, 1, h] }];
+    }
+    let ph = sh / L.scale, pw = ph * OW / OH;
+    if (pw > sw) { pw = sw; ph = sw * OH / OW; }
+    const x0 = Math.min(Math.max(L.x * sw - pw / 2, 0), sw - pw), y0 = Math.min(Math.max(L.y * sh - ph / 2, 0), sh - ph);
+    return [{ src: [x0 / sw, y0 / sh, pw / sw, ph / sh], dst: [0, 0, 1, 1] }];
+  }
+  function mapPoint(x, y, ps) {
+    for (const p of [...ps].reverse()) {
+      if (p.blur) continue;
+      const [sx, sy, sw, sh] = p.src, [dx, dy, dw, dh] = p.dst;
+      if (sx <= x && x <= sx + sw && sy <= y && y <= sy + sh) return [dx + (x - sx) / sw * dw, dy + (y - sy) / sh * dh];
+    }
+    return null;
   }
   function fitZoom(name) {
     const b = D.regions[name], [lo, hi] = D.visual.zoom_range;
@@ -161,12 +210,81 @@
     const k = Math.min(bw / vw, bh / vh), w = vw * k, h = vh * k;
     return { left: video.offsetLeft + (bw - w) / 2, top: video.offsetTop + (bh - h) / 2, width: w, height: h };
   }
+  // Where the picture shows: the video's box, or the Short's 9:16 box in the player.
+  function viewBox() {
+    if (!isShort()) return pictureBox();
+    const pl = video.parentElement, bw = pl.clientWidth, bh = pl.clientHeight;
+    const k = Math.min(bw / 9, bh / 16), w = 9 * k, h = 16 * k;
+    return { left: (bw - w) / 2, top: (bh - h) / 2, width: w, height: h };
+  }
   function place(elm, box) {
     for (const k of ["left", "top", "width", "height"]) elm.style[k] = box[k] + "px";
+  }
+  // The Short: its panels drawn from the video, then the zoom/shake view of that, flashes
+  // and the title (subtitles are the HTML layer on top, as for the long edit).
+  function drawShort() {
+    if (stage.hidden) { stage.hidden = false; stageOn = true; }
+    const box = viewBox(), dpr = window.devicePixelRatio || 1;
+    place(stage, box);
+    const cw = Math.round(box.width * dpr), ch = Math.round(box.height * dpr);
+    if (stage.width !== cw || stage.height !== ch) { stage.width = cw; stage.height = ch; }
+    if (!comp) { comp = document.createElement("canvas"); bgc = document.createElement("canvas"); }
+    if (comp.width !== cw || comp.height !== ch) { comp.width = cw; comp.height = ch; }
+    const c = comp.getContext("2d"), vw = video.videoWidth, vh = video.videoHeight;
+    c.fillStyle = "#000";
+    c.fillRect(0, 0, cw, ch);
+    if (vw && video.readyState >= 2) {
+      for (const p of panels()) {
+        const [sx, sy, sw, sh] = p.src, [dx, dy, dw, dh] = p.dst;
+        if (p.blur) {           // small, blurred, scaled up and darkened: like the render's background
+          const bw = Math.max(2, Math.round(cw * dw / D.layout_info.blur_down)), bh = Math.max(2, Math.round(ch * dh / D.layout_info.blur_down));
+          if (bgc.width !== bw || bgc.height !== bh) { bgc.width = bw; bgc.height = bh; }
+          const b = bgc.getContext("2d");
+          b.filter = "blur(2px)";
+          b.drawImage(video, sx * vw, sy * vh, sw * vw, sh * vh, 0, 0, bw, bh);
+          c.drawImage(bgc, 0, 0, bw, bh, dx * cw, dy * ch, dw * cw, dh * ch);
+          c.fillStyle = `rgba(0,0,0,${1 - D.layout_info.dark})`;
+          c.fillRect(dx * cw, dy * ch, dw * cw, dh * ch);
+        } else c.drawImage(video, sx * vw, sy * vh, sw * vw, sh * vh, dx * cw, dy * ch, dw * cw, dh * ch);
+      }
+    }
+    const [xc, yc, h] = camera(video.currentTime);
+    sctx.drawImage(comp, (xc - h) * cw, (yc - h) * ch, 2 * h * cw, 2 * h * ch, 0, 0, cw, ch);
+    for (const [rgb, alpha] of flashesAt(video.currentTime)) {
+      sctx.fillStyle = `rgba(${rgb.join(",")},${alpha})`;
+      sctx.fillRect(0, 0, cw, ch);
+    }
+    drawTitle(cw, ch);
+  }
+  function drawTitle(cw, ch) {
+    if (!layout.title) return;
+    const L = D.sub_layout, size = L.title_size * cw;        // libass size: the line's height
+    sctx.save();
+    sctx.font = `700 ${size * ASS_TO_CSS}px "${L.font}", "Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif`;
+    sctx.textBaseline = "middle";
+    sctx.lineJoin = "round";
+    let y = ch * 0.06 + size / 2, on = false;
+    for (const line of wrapSub(layout.title, L.title_line, 3)) {
+      const [pieces, after] = runsOf(line, on);
+      on = after;
+      const widths = pieces.map(([t]) => sctx.measureText(t).width);
+      let x = cw / 2 - widths.reduce((a, b) => a + b, 0) / 2;
+      pieces.forEach(([t, hi], k) => {
+        sctx.lineWidth = size * 0.24;
+        sctx.strokeStyle = "#000";
+        sctx.strokeText(t, x, y);
+        sctx.fillStyle = hi ? "#" + L.highlight : "#fff";
+        sctx.fillText(t, x, y);
+        x += widths[k];
+      });
+      y += size;
+    }
+    sctx.restore();
   }
   // While a zoom, shake or flash shows, a canvas over the video draws the view; otherwise
   // it's hidden and you see the video (and its controls) as usual.
   function drawStage() {
+    if (isShort()) return drawShort();
     const t = video.currentTime;
     const [xc, yc, h] = camera(t), fl = flashesAt(t);
     const show = !regionMode && video.videoWidth > 0 && video.readyState >= 2
@@ -442,9 +560,8 @@
   // ── subtitle layout: the same rules as subs/lines.py (wrap, runs), so the preview matches ──
   const WIDE = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/g;
   const subWidth = t => { const p = t.replace(/\*/g, ""); return p.length + (p.match(WIDE) || []).length; };
-  function wrapSub(text) {
-    const max = D.sub_layout.max_line;
-    if (subWidth(text) <= max) return [text];
+  function wrapSub(text, max = D.sub_layout.max_line, lines = 2) {
+    if (subWidth(text) <= max || lines < 2) return [text];
     const half = subWidth(text) / 2, chars = [...text];
     let cuts = chars.map((ch, i) => (ch === " " ? i : -1)).filter(i => i >= 0);
     if (!cuts.length) cuts = chars.map((_, i) => i).slice(1);
@@ -454,7 +571,9 @@
       if (c < cost) { cost = c; best = i; }
     }
     const a = chars.slice(0, best).join("").trimEnd(), b = chars.slice(best).join("").trimStart();
-    return a && b ? [a, b] : [text];
+    if (!(a && b)) return [text];
+    if (lines === 2) return [a, b];
+    return [...wrapSub(a, max, Math.floor(lines / 2)), ...wrapSub(b, max, lines - Math.floor(lines / 2))];
   }
   function runsOf(line, on) {
     const out = [];
@@ -466,23 +585,25 @@
   // The current line over the video, styled like the render (bold white, black outline).
   function drawSubPreview() {
     const c = !regionMode && subStyle.on && video.videoWidth ? subAt(video.currentTime) : null;
-    const box = pictureBox();
-    const key = c ? [c.id, c.text, subStyle.size, subStyle.position, Math.round(box.width), Math.round(box.height)].join("|") : "";
+    const box = viewBox(), L = D.sub_layout, titled = isShort() && !!layout.title;
+    const key = c ? [c.id, c.text, subStyle.size, subStyle.position, Math.round(box.width), Math.round(box.height),
+                     box.left, titled].join("|") : "";
     if (key === subKey) return;
     subKey = key;
     subLayer.hidden = !c;
     if (!c) return;
     place(subLayer, box);
-    const size = D.sub_layout.sizes[subStyle.size] * box.height;      // libass size in screen pixels
+    const size = L.sizes[subStyle.size] * (L.vertical ? box.width : box.height);      // libass size in screen pixels
     const inner = el("div", "ed-subs-text");
     Object.assign(inner.style, {
       fontFamily: `"${D.sub_layout.font}", "Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif`,
       fontSize: size * ASS_TO_CSS + "px", lineHeight: size + "px", WebkitTextStroke: size * 0.2 + "px #000",
       textShadow: `${size * 0.045}px ${size * 0.045}px 0 rgba(0,0,0,.5)`,
-      [subStyle.position === "top" ? "top" : "bottom"]: box.height * 0.06 + "px",
+      [subStyle.position === "top" ? "top" : "bottom"]:
+        box.height * (subStyle.position === "top" ? (titled ? L.top_title : L.top) : L.bottom) + "px",
     });
     let on = false;
-    wrapSub(c.text).forEach((line, k) => {
+    wrapSub(c.text, L.max_line, L.max_lines).forEach((line, k) => {
       if (k) inner.appendChild(el("br"));
       const [pieces, after] = runsOf(line, on);
       on = after;
@@ -638,7 +759,7 @@
   // ── editing ──────────────────────────────────────────────────────────────
   function pushUndo() {
     undo.push({ segs: clone(segs), sel, source, fx: cloneFx(fx), selFx, subs: cloneFx(subs), subStyle: { ...subStyle },
-                selSub, subsMine });
+                selSub, subsMine, layout: layout && { ...layout } });
     if (undo.length > 200) undo.shift();
     $('[data-ed-act="undo"]').disabled = false;
   }
@@ -647,7 +768,9 @@
     if (!u) return;
     segs = u.segs; sel = u.sel; source = u.source; fx = u.fx; selFx = u.selFx;
     subs = u.subs; subStyle = u.subStyle; selSub = u.selSub; subsMine = u.subsMine;
+    if (u.layout) layout = u.layout;
     listFor = null;
+    subKey = "";
     $('[data-ed-act="undo"]').disabled = !undo.length;
     changed();
   }
@@ -1027,6 +1150,7 @@
     paintButtons();
     paintList();
     paintSubBar();
+    paintLayout();
   }
   function paintTotal() {
     const n = segs.length;
@@ -1203,9 +1327,123 @@
       + " · click a line on the right to retype it.");
   }
 
+  // ── the Short's layout panel, and the Long / Short switch ────────────────
+  function paintLayout() {
+    const box = $("[data-ed-layout]");
+    box.hidden = kind !== "short" || !layout;
+    if (box.hidden) return;
+    root.querySelectorAll("[data-lay-type]").forEach(b => b.classList.toggle("on", b.dataset.layType === layout.type));
+    root.querySelectorAll("[data-lay-for]").forEach(r => { r.hidden = r.dataset.layFor !== layout.type; });
+    for (const inp of box.querySelectorAll("[data-lay]")) {
+      const k = inp.dataset.lay;
+      if (inp.tagName === "SELECT") {
+        const names = ["", ...Object.keys(D.regions)];
+        if (layout[k] && !names.includes(layout[k])) names.push(layout[k]);
+        const want = names.join("|") + "#" + Object.keys(D.regions).join("|");
+        if (inp.dataset.names !== want) {
+          inp.textContent = "";
+          for (const n of names) {
+            const o = el("option", "", n ? n + (D.regions[n] ? "" : " (not drawn)") : "whole frame");
+            o.value = n;
+            inp.appendChild(o);
+          }
+          inp.dataset.names = want;
+        }
+        inp.value = layout[k] || "";
+      } else if (document.activeElement !== inp) inp.value = layout[k] ?? "";
+    }
+    const cen = $("[data-lay-centre]");
+    cen.textContent = "";
+    for (const n of Object.keys(D.regions)) cen.appendChild(btn("◎ " + n, `Centre the crop on the ${n} box`, { layCentre: n }));
+    const tt = $("[data-lay-titles]");
+    tt.textContent = "";
+    (D.titles || []).forEach((t, i) => tt.appendChild(btn(`Claude's #${i + 1}`, t, { layTitle: i })));
+    const hint = [];
+    if (layout.type === "stack" && !Object.keys(D.regions).length)
+      hint.push("Draw a face box (and a game box) with ▢ Regions: until then each half shows the whole frame.");
+    if (layout.type !== "stack" && D.vertical_crop) hint.push("Claude: " + D.vertical_crop);
+    $("[data-lay-hint]").textContent = hint.join(" ");
+  }
+  function setLayout(change) {
+    pushUndo();
+    Object.assign(layout, change);
+    subKey = "";
+    changed();
+  }
+  function paintKind() {
+    root.classList.toggle("ed-is-short", kind === "short");
+    root.querySelectorAll("[data-ed-kind]").forEach(b => {
+      b.classList.toggle("on", b.dataset.edKind === kind);
+      b.setAttribute("aria-selected", b.dataset.edKind === kind ? "true" : "false");
+    });
+    $('[data-ed-act="render"]').textContent = kind === "short" ? "Render Short" : "Render edit";
+    const other = D.other || {}, made = s => s === "done" || s === "stale";
+    $("[data-ed-kind-note]").textContent = kind === "short"
+      ? (made(other.long) ? "edit.mp4 is rendered too" : "")
+      : (made(other.short) ? "short.mp4 is rendered too" : "");
+  }
+  async function fetchEdit(k) {
+    try {
+      return await (await fetch(`/api/moment/${pk}/edit?kind=${k}`, { cache: "no-store" })).json();
+    } catch (e) {
+      return { ok: false, error: "Couldn't reach the dashboard. Is cw serve still running?" };
+    }
+  }
+  // Take one edit's data (long or short) as the editor's state.
+  function apply(d) {
+    D = d;
+    kind = d.kind || "long";
+    segs = clone(d.segments);
+    fx = cloneFx(d.effects || []);
+    source = d.source;
+    subs = cloneFx(d.subs || []);
+    subStyle = { ...d.subs_style };
+    subsMine = d.subs_source === "saved";
+    layout = d.layout ? { ...d.layout } : null;
+    undo = []; sel = 0; selFx = null; selSub = null; subKey = ""; listFor = null; dirty = false; layEditing = false;
+    $('[data-ed-act="undo"]').disabled = true;
+    paintKind();
+  }
+  async function switchKind(k) {
+    if (!D || k === kind) return;
+    if (regionMode) toggleRegions(false);
+    video.pause();
+    stopEditPlay();
+    clearTimeout(saveTimer);
+    while (saving) await new Promise(r => setTimeout(r, 100));
+    if (dirty) await save();
+    if (dirty) return;                      // couldn't save: stay, the message says why
+    const d = await fetchEdit(k);
+    if (!d.ok) { setSaved(d.error || "Couldn't load the edit.", true); return; }
+    try { localStorage.setItem("cw-ed-kind", k); } catch (e) {}
+    apply(d);
+    resize();
+    paintAll();
+    showRender(d.render);
+    if (d.render.state === "queued" || d.render.state === "running") pollRender();
+    setSaved(d.saved ? "Saved" : k === "short"
+      ? `New Short from ${d.source === "short" ? "Claude's short cut" : d.source === "long" ? "Claude's cut" : "the whole clip"}, with your edit's effects and subtitles`
+      : (source === "long" ? "Claude's cut, snapped to pauses" : ""));
+    if (segs[0]) seek(segs[0][0]);
+    needsDraw = true;
+  }
+  video.parentElement.addEventListener("click", ev => {        // the Short's preview covers the video's controls
+    if (isShort() && ev.target === video) { hold(); toggle(); }
+  });
+  root.addEventListener("input", ev => {
+    const t = ev.target;
+    if (!t.matches("[data-lay]") || t.tagName === "SELECT" || !layout) return;
+    hold();
+    if (!layEditing) { pushUndo(); layEditing = true; }
+    layout[t.dataset.lay] = t.type === "range" ? +t.value : t.value;
+    subKey = "";
+    needsDraw = true;
+  });
+
   // ── regions: boxes on the picture that zooms aim at, shared by every stream of the channel ──
   function toggleRegions(onOff = !regionMode) {
     regionMode = onOff;
+    root.classList.toggle("ed-regmode", regionMode);
     video.pause();
     stopEditPlay();
     regLayer.hidden = !regionMode;
@@ -1259,7 +1497,7 @@
     clearTimeout(regTimer);
     regTimer = setTimeout(async () => {
       try {
-        const d = await post(`/moment/${pk}/regions`, { regions: Object.entries(D.regions).map(([name, b]) => ({ name, ...b })) });
+        const d = await post(`/moment/${pk}/regions`, { regions: Object.entries(D.regions).map(([name, b]) => ({ name, ...b })), kind });
         D.regions = d.regions;
         setSaved("Regions saved");
         showRender(d.render);
@@ -1371,13 +1609,21 @@
     const box = $("[data-ed-lines]");
     if (box.contains(document.activeElement)) return;      // not under your cursor; again after the edit
     const mode = listMode();
-    const key = mode === "subs" ? JSON.stringify(subs.map(c => [c.id, c.t0, c.text, c.by, c.id === selSub])) : "lines:" + D.lines.length;
+    const key = mode === "subs" ? JSON.stringify(subs.map(c => [c.id, c.t0, c.t1, c.text, c.by, c.id === selSub])) : "lines:" + D.lines.length;
     if (key === listFor) return;
     listFor = key;
     box.textContent = "";
     lastLine = -1;
     if (mode === "lines") {
-      if (!D.lines.length) { box.appendChild(el("p", "faint", "No transcript for this clip.")); return; }
+      const head = el("div", "ed-list-head");
+      if (D.lines.length) {
+        head.append(el("small", "muted", "The transcript, as it came. To change times or add lines, edit them as subtitle lines:"),
+          btn("✎ Edit as lines", "Turn these into subtitle lines you can retime, retype, add to and delete", { edAct: "lines-edit" }));
+      } else {
+        head.append(el("small", "muted", "No transcript for this clip. Add lines yourself:"),
+          btn("+ Line at playhead", "A new subtitle line at the playhead", { edAct: "sub-add" }));
+      }
+      box.appendChild(head);
       D.lines.forEach((l, k) => {
         const row = el("div", "ed-line");
         row.dataset.k = k;
@@ -1395,17 +1641,97 @@
       const row = el("div", "ed-line ed-sub-row" + (c.id === selSub ? " sel" : "") + (c.by === "you" ? " mine" : ""));
       row.dataset.k = k;
       row.dataset.sub = c.id;
-      const t = btn(fmt(c.t0, 1), "Select this line and jump to it", { subGo: c.id });
-      t.className = "ed-lt mono";
+      const times = el("div", "ed-times");
+      for (const edge of ["t0", "t1"]) {
+        const inp = el("input", "ed-tin mono" + (edge === "t1" ? " end" : ""));
+        Object.assign(inp, { type: "text", value: fmt(c[edge], 2), spellcheck: false, autocomplete: "off" });
+        inp.dataset.subT = c.id;
+        inp.dataset.edge = edge;
+        inp.title = edge === "t0" ? "Start: type a time (1:02.5 or 62.5), Enter to apply, Esc to cancel"
+                                  : "End: type a time, Enter to apply, Esc to cancel";
+        inp.setAttribute("aria-label", (edge === "t0" ? "Start of: " : "End of: ") + c.text);
+        times.appendChild(inp);
+      }
       const txt = el("span", "ed-lx", c.text);
       txt.contentEditable = "plaintext-only";
       if (txt.contentEditable !== "plaintext-only") txt.contentEditable = "true";
       txt.dataset.subText = c.id;
       txt.title = "Click to retype. Enter keeps it, Esc undoes it. *stars* around a word make it yellow.";
-      row.append(t, txt, btn("⇤", "Start the selected segment at this line", { subStart: c.id }),
+      const acts = el("span", "ed-line-acts");
+      acts.append(btn("+", "A new line after this one", { subAfter: c.id }),
+        Object.assign(btn("×", "Delete this line", { subDel: c.id }), { className: "small danger" }),
+        btn("⇤", "Start the selected segment at this line", { subStart: c.id }),
         btn("⇥", "End the selected segment after this line", { subEnd: c.id }));
+      row.append(times, txt, acts);
       box.appendChild(row);
     });
+  }
+  // m:ss.ss, ss.ss or h:mm:ss → seconds; NaN if it isn't a time.
+  function parseTime(text) {
+    const m = String(text).trim().replace(",", ".").match(/^(?:(?:(\d+):)?(\d+):)?(\d+(?:\.\d*)?)$/);
+    return m ? (+(m[1] || 0)) * 3600 + (+(m[2] || 0)) * 60 + parseFloat(m[3]) : NaN;
+  }
+  // A typed start or end. A start past the line's end moves the whole line; an overlap with
+  // another line is trimmed off, or refused when nothing would be left. Returns an error or "".
+  function retimeSub(id, edge, t) {
+    const c = subs.find(x => x.id === id);
+    if (!c) return "That line is gone.";
+    if (!isFinite(t)) return "Type a time like 1:02.5 or 62.5.";
+    let t0 = c.t0, t1 = c.t1;
+    if (edge === "t0") { t0 = t; if (t0 > t1 - SUB_MIN) t1 = t0 + (c.t1 - c.t0); }
+    else { t1 = t; if (t1 < t0 + SUB_MIN) return `The end must be after the start (${fmt(t0, 2)}).`; }
+    t0 = Math.min(Math.max(t0, 0), D.duration); t1 = Math.min(Math.max(t1, 0), D.duration);
+    const want = [t0, t1];
+    for (const o of subs) {
+      if (o === c || !(o.t0 < t1 && o.t1 > t0)) continue;
+      if (o.t0 <= t0) t0 = o.t1; else t1 = o.t0;          // keep the part before / after it
+      if (t1 - t0 < SUB_MIN)
+        return `That overlaps the line at ${fmt(o.t0, 1)} ("${o.text.slice(0, 30)}"): move or shorten it first.`;
+    }
+    pushUndo();
+    c.t0 = r3(t0); c.t1 = r3(t1); c.by = "you";
+    subs.sort((a, b) => a.t0 - b.t0);
+    selSub = c.id;
+    seek(edge === "t0" ? c.t0 : Math.max(c.t0, c.t1 - 0.05));
+    subsChanged();
+    if (Math.abs(want[0] - t0) > 0.005 || Math.abs(want[1] - t1) > 0.005)
+      listFlash(`Trimmed to ${fmt(t0, 2)}–${fmt(t1, 2)} so it doesn't overlap the lines around it.`);
+    return "";
+  }
+  function addSubAfter(id) {
+    const k = subIndex(id), c = subs[k];
+    if (!c) return;
+    const next = subs[k + 1];
+    let t0 = c.t1 + 0.04, t1 = Math.min(t0 + 2, next ? next.t0 - 0.04 : D.duration);
+    let cut = null;                    // no gap after it: the new line takes this line's second half
+    if (t1 - t0 < 0.3) {
+      if (c.t1 - c.t0 < 2 * SUB_MIN + 0.3) { listFlash("This line is too short to make room after it: type an earlier end on it or the next one."); return; }
+      cut = Math.max(c.t0 + (c.t1 - c.t0) / 2, c.t1 - 2);
+      t0 = cut + 0.04; t1 = c.t1;
+    }
+    pushUndo();
+    if (cut !== null) { c.t1 = r3(cut); c.by = "you"; }
+    const n = { id: "u" + Math.random().toString(36).slice(2, 8), t0: r3(t0), t1: r3(t1), text: "…", by: "you" };
+    subs.splice(k + 1, 0, n);
+    selSub = n.id;
+    seek(n.t0);
+    subsChanged();
+    paintList();
+    const span = $(`[data-sub-text="${n.id}"]`);
+    if (span) { span.focus(); document.getSelection().selectAllChildren(span); }
+  }
+  // The transcript's lines as subtitle lines (Whisper's words give better ones when there are any).
+  function linesToSubs() {
+    if (D.subs_auto.length) { rebuildSubs(); return; }
+    pushUndo();
+    subs = D.lines.map((l, k) => {
+      const next = D.lines[k + 1], t0 = Math.min(l.t, D.duration - SUB_MIN);
+      const t1 = Math.min(next ? next.t - 0.04 : D.duration, t0 + 6, D.duration);
+      return { id: "l" + (k + 1), t0: r3(t0), t1: r3(Math.max(t1, t0 + SUB_MIN)), text: l.text, by: "you" };
+    });
+    selSub = null;
+    subsChanged();
+    listFlash("Now subtitle lines: type new times, retype them, + to add, × to delete.");
   }
   function paintLine(t) {
     const times = listMode() === "subs" ? subs.map(c => c.t0) : D.lines.map(l => l.t);
@@ -1430,14 +1756,44 @@
   subsList.addEventListener("focusin", ev => {
     const sp = ev.target.closest("[data-sub-text]");
     if (sp) { sp.dataset.orig = sp.textContent; hold(); }
+    const ti = ev.target.closest("[data-sub-t]");
+    if (ti) {
+      hold();
+      ti.dataset.orig = ti.value;
+      ti.select();
+      const c = subs.find(x => x.id === ti.dataset.subT);
+      if (c) { selSub = c.id; selFx = null; seek(ti.dataset.edge === "t0" ? c.t0 : Math.max(c.t0, c.t1 - 0.05)); paintAll(); }
+    }
   });
   subsList.addEventListener("keydown", ev => {
+    const ti = ev.target.closest("[data-sub-t]");
+    if (ti) {
+      if (ev.key === "Enter") { ev.preventDefault(); ti.blur(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); ti.value = ti.dataset.orig || ti.value; ti.dataset.cancel = "1"; ti.blur(); }
+      return;
+    }
     const sp = ev.target.closest("[data-sub-text]");
     if (!sp) return;
     if (ev.key === "Enter") { ev.preventDefault(); sp.blur(); }
     else if (ev.key === "Escape") { ev.preventDefault(); sp.textContent = sp.dataset.orig || ""; sp.blur(); }
   });
   subsList.addEventListener("focusout", ev => {
+    const ti = ev.target.closest("[data-sub-t]");
+    if (ti) {
+      const cancel = ti.dataset.cancel === "1";
+      delete ti.dataset.cancel;
+      if (cancel || ti.value === ti.dataset.orig) return;
+      setTimeout(() => {
+        const err = retimeSub(ti.dataset.subT, ti.dataset.edge, parseTime(ti.value));
+        if (err) { listFlash(err); ti.value = ti.dataset.orig; }
+        else {
+          const c = subs.find(x => x.id === ti.dataset.subT);
+          if (c) ti.value = fmt(c[ti.dataset.edge], 2);
+        }
+        paintAll();
+      }, 0);
+      return;
+    }
     const sp = ev.target.closest("[data-sub-text]");
     if (!sp) return;
     setTimeout(() => { setSubText(sp.dataset.subText, sp.textContent); paintAll(); }, 0);
@@ -1505,6 +1861,15 @@
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => { s.textContent = ""; s.className = "muted"; }, 2500);
   }
+  // A message under the list (where you're typing), for a few seconds.
+  let listMsgTimer = null;
+  function listFlash(text) {
+    const m = $("[data-ed-list-msg]");
+    m.textContent = text;
+    m.hidden = false;
+    clearTimeout(listMsgTimer);
+    listMsgTimer = setTimeout(() => { m.hidden = true; }, 5000);
+  }
   function setSaved(text, bad) {
     const s = $("[data-ed-saved]");
     clearTimeout(flashTimer);
@@ -1533,7 +1898,8 @@
   const body = () => ({ segments: segs.map(s => [r3(s[0]), r3(s[1]), s[2] || 0]), source,
                         effects: fx.map(f => ({ ...f, t: r3(f.t) })),
                         subs: subsMine ? subs.map(c => ({ ...c, t0: r3(c.t0), t1: r3(c.t1) })) : "auto",
-                        subs_style: subStyle });
+                        subs_style: subStyle, kind, ...(kind === "short" && layout ? { layout } : {}) });
+  const outFile = () => (kind === "short" ? "short.mp4" : "edit.mp4");
   async function save() {
     if (saving) { clearTimeout(saveTimer); saveTimer = setTimeout(save, 300); return; }
     saving = true;
@@ -1543,6 +1909,7 @@
       D.saved = true;
       setSaved("Saved");
       showRender(d.render);
+      if (kind === "short") window.dispatchEvent(new Event("cw-short-changed"));   // the cover follows the layout
     } catch (e) {
       dirty = true;
       setSaved("Couldn't save: " + e.message, true);
@@ -1550,6 +1917,14 @@
       saving = false;
     }
   }
+  // The intro panel (maker.js) changed something edit.mp4 depends on: show whether it's out of date.
+  window.addEventListener("cw-render-changed", async () => {
+    try {
+      const d = await (await fetch(`/api/moment/${pk}/render?kind=${kind}`, { cache: "no-store" })).json();
+      showRender(d.render);
+      if (d.render.state === "queued" || d.render.state === "running") pollRender();
+    } catch (e) {}
+  });
   window.addEventListener("pagehide", () => {
     if (!dirty) return;
     fetch(`/moment/${pk}/edit`, { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
@@ -1576,7 +1951,7 @@
     clearTimeout(renderPoll);
     renderPoll = setTimeout(async () => {
       try {
-        const d = await (await fetch(`/api/moment/${pk}/render`, { cache: "no-store" })).json();
+        const d = await (await fetch(`/api/moment/${pk}/render?kind=${kind}`, { cache: "no-store" })).json();
         showRender(d.render);
         if (d.render.state === "queued" || d.render.state === "running") pollRender();
       } catch (e) { pollRender(); }
@@ -1603,7 +1978,7 @@
       const p = el("p", "ed-status " + (r.state === "done" ? "ok" : ""));
       p.textContent = r.state === "done"
         ? `✓ Rendered: ${fmt(r.length || 0, 1)} · ${mb(r.size || 0)}`
-        : "Your edit changed since the last render. Render again to update edit.mp4.";
+        : `Your edit changed since the last render. Render again to update ${outFile()}.`;
       box.appendChild(p);
       const acts = el("div", "actions");
       const watch = btn(watchVideo ? "Hide" : "▶ Watch", "Watch the rendered edit", { edAct: "watch" });
@@ -1624,7 +1999,9 @@
       }
       box.dataset.url = r.url;
     } else {
-      box.append(el("p", "faint", "Render makes edit.mp4 next to the clip: frame-exact cuts, your sounds mixed in, levelled loudness, ready to upload."));
+      box.append(el("p", "faint", kind === "short"
+        ? "Render makes short.mp4 (1080×1920) next to the clip: your cut in the layout above, sounds mixed in, zooms, subtitles and the title burned in, levelled loudness."
+        : "Render makes edit.mp4 next to the clip: frame-exact cuts, your sounds mixed in, levelled loudness, ready to upload."));
     }
   }
   function toggleWatch() {
@@ -1891,12 +2268,19 @@
     const ds = b.dataset;
     const nudgeVal = v => (v === "here" ? null : +v);
     if (regionMode && !ds.regDel && ds.edAct !== "regions" && !ds.regName) toggleRegions(false);   // anything else: back to editing
-    if (ds.edAdd) { if (regionMode) toggleRegions(false); addVis(ds.edAdd); }
+    if (ds.edKind) switchKind(ds.edKind);
+    else if (ds.layType) { if (layout && layout.type !== ds.layType) setLayout({ type: ds.layType }); }
+    else if (ds.layCentre) {
+      const b = D.regions[ds.layCentre];
+      if (b && layout) setLayout({ type: "crop", x: Math.round((b.x + b.w / 2) * 1e4) / 1e4, y: Math.round((b.y + b.h / 2) * 1e4) / 1e4 });
+    } else if (ds.layTitle !== undefined) { if (layout) setLayout({ title: D.titles[+ds.layTitle] || "" }); }
+    else if (ds.edAdd) { if (regionMode) toggleRegions(false); addVis(ds.edAdd); }
     else if (ds.subGo) selectSub(ds.subGo);
     else if (ds.subStart || ds.subEnd) {
       const c = subs.find(x => x.id === (ds.subStart || ds.subEnd));
       if (c) setEdge(ds.subStart ? 0 : 1, ds.subStart ? c.t0 : c.t1);
-    } else if (ds.subSplit) splitSub(ds.subSplit);
+    } else if (ds.subAfter) addSubAfter(ds.subAfter);
+    else if (ds.subSplit) splitSub(ds.subSplit);
     else if (ds.subJoin) joinSub(ds.subJoin);
     else if (ds.subDel) deleteSub(ds.subDel);
     else if (ds.subNudge0 !== undefined || ds.subNudge1 !== undefined) {
@@ -1930,12 +2314,20 @@
         up: () => move(-1), down: () => move(1), delete: del,
         "add-fx": addFx, suggest: suggestFx, "clear-claude": clearClaude,
         "fx-play": previewFx, regions: () => toggleRegions(), transcribe,
-        "sub-add": addSub, "sub-rebuild": rebuildSubs, "sub-polish": polishSubs, "names-save": saveNames,
+        "sub-add": addSub, "sub-rebuild": rebuildSubs, "lines-edit": linesToSubs, "sub-polish": polishSubs, "names-save": saveNames,
       })[ds.edAct]?.();
     }
   });
   root.addEventListener("change", ev => {
     const t = ev.target;
+    if (t.matches("[data-lay]") && layout) {
+      if (t.tagName === "SELECT") { setLayout({ [t.dataset.lay]: t.value }); return; }
+      layout[t.dataset.lay] = t.type === "range" ? +t.value : t.value;
+      if (!layEditing) pushUndo();
+      layEditing = false;
+      changed();
+      return;
+    }
     if (t.matches("[data-gain]")) setGain(+t.value);
     else if (t.matches("[data-fx-sound]")) editFx({ sound: t.value, gain: (sound(t.value) || {}).gain || 0 });
     else if (t.matches("[data-fx-gain]")) editFx({ gain: +t.value });
@@ -2005,20 +2397,10 @@
 
   // ── start ────────────────────────────────────────────────────────────────
   (async function load() {
-    let d;
-    try {
-      d = await (await fetch(`/api/moment/${pk}/edit`, { cache: "no-store" })).json();
-    } catch (e) {
-      d = { ok: false, error: "Couldn't reach the dashboard. Is cw serve still running?" };
-    }
+    let d = await fetchEdit(kind);
+    if (!d.ok && kind === "short") { kind = "long"; d = await fetchEdit("long"); }
     if (!d.ok) { $("[data-ed-loading]").textContent = d.error || "Couldn't load the editor."; return; }
-    D = d;
-    segs = clone(d.segments);
-    fx = cloneFx(d.effects || []);
-    source = d.source;
-    subs = cloneFx(d.subs || []);
-    subStyle = { ...d.subs_style };
-    subsMine = d.subs_source === "saved";
+    apply(d);
     $("[data-ed-loading]").remove();
     const notes = [d.hook && "Hook: " + d.hook, d.notes].filter(Boolean).join("\n\n");
     if (notes) { $("[data-ed-notes]").hidden = false; $("[data-ed-notes-text]").textContent = notes; }
@@ -2033,6 +2415,8 @@
     libraryStatus();
     const start = () => { if (video.currentTime === 0 && segs[0]) seek(segs[0][0]); };
     if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
+    video.addEventListener("loadeddata", () => { needsDraw = true; });
+    window.addEventListener("resize", () => { needsDraw = true; subKey = ""; });
     requestAnimationFrame(tick);
   })();
 })();

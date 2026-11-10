@@ -67,8 +67,10 @@ def run_stage(cfg: Config, conn: sqlite3.Connection, video_id: str, stage: str, 
         row = conn.execute("SELECT rank FROM moments WHERE id = ?", (moment_id,)).fetchone()
         if row is None:
             return StageOutcome("error", "moment no longer exists (the video was re-scored)")
-        if stage == "render":
-            return _render(cfg, conn, moment_id, say)
+        if stage in ("render", "short"):
+            return _render(cfg, conn, moment_id, say, kind="long" if stage == "render" else "short")
+        if stage == "intro":
+            return _intro(cfg, conn, moment_id, say)
         return {"clip": _clip, "transcribe": _transcribe, "analyze": _analyze, "upload": _upload}[stage](
             cfg, conn, video_id, attempt, deps, say, rank=row["rank"], **_opts(stage, params))
     fn = {"ingest": _ingest, "score": _score, "clip": _clip, "transcribe": _transcribe, "frames": _frames,
@@ -166,7 +168,7 @@ def _transcribe(cfg, conn, video_id, attempt, deps, say, rank: int | None = None
         return StageOutcome("error", str(e))
     done, failed, langs = 0, [], set()
     for i, r in enumerate(todo):
-        if i and conn.execute("SELECT 1 FROM jobs WHERE stage = 'render' AND status = 'pending' "
+        if i and conn.execute("SELECT 1 FROM jobs WHERE stage IN ('render', 'short') AND status = 'pending' "
                               "AND run_after <= datetime('now') LIMIT 1").fetchone():
             return StageOutcome("retry", f"{done} transcribed; paused for a render, the rest follow",
                                 timedelta(seconds=1))
@@ -264,15 +266,16 @@ def _upload(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
     return StageOutcome("done", f"{what} to {r.dest}" + (f" ({r.stats})" if r.stats else ""))
 
 
-def _render(cfg, conn, moment_id: int, say) -> StageOutcome:
-    """Your edit from the dashboard editor → edit.mp4 next to clip.mp4."""
+def _render(cfg, conn, moment_id: int, say, kind: str = "long") -> StageOutcome:
+    """Your edit from the dashboard editor → edit.mp4 (a Short: short.mp4) next to clip.mp4."""
     from chatwatcher.clip.media import MediaError
     from chatwatcher.edit.service import EditError, render_moment
     try:
-        r = render_moment(cfg, conn, moment_id)
+        r = render_moment(cfg, conn, moment_id, kind=kind)
     except (EditError, MediaError) as e:
         return StageOutcome("error", str(e))
-    msg = f"edit rendered: {r['duration_s']:.1f}s, {r['size_bytes'] / 1_048_576:.1f} MB"
+    what = f"Short rendered ({r['layout']['type']})" if kind == "short" else "edit rendered"
+    msg = f"{what}: {r['duration_s']:.1f}s, {r['size_bytes'] / 1_048_576:.1f} MB"
     if r["sounds"]:
         msg += f", {r['sounds']} sound effect(s)"
     if r.get("visuals"):
@@ -283,7 +286,22 @@ def _render(cfg, conn, moment_id: int, say) -> StageOutcome:
         msg += f"; skipped sounds no longer in the library: {', '.join(r['missing'])}"
     if r.get("missing_regions"):
         msg += f"; zoomed on the centre, no region called {', '.join(r['missing_regions'])}"
+    if r.get("intro_s"):
+        msg += f", starting with the {r['intro_s']:.1f}s intro"
     return StageOutcome("done", msg)
+
+
+def _intro(cfg, conn, moment_id: int, say) -> StageOutcome:
+    """The brand intro (teasers from the clip → logo) → intro.mp4 next to clip.mp4."""
+    from chatwatcher.brand.service import render_intro
+    from chatwatcher.clip.media import MediaError
+    from chatwatcher.edit.service import EditError
+    try:
+        r = render_intro(cfg, conn, moment_id)
+    except (EditError, MediaError) as e:
+        return StageOutcome("error", str(e))
+    return StageOutcome("done", f"intro rendered: {r['duration_s']:.1f}s, {len(r['teasers'])} teaser(s), "
+                                f"{r['size_bytes'] / 1_048_576:.1f} MB")
 
 
 # ── bookkeeping shared by the worker and `cw run` ─────────────────────────────

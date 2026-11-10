@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -505,3 +506,61 @@ def test_storage_page_with_a_stream_that_just_started(site, monkeypatch):
     client.post("/storage/drive")                   # loaded: the new stream has 0 bytes there too
     r = client.get("/storage")
     assert r.status_code == 200 and "Only on Google Drive" not in r.text
+
+
+def test_remove_stream_from_the_queue(site):
+    """A stream that failed before it had a folder (e.g. members-only) can be removed with its jobs."""
+    cfg, conn, client, _ = site
+    v = conn.execute("INSERT INTO videos (video_id, title, status) VALUES ('membersonly', 'Members stream', 'error')").lastrowid
+    conn.execute("INSERT INTO jobs (video_id, stage, status, error) VALUES (?, 'ingest', 'error', 'Members-only video')", (v,))
+    page = client.get("/jobs").text
+    assert "/video/membersonly/remove" in page and "Remove stream" in page
+    r = client.post("/video/membersonly/remove", data={"back_to": "jobs"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/jobs?msg=Removed")
+    assert not conn.execute("SELECT 1 FROM videos WHERE video_id = 'membersonly'").fetchone()
+    assert not conn.execute("SELECT 1 FROM jobs WHERE video_id = ?", (v,)).fetchone()
+    assert conn.execute("SELECT action FROM discovered WHERE video_id = 'membersonly'").fetchone()["action"] == "skipped"
+
+    # A processed stream: its folder goes too, and a busy one is refused.
+    row = conn.execute("SELECT id, output_dir FROM videos WHERE video_id = ?", (VID,)).fetchone()
+    assert "Remove stream" in client.get(f"/video/{VID}").text
+    conn.execute("INSERT INTO jobs (video_id, stage, status) VALUES (?, 'upload', 'running')", (row["id"],))
+    assert "error=" in client.post(f"/video/{VID}/remove", follow_redirects=False).headers["location"]
+    conn.execute("DELETE FROM jobs WHERE status = 'running'")
+    r = client.post(f"/video/{VID}/remove", follow_redirects=False)
+    assert r.headers["location"].startswith("/?msg=Removed")
+    assert not Path(row["output_dir"]).exists() and client.get(f"/video/{VID}").status_code == 404
+
+
+def test_home_filters_streams_by_local_day_and_shows_the_top_rating(site):
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    from chatwatcher import clock
+    cfg, conn, client, _ = site
+    tz = clock.zone(cfg)
+    now = datetime.now(timezone.utc)
+    conn.execute("UPDATE videos SET published_at = ? WHERE video_id = ?", (now.strftime("%Y-%m-%dT%H:%M:%SZ"), VID))
+    page = client.get("/?day=today").text
+    assert f'href="/video/{VID}"' in page and "· today · 1" in page
+    assert f'href="/video/{VID}"' not in client.get("/?day=yesterday").text
+    # Three days ago: only a range that covers it shows it.
+    old = now - timedelta(days=3)
+    conn.execute("UPDATE videos SET published_at = ? WHERE video_id = ?", (old.strftime("%Y-%m-%dT%H:%M:%SZ"), VID))
+    day = old.astimezone(tz).date()
+    assert f'href="/video/{VID}"' not in client.get("/?day=today").text
+    hit = client.get("/", params={"from": (day - timedelta(days=1)).isoformat(), "to": day.isoformat()}).text
+    assert f'href="/video/{VID}"' in hit
+    swapped = client.get("/", params={"from": day.isoformat(), "to": (day - timedelta(days=1)).isoformat()}).text
+    assert f'href="/video/{VID}"' in swapped                                     # from/to the wrong way round
+    assert f'href="/video/{VID}"' in client.get("/", params={"from": day.isoformat()}).text    # open-ended
+    assert "No streams in that range" in client.get("/", params={"from": "2001-01-01", "to": "2001-01-02"}).text
+    bad = client.get("/", params={"from": "nope"})
+    assert bad.status_code == 200 and "Dates must look like" in bad.text and f'href="/video/{VID}"' in bad.text
+    # The top rating links to the moment Claude rated highest.
+    page = client.get("/").text
+    best = conn.execute("""SELECT m.id FROM moments m JOIN analyses a ON a.moment_id = m.id
+                           ORDER BY json_extract(a.analysis_json, '$.clip_worthiness') DESC, m.rank LIMIT 1""").fetchone()["id"]
+    assert "Top rating" in page and f'href="/moment/{best}" title="Moment #' in page and "<small>/10</small>" in page
+    # Local days: a stream at 00:30 WIB is that day, though it's the day before in UTC.
+    lo, hi = clock.local_days(day, day, ZoneInfo("Asia/Jakarta"))
+    assert lo.endswith("17:00:00") and hi > lo

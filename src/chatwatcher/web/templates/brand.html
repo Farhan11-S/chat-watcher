@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Brand · chat-watcher{% endblock %}
+{% block autorefresh %}0{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Brand</h1>
+  <p class="muted" style="margin:.2rem 0 .8rem">Your channel's look, set once. Every clip's <b>intro</b> (teaser → glitch → your
+    logo and name) and <b>thumbnail</b> use it. Make them on a clip's page, under the editor.</p>
+  <div class="brand-grid">
+    <form method="post" action="/brand" enctype="multipart/form-data" class="brand-form">
+      <label><span>Channel name <small class="muted">· shown in capitals on the intro and the corner badge</small></span>
+        <input type="text" name="name" value="{{ brand.name }}" maxlength="40" required></label>
+      <label><span>Tagline <small class="muted">· under the name on the intro; empty = none</small></span>
+        <input type="text" name="tagline" value="{{ brand.tagline }}" maxlength="80" placeholder="VTuber clips • for the love of the game"></label>
+      <label><span>Logo <small class="muted">· SVG or PNG with a transparent background works best (a round one fits the badge)</small></span>
+        <input type="file" name="logo" accept=".svg,.png,.jpg,.jpeg,.webp,image/*"></label>
+      <fieldset class="brand-colours">
+        <legend>Colours</legend>
+        {% set names = {'deep': 'Outline & shadow', 'purple': 'Gradient edge & glitch', 'lavender': 'Wipe & band edge',
+                        'light': 'Gradient centre', 'accent': 'Highlighted *words*'} %}
+        {% for c in colours %}
+        <label class="colour"><input type="color" name="{{ c }}" value="{{ brand[c] }}"> <span>{{ names[c] }}</span></label>
+        {% endfor %}
+      </fieldset>
+      <div class="grid-2">
+        <label><span>Title font <small class="muted">· now: {{ fonts.title.label }}</small></span>
+          <input type="file" name="title_font" accept=".ttf,.otf,.ttc"></label>
+        <label><span>Text font <small class="muted">· thumbnails, tagline · now: {{ fonts.text.label }}</small></span>
+          <input type="file" name="text_font" accept=".ttf,.otf,.ttc"></label>
+      </div>
+      <p class="faint" style="margin:.2rem 0 0"><small>A heavy, rounded font looks most like a clip channel: e.g. Arial Rounded MT Bold
+        (in Windows: C:\Windows\Fonts\ARLRDBD.TTF) or the free <a href="https://fonts.google.com/specimen/M+PLUS+Rounded+1c"
+        target="_blank" rel="noopener">M PLUS Rounded 1c</a> Black, which also has Japanese.</small></p>
+      <div class="actions"><button class="primary">Save</button></div>
+    </form>
+    <div class="brand-preview">
+      <img src="/brand/card.jpg?v={{ stamp }}" alt="The intro's logo card with your brand" width="960" height="540">
+      <p class="faint"><small>How the end of the intro looks with these settings.</small></p>
+      <div class="actions">
+        {% if brand.logo %}<img class="brand-logo" src="/brand/logo.png?v={{ stamp }}" alt="your logo" width="48" height="48">
+        <form method="post" action="/brand/remove/logo" class="inline"><button class="small">Remove logo</button></form>{% endif %}
+        {% for role in ('title', 'text') %}{% if fonts[role].mine %}
+        <form method="post" action="/brand/remove/{{ role }}" class="inline"><button class="small">Remove {{ role }} font</button></form>
+        {% endif %}{% endfor %}
+      </div>
+      <p class="faint"><small>Made so far: {{ made.intros }} intro(s), {{ made.thumbs }} thumbnail(s).</small></p>
+    </div>
+  </div>
+</div>
+{% endblock %}

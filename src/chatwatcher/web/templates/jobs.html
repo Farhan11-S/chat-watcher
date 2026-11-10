@@ -15,7 +15,10 @@
       <td class="num">{{ j.attempts }}</td>
       <td><small>{% if j.status == 'pending' %}runs at {{ j.run_after | when }}{% elif j.finished_at %}{{ j.finished_at | when }}{% elif j.started_at %}started {{ j.started_at | when }}{% endif %}</small></td>
       <td><small class="{{ 'muted' if j.status != 'error' else '' }}" style="white-space:pre-wrap">{{ ((j.error or j.message) or '')[:300] }}</small></td>
-      <td>{% if j.status in ('error', 'pending') %}<form method="post" action="/jobs/{{ j.id }}/retry" class="inline"><button class="small">Run now</button></form>{% endif %}</td>
+      <td class="nowrap">{% if j.status in ('error', 'pending') %}<form method="post" action="/jobs/{{ j.id }}/retry" class="inline"><button class="small">Run now</button></form>{% endif %}
+        {% if j.status == 'error' %}<form method="post" action="/video/{{ j.yt_id }}/remove" class="inline"
+          onsubmit="return confirm('Remove this stream from the dashboard and this computer? Its queue jobs go too, and the channel watcher won\'t fetch it again.')">
+          <input type="hidden" name="back_to" value="jobs"><button class="small danger" title="Remove the stream and its queue jobs">✕ Remove stream</button></form>{% endif %}</td>
     </tr>
     {% endfor %}
   </table></div>

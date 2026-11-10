@@ -10,6 +10,10 @@ reorder. Every effect has {"id", "type", "t", "by": "claude" | "you", "why"}, pl
     push   "d", "region", "zoom"             slow zoom towards a region
     shake  "d", "strength" (1-3)             camera shake
     flash  "d", "color"                      white / red / black flash
+
+A clip can have two edits: the long one (16:9, table `edits`, edit.mp4) and a Short (9:16,
+table `shorts`, short.mp4) with its own cut, effects and subtitles plus a layout (see
+edit.layout). Functions take kind="long" | "short".
 """
 
 from __future__ import annotations
@@ -24,11 +28,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 from chatwatcher.config import Config
+from chatwatcher.edit import layout as lay
 from chatwatcher.edit import motion, regions
 from chatwatcher.edit.audio import Waveform, analyse, snap
 
 EDIT_FILE = "edit.mp4"
 SRT_FILE = "edit.srt"
+SHORT_FILE = "short.mp4"
+SHORT_SRT = "short.srt"
+KINDS = ("long", "short")
+_TABLE = {"long": "edits", "short": "shorts"}
+STAGE = {"long": "render", "short": "short"}           # the job that renders each kind
 WAVEFORM_FILE = "waveform.json"
 MAX_SEGMENTS = 40
 MAX_EFFECTS = 120
@@ -64,6 +74,18 @@ class ClipRef:
     @property
     def srt_path(self) -> Path:
         return self.folder / SRT_FILE
+
+    def out_path(self, kind: str = "long") -> Path:
+        return self.folder / (SHORT_FILE if kind == "short" else EDIT_FILE)
+
+    def srt_for(self, kind: str = "long") -> Path:
+        return self.folder / (SHORT_SRT if kind == "short" else SRT_FILE)
+
+
+def check_kind(kind: Any) -> str:
+    if kind not in KINDS:
+        raise EditError("kind must be long or short.", "invalid")
+    return kind
 
 
 def clip_ref(conn: sqlite3.Connection, moment_pk: int) -> ClipRef:
@@ -122,8 +144,47 @@ def transcript_lines(folder: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _stored(conn: sqlite3.Connection, moment_pk: int) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM edits WHERE moment_id = ?", (moment_pk,)).fetchone()
+def _stored(conn: sqlite3.Connection, moment_pk: int, kind: str = "long") -> sqlite3.Row | None:
+    return conn.execute(f"SELECT * FROM {_TABLE[check_kind(kind)]} WHERE moment_id = ?", (moment_pk,)).fetchone()
+
+
+def _meta(clip: ClipRef) -> dict[str, Any]:
+    p = clip.folder / "moment.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _size(clip: ClipRef) -> tuple[int, int]:
+    if clip.width and clip.height:
+        return clip.width, clip.height
+    from chatwatcher.clip.media import probe
+    pr = probe(clip.path)
+    return pr.width or 1920, pr.height or 1080
+
+
+def current_layout(conn: sqlite3.Connection, moment_pk: int, clip: ClipRef,
+                   row: sqlite3.Row | None = None) -> dict[str, Any]:
+    """The Short's saved layout, or a first one from the channel's regions."""
+    boxes = regions.get(conn, regions.scope_for(conn, moment_pk)[0])
+    first = lay.default(boxes, _meta(clip).get("stream_type"))
+    saved = None
+    if row is not None and row["layout_json"]:
+        try:
+            saved = json.loads(row["layout_json"])
+        except json.JSONDecodeError:
+            saved = None
+    return lay.clean(saved, first) if saved else first
+
+
+def _short_regions(conn: sqlite3.Connection, moment_pk: int, effects: list[dict[str, Any]],
+                   layout: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """The boxes a Short depends on: those its zooms aim at, and its stack panels."""
+    have = regions.get(conn, regions.scope_for(conn, moment_pk)[0])
+    names = {fx.get("region") for fx in effects if fx.get("type") in motion.ZOOMS and fx.get("region")}
+    names |= lay.used_regions(layout)
+    return {n: have[n] for n in sorted(names) if n in have}
 
 
 def _effects_to_clip(stream_effects: list[dict[str, Any]], clip: ClipRef) -> list[dict[str, Any]]:
@@ -148,17 +209,21 @@ def _to_clip(stream_segments: list[Segment], clip: ClipRef) -> list[Segment]:
     return out
 
 
-def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int) -> dict[str, Any]:
-    """Everything the editor needs, in clip time."""
+def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "long") -> dict[str, Any]:
+    """Everything the editor needs, in clip time. A Short that was never saved starts from
+    Claude's short cut, with the long edit's effects and subtitle fixes."""
+    check_kind(kind)
     clip = clip_ref(conn, moment_pk)
     wf = analyse(clip.path, clip.folder / WAVEFORM_FILE)
     a = _latest_analysis(conn, moment_pk)
     props = proposals(a, clip, wf, cfg.edit.snap_s)
-    row = _stored(conn, moment_pk)
+    row = _stored(conn, moment_pk, kind)
+    base = row if row is not None or kind == "long" else _stored(conn, moment_pk, "long")
     segments = _to_clip(json.loads(row["segments_json"]), clip) if row else []
     source = row["source"] if row and segments else None
     if not segments:
-        source = "long" if props["long"] else "whole"
+        order = ("short", "long", "whole") if kind == "short" else ("long", "whole")
+        source = next(k for k in order if props[k])
         segments = props[source]
     shift = float((a.get("_meta") or {}).get("zero_s", clip.zero_s)) - clip.zero_s
     beats = [{"start": round(float(b.get("start", 0)) + shift, 2), "end": round(float(b.get("end", 0)) + shift, 2),
@@ -168,19 +233,29 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int) -> dict[str, Any
     sounds = [{"id": x["id"], "name": x["name"], "description": x["description"], "length": x["duration_s"],
                "gain": x["gain_db"]} for x in list_sounds(conn)]
     scope, scope_label = regions.scope_for(conn, moment_pk)
-    return {
-        "duration": clip.duration_s, "fps": clip.fps, **wf.to_json(),
+    out = {
+        "kind": kind, "duration": clip.duration_s, "fps": clip.fps, **wf.to_json(),
         "segments": segments, "source": source, "saved": bool(row),
-        "effects": _effects_to_clip(_effects(row), clip), "sounds": sounds,
+        "effects": _effects_to_clip(_effects(base), clip), "sounds": sounds,
         "regions": regions.get(conn, scope), "region_scope": scope_label,
         "visual": {"types": motion.TYPES, "zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP,
                    "flash": motion.FLASH, "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]},
         "presets": props, "beats": beats, "lines": transcript_lines(clip.folder),
         "notes": (a.get("cut") or {}).get("notes", ""), "hook": a.get("hook", ""),
-        "snap_s": cfg.edit.snap_s, "render": render_state(conn, moment_pk, clip, cfg=cfg),
+        "snap_s": cfg.edit.snap_s, "render": render_state(conn, moment_pk, clip, cfg=cfg, kind=kind),
         "transcript": transcript_state(cfg, conn, moment_pk, clip),
-        **subtitles(cfg, conn, moment_pk, clip),
+        "other": {k: render_state(conn, moment_pk, clip, cfg=cfg, kind=k)["state"] for k in KINDS if k != kind},
+        **subtitles(cfg, conn, moment_pk, clip, kind, row=base),
     }
+    if kind == "short":
+        sw, sh = _size(clip)
+        out |= {"layout": current_layout(conn, moment_pk, clip, row),
+                "layout_info": {"types": lay.TYPES, "out": [lay.OUT_W, lay.OUT_H], "scale": lay.SCALE_RANGE,
+                                "split": lay.SPLIT_RANGE, "max_title": lay.MAX_TITLE, "dark": lay.BG_DARK,
+                                "blur_down": lay.BLUR_DOWN, "src": [sw, sh]},
+                "titles": [t for t in (a.get("titles") or []) if isinstance(t, str)][:3],
+                "vertical_crop": a.get("vertical_crop", "")}
+    return out
 
 
 def _words(clip: ClipRef) -> dict[str, Any] | None:
@@ -203,9 +278,11 @@ def _sub_default(cfg: Config | None, clip: ClipRef) -> dict[str, Any]:
     return {"on": sc.on and not karaoke, "size": sc.size, "position": sc.position}
 
 
-def current_subs(cfg: Config | None, row: sqlite3.Row | None, clip: ClipRef) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
+def current_subs(cfg: Config | None, row: sqlite3.Row | None, clip: ClipRef,
+                 kind: str = "long") -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
     """(cues in clip time, where they come from: saved | auto | none, style). Until you edit
-    them, cues are built fresh from Whisper's words, so transcribing again updates them."""
+    them, cues are built fresh from Whisper's words, so transcribing again updates them
+    (shorter ones for a Short)."""
     from chatwatcher.subs import lines
     style = lines.clean_style(json.loads(row["subs_style_json"]) if row and row["subs_style_json"] else {},
                               _sub_default(cfg, clip))
@@ -214,22 +291,30 @@ def current_subs(cfg: Config | None, row: sqlite3.Row | None, clip: ClipRef) -> 
                 for c in json.loads(row["subs_json"])]
         return [c for c in cues if c["t1"] > 0 and c["t0"] < clip.duration_s], "saved", style
     words = _words(clip)
-    return (lines.build(words), "auto", style) if words else ([], "none", style)
+    return (lines.build(words, _max_cue(kind)), "auto", style) if words else ([], "none", style)
 
 
-def subtitles(cfg: Config, conn: sqlite3.Connection, moment_pk: int, clip: ClipRef) -> dict[str, Any]:
-    """The editor's subtitle data: the cues, what Whisper's words would give (to start over
-    from), the word times (edges snap to them) and the language."""
+def _max_cue(kind: str) -> int:
     from chatwatcher.subs import lines
-    cues, source, style = current_subs(cfg, _stored(conn, moment_pk), clip)
+    return lines.SHORT_CUE if kind == "short" else lines.MAX_CUE
+
+
+def subtitles(cfg: Config, conn: sqlite3.Connection, moment_pk: int, clip: ClipRef, kind: str = "long",
+              row: sqlite3.Row | None = None) -> dict[str, Any]:
+    """The editor's subtitle data: the cues, what Whisper's words would give (to start over
+    from), the word times (edges snap to them) and the language. row: where the cues come
+    from (default: this kind's saved edit)."""
+    from chatwatcher.subs import lines
+    cues, source, style = current_subs(cfg, row if row is not None else _stored(conn, moment_pk, kind), clip, kind)
     words = _words(clip)
+    w, h = (lay.OUT_W, lay.OUT_H) if kind == "short" else _size(clip)
     from chatwatcher.subs import names
     return {"subs": cues, "subs_source": source, "subs_style": style,
             "names": names.get(conn, regions.scope_for(conn, moment_pk)[0]), "output_language": cfg.claude.output_language,
-            "subs_auto": lines.build(words) if words else [],
+            "subs_auto": lines.build(words, _max_cue(kind)) if words else [],
             "sub_words": [[round(a, 3), round(b, 3)] for a, b, _ in lines.words_of(words)] if words else [],
             "sub_language": (words or {}).get("language"),
-            "sub_layout": {"max_line": lines.MAX_LINE, "sizes": lines.SIZES, "highlight": lines.HIGHLIGHT,
+            "sub_layout": {**lines.frame_rules(w, h), "sizes": lines.SIZES, "highlight": lines.HIGHLIGHT,
                            "font": cfg.subtitles.font}}
 
 
@@ -256,27 +341,37 @@ def transcript_state(cfg: Config, conn: sqlite3.Connection, moment_pk: int, clip
 
 
 def render_state(conn: sqlite3.Connection, moment_pk: int, clip: ClipRef | None = None,
-                 cfg: Config | None = None) -> dict[str, Any]:
+                 cfg: Config | None = None, kind: str = "long") -> dict[str, Any]:
     """none | queued | running | done | stale (changed since the last render) | error."""
+    check_kind(kind)
     if clip is None:
         try:
             clip = clip_ref(conn, moment_pk)
         except EditError:
             return {"state": "none"}
-    job = conn.execute("SELECT status, error FROM jobs WHERE moment_id = ? AND stage = 'render'",
-                       (moment_pk,)).fetchone()
-    row = _stored(conn, moment_pk)
+    job = conn.execute("SELECT status, error FROM jobs WHERE moment_id = ? AND stage = ?",
+                       (moment_pk, STAGE[kind])).fetchone()
+    row = _stored(conn, moment_pk, kind)
     out: dict[str, Any] = {"state": "none"}
-    f = clip.edit_path
+    f = clip.out_path(kind)
     rendered = json.loads(row["rendered_json"]) if row and row["rendered_json"] else None
     if f.is_file() and rendered:
         same = (rendered.get("segments") == json.loads(row["segments_json"])
                 and rendered.get("effects", []) == _effects(row)
-                and rendered.get("regions", {}) == _used_regions(conn, moment_pk, _effects(row))
-                and _subs_rendered(cfg, row, clip) == (rendered.get("subs", []), rendered.get("subs_style")))
-        if clip.srt_path.is_file():
-            out["srt"] = f"/media/edit-srt/{moment_pk}?v={int(clip.srt_path.stat().st_mtime)}"
-        out |= {"url": f"/media/edit/{moment_pk}?v={int(f.stat().st_mtime)}", "size": f.stat().st_size,
+                and _subs_rendered(cfg, row, clip, kind) == (rendered.get("subs", []), rendered.get("subs_style")))
+        if kind == "short":
+            layout = current_layout(conn, moment_pk, clip, row)
+            same = (same and rendered.get("layout") == layout
+                    and rendered.get("regions", {}) == _short_regions(conn, moment_pk, _effects(row), layout))
+        else:
+            same = same and rendered.get("regions", {}) == _used_regions(conn, moment_pk, _effects(row))
+            if same and cfg is not None:
+                from chatwatcher.brand.service import edit_intro_key
+                same = rendered.get("intro") == edit_intro_key(cfg, conn, moment_pk, clip)
+        q = "?kind=short&" if kind == "short" else "?"
+        if clip.srt_for(kind).is_file():
+            out["srt"] = f"/media/edit-srt/{moment_pk}{q}v={int(clip.srt_for(kind).stat().st_mtime)}"
+        out |= {"url": f"/media/edit/{moment_pk}{q}v={int(f.stat().st_mtime)}", "size": f.stat().st_size,
                 "path": str(f), "length": rendered.get("duration_s"), "at": row["rendered_at"],
                 "state": "done" if same else "stale"}
     if job and job["status"] in ("pending", "running"):
@@ -408,75 +503,132 @@ def visuals(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]]) -
 
 
 def save(cfg: Config, conn: sqlite3.Connection, moment_pk: int, raw: Any, source: str | None = None,
-         effects: Any = None, subs: Any = None, subs_style: Any = None) -> list[Segment]:
-    """Store the browser's segments (clip time), and its effects unless effects is None.
-    The first save also records Claude's proposals, so your final cut can later be
-    compared with what Claude suggested."""
+         effects: Any = None, subs: Any = None, subs_style: Any = None, kind: str = "long",
+         layout: Any = None) -> list[Segment]:
+    """Store the browser's segments (clip time), and its effects unless effects is None
+    (a new Short keeps the long edit's then). The first save also records Claude's
+    proposals, so your final cut can later be compared with what Claude suggested.
+    layout: a Short's layout (None = keep it; a new Short gets a first one)."""
+    table = _TABLE[check_kind(kind)]
     clip = clip_ref(conn, moment_pk)
     segs = clean_segments(raw, clip.duration_s)
     stream = [[round(s + clip.zero_s, 3), round(e + clip.zero_s, 3), g] for s, e, g in segs]
+    existing = _stored(conn, moment_pk, kind)
     if effects is not None:
         known = {r["id"] for r in conn.execute("SELECT id FROM sounds")}
         fx = [f | {"t": round(f["t"] + clip.zero_s, 3)} for f in clean_effects(effects, clip.duration_s, known)]
     else:
-        fx = _effects(_stored(conn, moment_pk))
+        fx = _effects(existing if existing is not None or kind == "long" else _stored(conn, moment_pk, "long"))
     proposed = None
-    if _stored(conn, moment_pk) is None:
+    if existing is None:
         wf = analyse(clip.path, clip.folder / WAVEFORM_FILE)
         a = _latest_analysis(conn, moment_pk)
         props = proposals(a, clip, wf, cfg.edit.snap_s)
         proposed = json.dumps({"zero_s": clip.zero_s, "model": a.get("model") or (a.get("_meta") or {}).get("model"),
                                "cut": a.get("cut"), "snapped": props})
     conn.execute(
-        """INSERT INTO edits (moment_id, segments_json, source, proposed_json, effects_json) VALUES (?, ?, ?, ?, ?)
+        f"""INSERT INTO {table} (moment_id, segments_json, source, proposed_json, effects_json) VALUES (?, ?, ?, ?, ?)
            ON CONFLICT (moment_id) DO UPDATE SET segments_json = excluded.segments_json,
                effects_json = excluded.effects_json,
-               source = COALESCE(excluded.source, edits.source), updated_at = datetime('now')""",
+               source = COALESCE(excluded.source, {table}.source), updated_at = datetime('now')""",
         (moment_pk, json.dumps(stream), source if source in ("long", "short", "whole") else None, proposed,
          json.dumps(fx, ensure_ascii=False)))
+    if kind == "short" and (layout is not None or existing is None or not existing["layout_json"]):
+        first = current_layout(conn, moment_pk, clip, existing)
+        conn.execute("UPDATE shorts SET layout_json = ? WHERE moment_id = ?",
+                     (json.dumps(lay.clean(layout, first) if layout is not None else first, ensure_ascii=False),
+                      moment_pk))
+    if existing is None and kind == "short" and subs is None and subs_style is None:
+        long_row = _stored(conn, moment_pk, "long")           # a new Short keeps your subtitle fixes
+        if long_row is not None:
+            conn.execute("UPDATE shorts SET subs_json = ?, subs_style_json = ? WHERE moment_id = ?",
+                         (long_row["subs_json"], long_row["subs_style_json"], moment_pk))
     if subs is not None or subs_style is not None:
         from chatwatcher.subs.lines import SubsError, clean, clean_style
         try:
             if subs == "auto":                       # follow Whisper's words again
-                conn.execute("UPDATE edits SET subs_json = NULL WHERE moment_id = ?", (moment_pk,))
+                conn.execute(f"UPDATE {table} SET subs_json = NULL WHERE moment_id = ?", (moment_pk,))
             elif subs is not None:
                 cues = [c | {"t0": round(c["t0"] + clip.zero_s, 3), "t1": round(c["t1"] + clip.zero_s, 3)}
                         for c in clean(subs, clip.duration_s)]
-                conn.execute("UPDATE edits SET subs_json = ? WHERE moment_id = ?",
+                conn.execute(f"UPDATE {table} SET subs_json = ? WHERE moment_id = ?",
                              (json.dumps(cues, ensure_ascii=False), moment_pk))
             if subs_style is not None:
-                conn.execute("UPDATE edits SET subs_style_json = ? WHERE moment_id = ?",
+                conn.execute(f"UPDATE {table} SET subs_style_json = ? WHERE moment_id = ?",
                              (json.dumps(clean_style(subs_style, _sub_default(cfg, clip))), moment_pk))
         except SubsError as e:
             raise EditError(str(e), "invalid")
     return segs
 
 
-def _subs_rendered(cfg: Config | None, row: sqlite3.Row, clip: ClipRef) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _subs_rendered(cfg: Config | None, row: sqlite3.Row, clip: ClipRef,
+                   kind: str = "long") -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The subtitles a render would burn in now (stream time), and their style: to tell
-    whether edit.mp4 is out of date."""
-    cues, _source, style = current_subs(cfg, row, clip)
+    whether edit.mp4 / short.mp4 is out of date."""
+    cues, _source, style = current_subs(cfg, row, clip, kind)
     return [c | {"t0": round(c["t0"] + clip.zero_s, 3), "t1": round(c["t1"] + clip.zero_s, 3)} for c in cues], style
 
 
-def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *,
+def short_visuals(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]],
+                  ps: list[lay.Panel]) -> tuple[list[motion.Visual], set[str]]:
+    """visuals() for a Short: zooms aim at where their region lands on the 9:16 frame (its
+    centre when the region isn't drawn or isn't on screen)."""
+    out, missing = visuals(effects, boxes)
+    for fx, v in zip([f for f in effects if f.get("type") in motion.TYPES], out):
+        if v.type in motion.ZOOMS:
+            at = lay.map_point(v.cx, v.cy, ps) if boxes.get(fx.get("region") or "") else None
+            v.cx, v.cy = at or (0.5, 0.5)
+    return out, missing
+
+
+def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind: str = "long",
                   on_progress: Callable[[float], None] | None = None) -> dict[str, Any]:
-    """Render the saved edit to <clip folder>/edit.mp4. Returns {duration_s, size_bytes, missing}."""
+    """Render the saved edit to <clip folder>/edit.mp4 (a Short: short.mp4).
+    Returns {duration_s, size_bytes, missing, …}."""
     from chatwatcher.edit.render import SoundCue, place, render
     from chatwatcher.edit.sounds import get_sound, sound_path
+    check_kind(kind)
+    short = kind == "short"
+    table = _TABLE[kind]
     clip = clip_ref(conn, moment_pk)
-    row = _stored(conn, moment_pk)
+    row = _stored(conn, moment_pk, kind)
     if row is None:
-        raise EditError("Nothing to render: no edit saved for this clip.", "invalid")
+        raise EditError("Nothing to render: no edit saved for this clip." if not short
+                        else "Nothing to render: no Short saved for this clip.", "invalid")
     stream = json.loads(row["segments_json"])
     segs = _to_clip(stream, clip)
     if not segs:
         raise EditError("The edit's segments are outside the downloaded clip. Pick them again.", "invalid")
     stream_fx = _effects(row)
     clip_fx = _effects_to_clip(stream_fx, clip)
-    cues, _source, sub_style = current_subs(cfg, row, clip)
-    boxes = _used_regions(conn, moment_pk, stream_fx)
-    pictures, no_region = visuals(clip_fx, boxes)
+    cues, _source, sub_style = current_subs(cfg, row, clip, kind)
+    graph, layout, title = None, None, ""
+    if short:
+        layout = current_layout(conn, moment_pk, clip, row)
+        boxes = _short_regions(conn, moment_pk, stream_fx, layout)
+        sw, sh = _size(clip)
+        ps = lay.panels(layout, boxes, sw, sh)
+        graph, title = lay.graph(ps, sw, sh), layout["title"]
+        pictures, no_region = short_visuals(clip_fx, boxes, ps)
+        size = (lay.OUT_W, lay.OUT_H)
+    else:
+        boxes = _used_regions(conn, moment_pk, stream_fx)
+        pictures, no_region = visuals(clip_fx, boxes)
+        size = (clip.width, clip.height)
+    from chatwatcher.clip.media import probe as probe_media
+    made_intro = []
+
+    def intro_progress(frac: float) -> None:
+        made_intro.append(frac)
+        conn.execute(f"UPDATE {table} SET render_progress = ? WHERE moment_id = ?", (round(frac * 0.3, 3), moment_pk))
+
+    # The intro first, when the long edit starts with one (rendered now if it's out of date).
+    intro, intro_key, intro_s = None, None, 0.0
+    if not short:
+        from chatwatcher.brand.service import intro_for_edit
+        intro, intro_key = intro_for_edit(cfg, conn, moment_pk, clip, on_progress=intro_progress)
+        if intro:
+            intro_s = max(1, round(probe_media(intro).duration_s * clip.fps)) / clip.fps
     sound_cues, missing = [], set()
     for fx in clip_fx:
         if fx.get("type", "sfx") != "sfx":
@@ -486,38 +638,45 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *,
             missing.add(fx["sound"])
             continue
         for at in place(fx["t"], segs, clip.fps):
-            sound_cues.append(SoundCue(at, sound_path(cfg, snd), fx["gain"], fx["duck"], snd["duration_s"]))
+            sound_cues.append(SoundCue(at + intro_s, sound_path(cfg, snd), fx["gain"], fx["duck"], snd["duration_s"]))
 
     last = [0.0]
 
+    start = 0.3 if made_intro else 0.0     # rendering the intro took the first part of the bar
+
     def progress(frac: float) -> None:
+        frac = start + frac * (1 - start)
         if time.monotonic() - last[0] > 0.5:
             last[0] = time.monotonic()
-            conn.execute("UPDATE edits SET render_progress = ? WHERE moment_id = ?", (round(frac, 3), moment_pk))
+            conn.execute(f"UPDATE {table} SET render_progress = ? WHERE moment_id = ?", (round(frac, 3), moment_pk))
         if on_progress:
             on_progress(frac)
 
-    conn.execute("UPDATE edits SET render_progress = 0 WHERE moment_id = ?", (moment_pk,))
+    conn.execute(f"UPDATE {table} SET render_progress = ? WHERE moment_id = ?", (start, moment_pk))
     try:
-        r = render(cfg.edit, clip.path, segs, clip.edit_path, fps=clip.fps, has_audio=clip.has_audio,
+        r = render(cfg.edit, clip.path, segs, clip.out_path(kind), fps=clip.fps, has_audio=clip.has_audio,
                    sounds=sound_cues, visuals=pictures, subs=cues if sub_style["on"] else [],
-                   sub_style=sub_style, size=(clip.width, clip.height), font=cfg.subtitles.font,
-                   on_progress=progress)
+                   sub_style=sub_style, size=size, font=cfg.subtitles.font,
+                   intro=intro, intro_s=intro_s, layout=graph, title=title, on_progress=progress)
     finally:
-        conn.execute("UPDATE edits SET render_progress = NULL WHERE moment_id = ?", (moment_pk,))
+        conn.execute(f"UPDATE {table} SET render_progress = NULL WHERE moment_id = ?", (moment_pk,))
     # The subtitles as a .srt on the edit's timeline (for YouTube's CC), burned in or not.
     from chatwatcher.edit.render import lengths
     from chatwatcher.subs.lines import on_edit, srt
-    shown = on_edit(cues, segs, lengths(segs, clip.fps))
+    shown = [(a + intro_s, b + intro_s, t) for a, b, t in on_edit(cues, segs, lengths(segs, clip.fps))]
+    srt_path = clip.srt_for(kind)
     if shown:
-        clip.srt_path.write_text(srt(shown), encoding="utf-8")
+        srt_path.write_text(srt(shown), encoding="utf-8")
     else:
-        clip.srt_path.unlink(missing_ok=True)
-    stream_subs, _ = _subs_rendered(cfg, row, clip)
+        srt_path.unlink(missing_ok=True)
+    stream_subs, _ = _subs_rendered(cfg, row, clip, kind)
     info = {"segments": stream, "effects": stream_fx, "regions": boxes, "subs": stream_subs, "subs_style": sub_style,
             "duration_s": round(r.duration_s, 2), "size_bytes": r.size_bytes, "sounds": len(sound_cues),
             "visuals": len(pictures), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
-            "missing": sorted(missing), "missing_regions": sorted(no_region)}
-    conn.execute("UPDATE edits SET rendered_json = ?, rendered_at = datetime('now') WHERE moment_id = ?",
+            "missing": sorted(missing), "missing_regions": sorted(no_region),
+            "intro": intro_key, "intro_s": round(intro_s, 3)}
+    if short:
+        info |= {"layout": layout, "size": list(size)}
+    conn.execute(f"UPDATE {table} SET rendered_json = ?, rendered_at = datetime('now') WHERE moment_id = ?",
                  (json.dumps(info, ensure_ascii=False), moment_pk))
     return info

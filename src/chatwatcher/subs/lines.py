@@ -25,6 +25,13 @@ MAX_TEXT = 200
 SIZES = {"small": 0.055, "normal": 0.065, "large": 0.08}    # font size, as a fraction of the frame height
 POSITIONS = ("bottom", "top")
 HIGHLIGHT = "FFD600"   # *highlighted* words (RGB)
+# A Short (taller than wide): text sized from the width, narrower lines (up to 4), shorter
+# cues, and room at the bottom for YouTube's buttons and title.
+SHORT_LINE = 22
+SHORT_LINES = 4
+SHORT_CUE = 44
+TITLE_SIZE = 0.075     # the Short's title, as a fraction of the width
+TITLE_LINE = 20
 FONT = "Noto Sans CJK JP"
 
 _WIDE = re.compile("[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]")
@@ -49,9 +56,9 @@ def words_of(data: dict[str, Any]) -> list[tuple[float, float, str]]:
     return out
 
 
-def build(data: dict[str, Any]) -> list[dict[str, Any]]:
+def build(data: dict[str, Any], max_cue: int = MAX_CUE) -> list[dict[str, Any]]:
     """Cues from Whisper's words: a new one at a pause, after a sentence, or before it gets
-    too long or too slow to read (then preferably after a comma)."""
+    too long (max_cue wide) or too slow to read (then preferably after a comma)."""
     groups: list[list[tuple[float, float, str]]] = []
     cur: list[tuple[float, float, str]] = []
     text = lambda ws: "".join(w[2] for w in ws).strip()        # noqa: E731
@@ -61,7 +68,7 @@ def build(data: dict[str, Any]) -> list[dict[str, Any]]:
             if gap >= GAP_S or w[1] - cur[0][0] > MAX_CUE_S:
                 groups.append(cur)
                 cur = []
-            elif width(text(cur + [w])) > MAX_CUE:
+            elif width(text(cur + [w])) > max_cue:
                 cut = next((j for j in range(len(cur) - 1, len(cur) // 2 - 1, -1)
                             if _BREAK_AFTER.search(cur[j][2].strip())), len(cur) - 1)
                 groups.append(cur[:cut + 1])
@@ -125,17 +132,33 @@ def clean_style(raw: Any, default: dict[str, Any]) -> dict[str, Any]:
 
 # ── layout: the same in the preview (editor.js) ──────────────────────────────
 
-def wrap(text: str) -> list[str]:
+def frame_rules(width_px: int, height_px: int) -> dict[str, Any]:
+    """How subtitles sit in a frame of this shape (the editor's preview gets the same numbers).
+    base: the side font sizes are a fraction of; bottom / top / top_title: the margin as a
+    fraction of the height (top_title: below a Short's title)."""
+    if height_px > width_px:
+        return {"vertical": True, "max_line": SHORT_LINE, "max_lines": SHORT_LINES, "base": "width",
+                "bottom": 0.25, "top": 0.08, "top_title": 0.2, "title_size": TITLE_SIZE, "title_line": TITLE_LINE}
+    return {"vertical": False, "max_line": MAX_LINE, "max_lines": 2, "base": "height",
+            "bottom": 0.06, "top": 0.06, "top_title": 0.06, "title_size": TITLE_SIZE, "title_line": TITLE_LINE}
+
+
+def wrap(text: str, max_line: int = MAX_LINE, max_lines: int = 2) -> list[str]:
     """One line, or two of about equal width split at the space nearest the middle (any
-    character for text without spaces, like Japanese)."""
-    if width(text) <= MAX_LINE:
+    character for text without spaces, like Japanese). With max_lines > 2, halves still
+    wider than max_line are split again."""
+    if width(text) <= max_line or max_lines < 2:
         return [text]
     half = width(text) / 2
     spaces = [i for i, ch in enumerate(text) if ch == " "]
     cuts = spaces or list(range(1, len(text)))
     best = min(cuts, key=lambda i: (abs(width(text[:i]) - half), i))
     a, b = text[:best].rstrip(), text[best:].lstrip()
-    return [a, b] if a and b else [text]
+    if not (a and b):
+        return [text]
+    if max_lines == 2:
+        return [a, b]
+    return wrap(a, max_line, max_lines // 2) + wrap(b, max_line, max_lines - max_lines // 2)
 
 
 def runs(line: str, on: bool = False) -> tuple[list[tuple[str, bool]], bool]:
@@ -181,11 +204,11 @@ def _ass_time(t: float) -> str:
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
-def _ass_text(text: str) -> str:
+def _ass_text(text: str, max_line: int = MAX_LINE, max_lines: int = 2) -> str:
     esc = lambda s: s.replace("\\", "＼").replace("{", "｛").replace("}", "｝")     # noqa: E731
     hi = f"{{\\c&H{HIGHLIGHT[4:6]}{HIGHLIGHT[2:4]}{HIGHLIGHT[0:2]}&}}"
     out, on = [], False
-    for line in wrap(text):
+    for line in wrap(text, max_line, max_lines):
         pieces, on_after = runs(line, on)
         out.append("".join((hi if h else "{\\c&HFFFFFF&}") + esc(p) for p, h in pieces))
         on = on_after
@@ -193,23 +216,35 @@ def _ass_text(text: str) -> str:
 
 
 def ass(cues: list[tuple[float, float, str]], style: dict[str, Any], width_px: int, height_px: int,
-        font: str = FONT) -> str:
+        font: str = FONT, title: str = "", title_until: float = 0.0) -> str:
     """An ASS subtitle file for libass, sized for this video: bold white with a thick black
-    outline, bottom or top centre."""
-    h = height_px or 720
-    size = round(SIZES.get(style.get("size"), SIZES["normal"]) * h)
-    outline, shadow, margin = max(1.0, size * 0.1), max(0.0, size * 0.045), round(h * 0.06)
-    align = 8 if style.get("position") == "top" else 2
-    head = (f"[Script Info]\nScriptType: v4.00+\nPlayResX: {width_px or 1280}\nPlayResY: {h}\nWrapStyle: 2\n"
+    outline, bottom or top centre. title: a Short's title in the top band, shown from 0 to
+    title_until."""
+    w, h = width_px or 1280, height_px or 720
+    rules = frame_rules(w, h)
+    base = w if rules["vertical"] else h
+    size = round(SIZES.get(style.get("size"), SIZES["normal"]) * base)
+    outline, shadow, side = max(1.0, size * 0.1), max(0.0, size * 0.045), round(base * 0.06)
+    top = style.get("position") == "top"
+    align = 8 if top else 2
+    margin = round(h * (rules["top_title" if title else "top"] if top else rules["bottom"]))
+    tsize = round(rules["title_size"] * w)
+    head = (f"[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nWrapStyle: 2\n"
             "ScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
             "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
             "MarginL, MarginR, MarginV, Encoding\n"
             f"Style: Clip,{font},{size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
-            f"{outline:.1f},{shadow:.1f},{align},{margin},{margin},{margin},1\n\n[Events]\n"
+            f"{outline:.1f},{shadow:.1f},{align},{side},{side},{margin},1\n"
+            f"Style: Title,{font},{tsize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
+            f"{max(1.0, tsize * 0.12):.1f},{max(0.0, tsize * 0.05):.1f},8,{side},{side},{round(h * 0.06)},1\n\n[Events]\n"
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
-    return head + "".join(f"Dialogue: 0,{_ass_time(a)},{_ass_time(b)},Clip,,0,0,0,,{_ass_text(t)}\n"
-                          for a, b, t in cues)
+    body = ""
+    if title and title_until > 0:
+        body += f"Dialogue: 1,{_ass_time(0)},{_ass_time(title_until)},Title,,0,0,0,,{_ass_text(title, TITLE_LINE, 3)}\n"
+    body += "".join(f"Dialogue: 0,{_ass_time(a)},{_ass_time(b)},Clip,,0,0,0,,"
+                    f"{_ass_text(t, rules['max_line'], rules['max_lines'])}\n" for a, b, t in cues)
+    return head + body
 
 
 def srt(cues: list[tuple[float, float, str]]) -> str:

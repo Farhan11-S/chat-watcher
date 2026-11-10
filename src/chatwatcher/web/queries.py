@@ -70,7 +70,26 @@ def display_status(status: str, stages: dict[str, dict[str, Any]]) -> str:
     return status
 
 
-def videos(conn: sqlite3.Connection, limit: int = 50, *, with_upload: bool = False) -> list[dict[str, Any]]:
+def top_moment(conn: sqlite3.Connection, video_pk: int) -> dict[str, Any] | None:
+    """The stream's moment Claude rated highest (its latest analysis; ties: the better rank)."""
+    r = conn.execute(
+        """SELECT m.id, m.rank, json_extract(a.analysis_json, '$.clip_worthiness') AS worthiness,
+                  json_extract(a.analysis_json, '$.category') AS category,
+                  (SELECT COUNT(*) FROM analyses a2 JOIN moments m2 ON m2.id = a2.moment_id
+                   WHERE m2.video_id = m.video_id AND a2.id = (SELECT MAX(id) FROM analyses WHERE moment_id = m2.id)
+                     AND json_extract(a2.analysis_json, '$.clip_worthiness') >= 8) AS n_great
+           FROM moments m JOIN analyses a ON a.moment_id = m.id
+           WHERE m.video_id = ? AND a.id = (SELECT MAX(id) FROM analyses WHERE moment_id = m.id)
+             AND json_extract(a.analysis_json, '$.clip_worthiness') IS NOT NULL
+           ORDER BY worthiness DESC, m.rank LIMIT 1""", (video_pk,)).fetchone()
+    return dict(r) if r else None
+
+
+def videos(conn: sqlite3.Connection, limit: int = 50, *, with_upload: bool = False,
+           between: tuple[str, str] | None = None) -> list[dict[str, Any]]:
+    """The streams, newest first. between: (from, to) UTC in SQLite format: only streams
+    that started then (or were added then, when YouTube gave no date)."""
+    when = "AND datetime(COALESCE(v.published_at, v.added_at)) >= ? AND datetime(COALESCE(v.published_at, v.added_at)) < ?"
     rows = conn.execute(
         """
         SELECT v.*, c.title AS channel_title,
@@ -80,14 +99,15 @@ def videos(conn: sqlite3.Connection, limit: int = 50, *, with_upload: bool = Fal
                (SELECT COUNT(*) FROM moments m WHERE m.video_id = v.id AND m.status = 'approved') AS n_kept,
                (SELECT COUNT(*) FROM moments m WHERE m.video_id = v.id AND m.status = 'rejected') AS n_skipped
         FROM videos v LEFT JOIN channels c ON c.id = v.channel_id
-        WHERE v.status != 'skipped'
-        ORDER BY COALESCE(v.published_at, v.added_at) DESC LIMIT ?
-        """, (limit,)).fetchall()
+        WHERE v.status != 'skipped' {}
+        ORDER BY datetime(COALESCE(v.published_at, v.added_at)) DESC LIMIT ?
+        """.format(when if between else ""), (*(between or ()), limit)).fetchall()
     out = []
     for r in rows:
         d = dict(r)
         d["stages"] = stage_map(conn, r["id"], with_upload=with_upload)
         d["status"] = display_status(d["status"], d["stages"])
+        d["top"] = top_moment(conn, r["id"])
         out.append(d)
     return out
 

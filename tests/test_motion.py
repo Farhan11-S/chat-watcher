@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from chatwatcher.config import EditConfig
+from chatwatcher.edit import layout as lay
 from chatwatcher.edit import motion
 from chatwatcher.edit.motion import Visual, camera, flashes, local, video_filter, view_exprs
 from chatwatcher.edit.render import render
@@ -83,8 +84,15 @@ def test_segments_get_only_their_own_effects():
     assert video_filter([Visual("flash", 0, 0.2)], 30, 5).count("drawbox") == 6
 
 
-def test_preview_maths_matches_the_render():
-    """editor.js draws the preview with a copy of camera(); they must agree."""
+SHORT_LAYOUTS = [None, {"type": "crop", "x": 0.75, "y": 0.5, "scale": 1.4, "title": ""},
+                 {"type": "stack", "top": "game", "bottom": "face", "split": 0.6, "title": ""},
+                 {"type": "fit", "title": "x"}]
+
+
+@pytest.mark.parametrize("layout", SHORT_LAYOUTS)
+def test_preview_maths_matches_the_render(layout):
+    """editor.js draws the preview with a copy of camera() (and, for a Short, of the layout's
+    panels); they must agree."""
     node = shutil.which("node")
     if not node:
         pytest.skip("node isn't installed")
@@ -97,15 +105,28 @@ def test_preview_maths_matches_the_render():
           {"type": "shake", "t": 2.7, "d": 0.8, "strength": 3}, {"type": "shake", "t": 6.0, "d": 0.5, "strength": 1},
           {"type": "flash", "t": 2.7, "d": 0.3, "color": "red"}]
     D = {"regions": regions, "visual": {"zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP, "flash": motion.FLASH,
-                                        "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]}}
+                                        "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]},
+         "layout_info": {"out": [lay.OUT_W, lay.OUT_H], "src": [1920, 1080]}}
     times = [i / 50 for i in range(400)]
     script = (f"const ZOOMS = {json.dumps(motion.ZOOMS)};\nconst D = {json.dumps(D)};\nlet fx = {json.dumps(fx)};\n"
-              f"{js[start:end]}\nconsole.log(JSON.stringify({json.dumps(times)}.map(t => [camera(t), flashesAt(t)])));")
-    out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
-    from chatwatcher.edit.service import visuals
-    vis, missing = visuals([f | {"strength": f.get("strength", 2)} for f in fx], regions)
+              f"let kind = {json.dumps('short' if layout else 'long')}, layout = {json.dumps(layout)}, regionMode = false;\n"
+              "const video = { videoWidth: 1920, videoHeight: 1080 };\n"
+              f"{js[start:end]}\nconsole.log(JSON.stringify({{cams: {json.dumps(times)}.map(t => [camera(t), flashesAt(t)]),"
+              " panels: layout ? panels() : []}));")
+    got = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+    from chatwatcher.edit.service import short_visuals, visuals
+    fx_full = [f | {"strength": f.get("strength", 2)} for f in fx]
+    if layout:
+        ps = lay.panels(layout, regions, 1920, 1080)
+        assert len(got["panels"]) == len(ps)
+        for g, p in zip(got["panels"], ps):
+            assert g["src"] == pytest.approx(list(p.src), abs=1e-12) and g["dst"] == pytest.approx(list(p.dst), abs=1e-12)
+            assert bool(g.get("blur")) == p.blur
+        vis, missing = short_visuals(fx_full, regions, ps)
+    else:
+        vis, missing = visuals(fx_full, regions)
     assert missing == {"nowhere"}
-    for t, (cam, fl) in zip(times, out):
+    for t, (cam, fl) in zip(times, got["cams"]):
         assert cam == pytest.approx(list(camera(t, vis)), abs=1e-9), t
         want = [(list(rgb), a) for rgb, a in flashes(t, vis)]
         assert len(want) == len(fl) and all(w[0] == g[0] and abs(w[1] - g[1]) < 1e-9 for w, g in zip(want, fl)), t

@@ -295,6 +295,101 @@ MIGRATIONS: list[str] = [
         updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    # 14 — the brand intro before an edit, and the clip's thumbnail; an 'intro' job to render
+    # the intro on its own (jobs rebuilt for the new stage, as in 8)
+    """
+    CREATE TABLE intros (
+        moment_id      INTEGER PRIMARY KEY REFERENCES moments(id) ON DELETE CASCADE,
+        on_edit        INTEGER NOT NULL DEFAULT 0,   -- edit.mp4 starts with the intro
+        teasers_json   TEXT,                         -- [[start, end, gain_db, style]] stream time; NULL = auto-picked
+        rendered_json  TEXT,                         -- what intro.mp4 was made from
+        progress       REAL,
+        rendered_at    TEXT,
+        updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE thumbs (
+        moment_id      INTEGER PRIMARY KEY REFERENCES moments(id) ON DELETE CASCADE,
+        settings_json  TEXT NOT NULL,                -- frame (stream time), text, zoom, style…
+        made_at        TEXT
+    );
+    CREATE TABLE jobs_new (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id   INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        stage       TEXT NOT NULL
+                    CHECK (stage IN ('ingest','score','clip','transcribe','frames','analyze','digest','upload',
+                                     'render','intro')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        run_after   TEXT NOT NULL DEFAULT (datetime('now')),
+        error       TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at  TEXT,
+        finished_at TEXT,
+        message     TEXT,
+        params_json TEXT
+    );
+    INSERT INTO jobs_new (id, video_id, moment_id, stage, status, attempts, run_after, error,
+                          created_at, updated_at, started_at, finished_at, message, params_json)
+        SELECT id, video_id, moment_id, stage, status, attempts, run_after, error,
+               created_at, updated_at, started_at, finished_at, message, params_json FROM jobs;
+    DROP TABLE jobs;
+    ALTER TABLE jobs_new RENAME TO jobs;
+    CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
+    CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
+    """,
+    # 15 — Shorts: a 9:16 edit of the clip next to the long one (its own cut, effects and
+    # subtitles, plus a layout), and a 'short' job to render it (jobs rebuilt, as in 8)
+    """
+    CREATE TABLE shorts (
+        moment_id        INTEGER PRIMARY KEY REFERENCES moments(id) ON DELETE CASCADE,
+        segments_json    TEXT NOT NULL,       -- like edits: stream time, play order
+        source           TEXT,
+        proposed_json    TEXT,
+        effects_json     TEXT NOT NULL DEFAULT '[]',
+        subs_json        TEXT,
+        subs_style_json  TEXT,
+        layout_json      TEXT,                -- {type: crop|stack|fit, x, y, scale, top, bottom, split, title}
+        rendered_json    TEXT,                -- what short.mp4 was made from
+        render_progress  REAL,
+        rendered_at      TEXT,
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE jobs_new (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id   INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        stage       TEXT NOT NULL
+                    CHECK (stage IN ('ingest','score','clip','transcribe','frames','analyze','digest','upload',
+                                     'render','intro','short')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        run_after   TEXT NOT NULL DEFAULT (datetime('now')),
+        error       TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at  TEXT,
+        finished_at TEXT,
+        message     TEXT,
+        params_json TEXT
+    );
+    INSERT INTO jobs_new (id, video_id, moment_id, stage, status, attempts, run_after, error,
+                          created_at, updated_at, started_at, finished_at, message, params_json)
+        SELECT id, video_id, moment_id, stage, status, attempts, run_after, error,
+               created_at, updated_at, started_at, finished_at, message, params_json FROM jobs;
+    DROP TABLE jobs;
+    ALTER TABLE jobs_new RENAME TO jobs;
+    CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
+    CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
+    """,
+    # 16 — the Short's cover (1080×1920), next to the thumbnail's settings
+    """
+    ALTER TABLE thumbs ADD COLUMN short_json TEXT;      -- like settings_json, for short_cover.jpg
+    ALTER TABLE thumbs ADD COLUMN short_made_at TEXT;
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -83,6 +83,8 @@ model = "sonnet"               # default for every clip; the dashboard can redo 
 effort = "low"                 # low | medium | high | xhigh | max (more = deeper, uses more of your plan)
 redo_model = "opus"            # what "Analyse again" on one moment picks first
 redo_effort = "medium"
+edit_model = "opus"            # the editor's ✨ Suggest effects and subtitle ✨ Clean up
+edit_effort = "high"
 moment_cap = 50                # max moment analyses in any 5 hours (0 = no cap); extra clips
 moment_cap_hours = 5           # wait until the oldest one in the window is older than this
 timeout_s = 600

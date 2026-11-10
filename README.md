@@ -22,6 +22,9 @@ channel ─▶ ingest ─▶ score ─▶ clip ─▶ analyze ─▶ upload
 - **Claude runs on your Claude subscription** through the `claude` CLI. No API key needed.
 - **Dashboard:** timeline per stream, clip player, storyboard, keep/skip, re-cut, re-analyse
   with any model, ask Claude follow-up questions about a clip, and see disk and Drive space.
+- **Editor, Shorts, intro and thumbnail:** cut, sounds, zooms and subtitles in the browser,
+  a 9:16 Short of the same clip (crop, stack or fit), then a branded intro and a YouTube
+  thumbnail for the clip in a few clicks.
 
 ---
 
@@ -128,12 +131,51 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
        each, e.g. a fail sound + shake + red flash on the screech, a punch-in on her face
        for a line to camera. Your own effects stay and Claude builds around them; asking
        again replaces only Claude's. **Clear Claude's** removes them. One suggestion is
-       one Claude call (about 10–20k tokens).
+       one Claude call (about 10–20k tokens), with Opus at high effort (`claude.edit_model`,
+       `claude.edit_effort`).
      - **Render edit** makes `edit.mp4` next to `clip.mp4`: frame-exact cuts, a tiny
        fade at each cut so nothing clicks, smooth zooms, shakes and flashes, your sounds
        mixed in, loudness levelled to YouTube's −14 LUFS. It
        goes ahead of other queued work and takes roughly a fifth of the edit's length
        for 720p (more for 1080p60). Watch it on the page, download it, or copy its path.
+     - **Short 9:16** (the switch next to *Edit*): a second, vertical edit of the same clip,
+       with its own cut, sounds, zooms and subtitles. A new Short starts from Claude's
+       short cut and brings along your long edit's effects and subtitle fixes; changing one
+       never changes the other. The player turns into a 9:16 preview of the Short. Pick a
+       **Layout**:
+       - **Crop**: a tall window of the stream. Slide it left/right, zoom in, or press
+         **◎ face** (any region) to centre it on a box. A first Short starts on her face box.
+       - **Stack**: two boxes on top of each other, e.g. **Top** = game, **Bottom** = face,
+         with the **Split** between them. Each box is one of your ▢ Regions (or the whole
+         frame) and is shown whole, filling its half. Gaming streams with a face box start
+         like this.
+       - **Fit + blur**: the whole frame across the middle, over a blurred, darker copy.
+
+       **Title** puts text in the top band for the whole Short (`*stars*` make a word
+       yellow; **Claude's #1–3** fill in Claude's titles). Subtitles get bigger and wrap
+       narrower, and sit above where YouTube draws its buttons. Zooms aim at where their
+       region lands in the layout. **Render Short** makes `short.mp4` (1080×1920) and
+       `short.srt` next to the clip; it takes about as long as the Short plays for 720p.
+       The intro isn't added to Shorts (they should open on the hook).
+   - **the intro** (under the editor): a teaser montage from this clip, a glitch into your
+     brand colours, then your logo pops in and your channel name drops in letter by letter
+     (about 3.5 s), with whooshes, a boom and a chime. The teasers are picked from your edit:
+     the loudest lines (cut after about 3 s, at the end of a word), Claude's hook and payoff,
+     and a **💥 blast** (shake, colour split, red tint) on the biggest scream, with the line
+     that leads into it. Play them, move a teaser's start or end to the playhead, change its
+     style or volume, reorder, add one from the subtitle line at the playhead, or **↻ Pick
+     again**. **Render intro** makes `intro.mp4` (about 10 s of work for 720p);
+     **start edit.mp4 with it** puts it in front of your cut on the next **Render edit**.
+   - **the thumbnail** (next to the intro): Claude's frame and thumbnail text, zoomed on the
+     channel's face box, with big outlined text on the other side (`*stars*` make a word
+     yellow, emoji work), a brand band or shade behind it and your badge in the corner.
+     **Use playhead frame** takes any frame; click the picture to centre the zoom there.
+     The preview redraws as you type. **Save thumbnail.jpg** writes 1280×720 next to the clip.
+     **Short 9:16** (the switch on the card) makes the Short's cover instead: the frame in the
+     Short's layout (crop / stack / fit, from the editor's Short tab), zoomed where you click,
+     the text across the **top**, **middle** or **bottom** (stopping above the quarter YouTube
+     covers), on a slanted brand band or a shade. **Save short_cover.jpg** writes 1080×1920;
+     upload it as the Short's cover in the YouTube app.
    - frames you click to jump to
    - Claude's summary, **titles and thumbnail text with copy buttons**, storyboard and
      captions
@@ -157,6 +199,11 @@ output/<channel>/<date>_<video id>_<title>/
     clip.mp4                  ← best quality, ready for your editor
     edit.mp4                  ← your cut from the dashboard editor (after Render edit)
     edit.srt                  ← its subtitles, for YouTube's CC
+    short.mp4                 ← your 9:16 Short, 1080×1920 (after Render Short)
+    short.srt                 ← its subtitles
+    intro.mp4                 ← the brand intro (after Render intro)
+    thumbnail.jpg             ← 1280×720 YouTube thumbnail (after Save thumbnail.jpg)
+    short_cover.jpg           ← 1080×1920 cover for the Short (after Save short_cover.jpg)
     storyboard.md             ← summary, cut points, titles, shot list, captions
     analysis.json             ← the same, machine-readable
     frames/                   ← stills; one is Claude's thumbnail pick
@@ -222,11 +269,19 @@ the timeline, and replace the transcript in the list beside the player.
 - **Retime** by dragging a line's edges in the lane (they snap to Whisper's word times;
   hold Shift to place them freely), or drag the middle to move it. Click a line for its
   panel: nudge its start and end, **✂ Split** it at the playhead, **⤓ Join next**, or delete it.
+- **Type a time** in the list: each line shows its start (blue) and end (grey). Click one,
+  type `1:02.5` or `62.5`, Enter applies it, Esc cancels. A start past the line's end moves
+  the whole line; a time that runs into a neighbour is trimmed to fit (the note under the
+  list says so). **+** on a line adds a new one after it (taking the second half of the
+  line when there's no gap), **×** deletes it.
+- **Transcript only** (YouTube captions, no Whisper words): **✎ Edit as lines** above the
+  list turns it into lines you can retime, retype, add to and delete.
 - **+ Line** adds one at the playhead; **↻ From transcript** starts over from Whisper's
   words. Until you change a line, they follow the transcript, so **🎙 Again** updates them.
 - **Burn in**, **size** and **at the** bottom / top are per edit. Karaoke clips start with
   burn-in off.
 - **✨ Clean up** (or **✨ Fix & translate** when the clip isn't in English): one Claude call
+  (Opus at high effort, like ✨ Suggest effects)
   goes over the lines in your cut. It fixes misheard words and names (using chat, the
   stream title and the channel's names), punctuation and capitals, drops filler, translates
   lines that aren't in `claude.output_language`, and stars a punch word now and then. Every
@@ -253,6 +308,18 @@ talking. Files live in `data/sounds/`.
 Note where each sound came from. Meme sounds are often cut from shows or games, and short
 ones rarely get a Content ID claim, but they can. freesound.org (CC0), Pixabay and the
 YouTube Audio Library are free to use.
+
+## Brand
+
+The **Brand** page holds your channel's look, set once: its name and tagline, five colours,
+the logo (SVG or PNG, best with a transparent background) and the fonts. Every intro and
+thumbnail uses it, and a preview shows the intro's logo card as you change it. Files live
+in `data/brand/`.
+
+A heavy rounded font looks most like a clip channel. Upload one (e.g. Arial Rounded MT Bold
+from `C:\Windows\Fonts\ARLRDBD.TTF`), or install the free
+[M PLUS Rounded 1c](https://fonts.google.com/specimen/M+PLUS+Rounded+1c) (it has Japanese
+too): the app finds it by itself.
 
 ## Keep it running
 

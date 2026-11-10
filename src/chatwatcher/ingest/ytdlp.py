@@ -56,7 +56,8 @@ _ERROR_HINTS: list[tuple[re.Pattern[str], str, bool, str]] = [
      "YouTube wants a sign-in (bot check). Set youtube.cookies_file to a fresh cookies.txt "
      "export and install deno."),
     (re.compile(r"members[- ]only|Join this channel|channel's members", re.I), "members_only", False,
-     "Members-only video: needs cookies from an account with that membership."),
+     "Members-only video: needs cookies from an account with that membership. Without one, "
+     "remove the stream (✕ Remove stream on the Queue or stream page) so it stops showing up."),
     (re.compile(r"Private video", re.I), "private", False, "The video is private."),
     (re.compile(r"live event will begin|Premieres in|is_upcoming|has not started", re.I),
      "not_started", True, "The stream hasn't started yet."),

@@ -147,6 +147,10 @@ class ClaudeConfig(_Section):
     # What "Analyse again" on one moment offers first: a stronger model for the ones that matter.
     redo_model: str = "opus"
     redo_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    # The editor's Claude buttons (✨ Suggest effects, subtitle ✨ Clean up): few calls, and
+    # their taste shows in the finished video, so a stronger model by default.
+    edit_model: str = "opus"
+    edit_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     # At most moment_cap analyses in any moment_cap_hours (a rolling window, like Claude's 5-hour
     # limit). Extra clips wait until the oldest analysis in the window is older than that.
     moment_cap: int = Field(50, ge=0)                     # 0 = no cap

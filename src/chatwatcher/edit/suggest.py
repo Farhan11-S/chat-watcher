@@ -213,14 +213,14 @@ Place at most {max_effects} sound effects and at most {max_visual} camera effect
 
 def suggest(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, intensity: str = "normal",
             runner: ClaudeRunner | None = None, model: str | None = None,
-            effort: str | None = None) -> Suggestion:
+            effort: str | None = None, kind: str = "long") -> Suggestion:
     """Ask Claude for sounds and camera effects on the saved cut, and save them into the edit.
     With an empty sound library it places only camera effects."""
     if not cfg.claude.enabled:
         raise SuggestError("claude.enabled is false in the config.", "disabled")
     sounds = list_sounds(conn)
     clip = service.clip_ref(conn, moment_pk)
-    row = conn.execute("SELECT * FROM edits WHERE moment_id = ?", (moment_pk,)).fetchone()
+    row = service._stored(conn, moment_pk, kind)
     if row is None:
         raise SuggestError("Save a cut first.", "invalid")
     segs = service._to_clip(json.loads(row["segments_json"]), clip)
@@ -251,7 +251,7 @@ def suggest(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, intensity:
         runner = runner or ClaudeRunner(cfg.claude)
         res = runner.run(prompt, schema([x["id"] for x in sounds], list(boxes), max_effects, max_visual),
                          system=SYSTEM.format(language=cfg.claude.output_language), cwd=clip.folder,
-                         model=model, effort=effort)
+                         model=model or cfg.claude.edit_model, effort=effort or cfg.claude.edit_effort)
     except ClaudeError as e:
         hint = {"usage_limit": "Claude's usage limit is reached; try again after it resets.",
                 "auth": "The claude CLI isn't logged in. Run `claude auth login` in a terminal.",
@@ -279,9 +279,8 @@ def suggest(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, intensity:
     added = added[:max_effects]
     pictures, more_dropped = _visuals(res.data.get("visual") or [], segs, wf.hits, boxes, clip.duration_s)
     pictures = pictures[:max_visual]
-    service.save(cfg, conn, moment_pk, segs, None, mine + added + pictures)
-    saved = service._effects_to_clip(service._effects(
-        conn.execute("SELECT effects_json FROM edits WHERE moment_id = ?", (moment_pk,)).fetchone()), clip)
+    service.save(cfg, conn, moment_pk, segs, None, mine + added + pictures, kind=kind)
+    saved = service._effects_to_clip(service._effects(service._stored(conn, moment_pk, kind)), clip)
     return Suggestion(saved, len(added) + len(pictures), dropped + more_dropped, str(res.data.get("note") or ""),
                       res.model, added_sounds=len(added), added_visual=len(pictures))
 

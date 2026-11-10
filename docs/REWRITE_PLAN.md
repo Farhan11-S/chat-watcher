@@ -350,6 +350,35 @@ Each milestone ends with something usable.
    `chat-watcher-clipper/`; git history keeps them, including the last uncommitted
    `watcher.go` change. Their `.env` files and `chat_spikes.json` were moved to the
    git-ignored `legacy-backup/`.
+10. **Editor** ✅ (built after the original plan): a dashboard editor for each downloaded clip.
+    Cuts on a waveform, a sound-effect library, punch-ins / push-ins / shakes / flashes aimed
+    at per-channel regions, Claude-suggested effects, Whisper subtitles with Claude clean-up,
+    a brand intro and a thumbnail maker. Renders `edit.mp4` (re-encoded once, frame-exact).
+11. **Shorts** ✅: a second, 9:16 edit of the same clip (table `shorts`, job `short`,
+    `short.mp4` 1080×1920 + `short.srt`), with its own cut, effects and subtitles.
+    - Layouts: **crop** (a 9:16 window, slid/zoomed or centred on a region), **stack** (two
+      regions, e.g. game over face, each grown to its panel's shape around its centre) and
+      **fit** (the whole frame over a blurred, darkened copy). Optional title in the top band.
+    - `edit/layout.py` turns a layout into panels and an ffmpeg graph; `editor.js` draws the
+      same panels on a canvas for the preview. A test runs both and compares them.
+    - Zooms work on the finished 9:16 picture, aimed where their region lands. Subtitles are
+      sized from the width, wrap at 22 (up to 4 lines), and sit 25 % up, above YouTube's buttons.
+    - A new Short starts from Claude's short cut and copies the long edit's effects and
+      subtitle fixes. No intro on Shorts.
+    - Real-data check: a 720p FL Studio stream rendered at about 0.8× real time in each layout.
+    - Cover: the thumbnail card's **Short 9:16** switch draws `short_cover.jpg` (1080×1920) in the
+      Short's layout with Pillow (`brand.thumb.compose` / `draw_tall`), text at top / middle /
+      bottom clear of YouTube's buttons. Settings in `thumbs.short_json` (migration 16).
+
+### Still open (from this plan and the editor work)
+- Editable Settings page (presets, weights, lexicons, limits); it is read-only today.
+- Per-channel auto-upload: `channels.auto_upload` exists but nothing reads it.
+- Keep / Skip feeding back into scoring weights and lexicons.
+- Kdenlive project export of a dashboard edit.
+- Highlights compilation render (Claude's digest order → one video).
+- Subtitle colour per VTuber; an auto-keep rule; an "open folder" button.
+- Shorts: per-segment framing (a different crop/layout for each segment) and a short-only
+  intro/outro card.
 
 ## Setup requirements
 - Python ≥3.12, `ffmpeg` (installed)
