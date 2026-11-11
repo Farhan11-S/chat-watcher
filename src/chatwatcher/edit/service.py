@@ -26,7 +26,7 @@ import math
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -69,6 +69,7 @@ class ClipRef:
     has_audio: bool
     width: int = 0
     height: int = 0
+    voices: dict[str, dict[str, str]] = field(default_factory=dict)   # names and colours (subs.speakers)
 
     @property
     def edit_path(self) -> Path:
@@ -98,9 +99,10 @@ def clip_ref(conn: sqlite3.Connection, moment_pk: int) -> ClipRef:
     path = Path(c["path"])
     if not path.is_file():
         raise EditError("The clip video was deleted to free space. Download it again to edit it.", "not_clipped")
+    from chatwatcher.subs import speakers
     return ClipRef(moment_pk, path, Path(c["folder"] or path.parent), float(c["zero_s"] or 0),
                    float(c["duration_s"] or 0), float(c["fps"] or 30), bool(c["acodec"]),
-                   int(c["width"] or 0), int(c["height"] or 0))
+                   int(c["width"] or 0), int(c["height"] or 0), speakers.get(conn, moment_pk))
 
 
 # ── reading ──────────────────────────────────────────────────────────────────
@@ -265,16 +267,13 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
 
 
 def _words(clip: ClipRef) -> dict[str, Any] | None:
-    """words.json, its word times lined up with the real speech (subs.align; done once for
-    clips transcribed before that existed)."""
-    from chatwatcher.subs import align
+    """words.json (aligned on the audio when it was transcribed: subs.align)."""
     from chatwatcher.subs.transcribe import WORDS_FILE
     p = clip.folder / WORDS_FILE
     try:
-        data = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
     except (OSError, json.JSONDecodeError):
         return None
-    return align.ensure(clip.folder, clip.path, data) if data else None
 
 
 def _sub_default(cfg: Config | None, clip: ClipRef) -> dict[str, Any]:
@@ -285,23 +284,32 @@ def _sub_default(cfg: Config | None, clip: ClipRef) -> dict[str, Any]:
         karaoke = json.loads(meta.read_text(encoding="utf-8")).get("stream_type") == "karaoke" if meta.is_file() else False
     except (OSError, json.JSONDecodeError):
         karaoke = False
-    return {"on": sc.on and not karaoke, "size": sc.size, "position": sc.position, "mode": "lines"}
+    return {"on": sc.on and not karaoke, "size": sc.size, "position": sc.position, "mode": "lines", "emphasis": []}
 
 
 def current_subs(cfg: Config | None, row: sqlite3.Row | None, clip: ClipRef,
                  kind: str = "long") -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
     """(cues in clip time, where they come from: saved | auto | none, style). Until you edit
     them, cues are built fresh from Whisper's words, so transcribing again updates them
-    (shorter ones for a Short)."""
-    from chatwatcher.subs import lines
+    (shorter ones for a Short). Cues with a voice carry its colour and name."""
+    from chatwatcher.subs import lines, speakers
     style = lines.clean_style(json.loads(row["subs_style_json"]) if row and row["subs_style_json"] else {},
                               _sub_default(cfg, clip))
     if row and row["subs_json"] is not None:
         cues = [c | {"t0": round(c["t0"] - clip.zero_s, 3), "t1": round(c["t1"] - clip.zero_s, 3)}
                 for c in json.loads(row["subs_json"])]
-        return [c for c in cues if c["t1"] > 0 and c["t0"] < clip.duration_s], "saved", style
+        cues = [c for c in cues if c["t1"] > 0 and c["t0"] < clip.duration_s]
+        return speakers.paint(cues, clip.voices), "saved", style
     words = _words(clip)
-    return (lines.build(words, _max_cue(kind, style)), "auto", style) if words else ([], "none", style)
+    return (speakers.paint(auto_cues(words, kind, style), clip.voices), "auto", style) if words else ([], "none", style)
+
+
+def auto_cues(words: dict[str, Any] | None, kind: str, style: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Cues built from Whisper's words in the style's mode, its emphasis words highlighted."""
+    from chatwatcher.subs import lines
+    if not words:
+        return []
+    return lines.emphasise(lines.build(words, _max_cue(kind, style)), (style or {}).get("emphasis") or [])
 
 
 def _max_cue(kind: str, style: dict[str, Any] | None = None) -> int:
@@ -321,10 +329,21 @@ def subtitles(cfg: Config, conn: sqlite3.Connection, moment_pk: int, clip: ClipR
     words = _words(clip)
     w, h = (lay.OUT_W, lay.OUT_H) if kind == "short" else _size(clip)
     from chatwatcher.subs import names
+    from chatwatcher.subs import speakers
+    scope = regions.scope_for(conn, moment_pk)[0]
+    count = max([int((words or {}).get("voices") or 0)] + [int(k) + 1 for k in clip.voices])
+    master = speakers.vtubers(conn)
     return {"subs": cues, "subs_source": source, "subs_style": style,
-            "names": names.get(conn, regions.scope_for(conn, moment_pk)[0]), "output_language": cfg.claude.output_language,
-            "subs_auto": lines.build(words, _max_cue(kind, style)) if words else [],
-            "subs_auto_by_mode": {m: lines.build(words, _max_cue(kind, {"mode": m})) for m in lines.MODES} if words else {},
+            "voices": {"count": count,
+                       "map": {str(k): clip.voices.get(str(k)) or {"name": "", "color": speakers.default_color(k),
+                                                                    "text": speakers.readable(speakers.default_color(k))}
+                               for k in range(count)},
+                       "people": {k: v["color"] for k, v in master.items()},
+                       "names": [v["name"] for v in master.values() if v["status"] != "Retirement"],
+                       "palette": speakers.PALETTE, "max": speakers.MAX_VOICES},
+            "names": names.get(conn, scope), "output_language": cfg.claude.output_language,
+            "subs_auto": auto_cues(words, kind, style),
+            "subs_auto_by_mode": {m: auto_cues(words, kind, style | {"mode": m}) for m in lines.MODES} if words else {},
             "sub_words": [[round(a, 3), round(b, 3)] for a, b, _ in lines.words_of(words)] if words else [],
             "sub_language": (words or {}).get("language"),
             "sub_layout": {**lines.frame_rules(w, h), "sizes": lines.SIZES, "highlight": lines.HIGHLIGHT,
@@ -722,7 +741,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
     # The subtitles as a .srt on the edit's timeline (for YouTube's CC), burned in or not.
     from chatwatcher.edit.render import lengths
     from chatwatcher.subs.lines import on_edit, srt
-    shown = [(a + intro_s, b + intro_s, t) for a, b, t in on_edit(cues, segs, lengths(segs, clip.fps))]
+    shown = [(a + intro_s, b + intro_s, *rest) for a, b, *rest in on_edit(cues, segs, lengths(segs, clip.fps))]
     srt_path = clip.srt_for(kind)
     if shown:
         srt_path.write_text(srt(shown), encoding="utf-8")

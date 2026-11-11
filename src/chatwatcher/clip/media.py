@@ -15,6 +15,14 @@ class MediaError(Exception):
     pass
 
 
+# Decoding a clip's sound on its own, ffmpeg starts at the first audio sample. In clips cut
+# from a stream the audio often starts 1-3 s after the picture (the cut lands on a video
+# keyframe before the audio), and a player puts it there, so samples read without this
+# would be early by that much: captions before the words, the waveform off. This pads the
+# start with silence (or trims) so sample 0 is clip time 0.
+AUDIO_FROM_ZERO = ["-af", "aresample=async=1:first_pts=0"]
+
+
 def _exe(name: str) -> str:
     exe = resolve_exe(name)
     if not exe:

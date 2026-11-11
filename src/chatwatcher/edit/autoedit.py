@@ -533,17 +533,7 @@ def transition_effects(items: list[str], ps: list[pc.Piece], segs: list[list[flo
 
 def captions(words: dict[str, Any] | None, emphasis: list[str]) -> list[dict[str, Any]]:
     """Word-by-word cues with Claude's emphasis words *highlighted*."""
-    from chatwatcher.subs import lines
-    if not words:
-        return []
-    cues = lines.build(words, lines.WORD_CUE)
-    terms = sorted({str(t).strip() for t in emphasis if str(t).strip()}, key=len, reverse=True)
-    for c in cues:
-        text = c["text"]
-        for term in terms:
-            text = re.sub(rf"(?<![\w*])({re.escape(term)})(?![\w*])", r"*\1*", text, flags=re.I)
-        c |= {"text": text, "by": "claude"}
-    return cues
+    return service.auto_cues(words, "short", {"mode": "words", "emphasis": emphasis})
 
 
 # ── putting it together ─────────────────────────────────────────────────────
@@ -671,13 +661,16 @@ def auto_edit(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind: st
     trans = transition_effects(d.get("transitions") or [], ps, segs, plan.cold_open, max_trans)
     mine = [fx for fx in mine if fx.get("type") != "transition"]       # the cuts changed: old ones don't fit
     effects = (mine + cam + sfx + hits_fx + trans)[:service.MAX_EFFECTS]
-    cues = captions(words, d.get("emphasis") or []) if captions_on else None
+    # The captions follow Whisper's words (saved as "auto", with Claude's emphasis words in
+    # the style), so transcribing again updates them instead of leaving stale lines.
     hook = " ".join(str(d.get("hook_title") or "").split())[:lay.MAX_TITLE]
-    style = None
+    cues = style = None
     layout = None
-    if cues is not None:
+    if captions_on:
         old = service.current_subs(cfg, base, clip, kind)[2]
-        style = old | {"on": True, "mode": "words"} | ({"size": "large", "position": "top"} if short else {})
+        style = old | {"on": True, "mode": "words", "emphasis": d.get("emphasis") or []} \
+            | ({"size": "large", "position": "top"} if short else {})
+        cues = service.auto_cues(words, kind, style)
     if short:
         layout = service.current_layout(conn, moment_pk, clip, row) | {"title": hook}
     total = sum(lengths(segs, clip.fps))
@@ -687,7 +680,8 @@ def auto_edit(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind: st
         return Result(segs, effects, cues, plan, str(d.get("note") or ""), hook, res.model, res.usage,
                       {"camera": len(cam), "sounds": len(sfx), "hits": len(hits_fx), "volume": volumes,
                        "transitions": len(trans)}, raw=d)
-    service.save(cfg, conn, moment_pk, segs, None, effects, subs=cues, subs_style=style, kind=kind, layout=layout)
+    service.save(cfg, conn, moment_pk, segs, None, effects, subs="auto" if captions_on else None, subs_style=style,
+                 kind=kind, layout=layout)
     saved = service._effects_to_clip(service._effects(service._stored(conn, moment_pk, kind)), clip)
     return Result(segs, saved, cues, plan, str(d.get("note") or ""), hook, res.model, res.usage,
                   {"camera": len(cam), "sounds": len(sfx), "hits": len(hits_fx), "volume": volumes,

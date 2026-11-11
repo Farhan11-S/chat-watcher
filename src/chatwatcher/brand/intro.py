@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw
 
 from chatwatcher.brand import art, sfx
 from chatwatcher.brand.brand import Brand
-from chatwatcher.clip.media import MediaError, _exe, probe
+from chatwatcher.clip.media import AUDIO_FROM_ZERO, MediaError, _exe, probe
 
 STYLES = ("normal", "blast")
 MAX_TEASERS = 8
@@ -410,7 +410,8 @@ def render_intro(b: Brand, logo_file: Path | None, title_font: str | None, text_
                     raise MediaError("Couldn't read the clip's picture for the teaser.")
                 if has_audio:
                     r = subprocess.run([_exe("ffmpeg"), "-v", "error", "-ss", f"{s:.3f}", "-i", str(src), "-t",
-                                        f"{length:.6f}", "-vn", "-ac", "2", "-ar", str(sfx.SR), "-f", "f32le", "-"],
+                                        f"{length:.6f}", "-vn", "-ac", "2", "-ar", str(sfx.SR), *AUDIO_FROM_ZERO,
+                                        "-f", "f32le", "-"],
                                        capture_output=True, timeout=120)
                     pcm = np.frombuffer(r.stdout, np.float32)
                     pcm = pcm[:len(pcm) // 2 * 2].reshape(-1, 2).copy()

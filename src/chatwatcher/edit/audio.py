@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from chatwatcher.clip.media import MediaError, _exe
+from chatwatcher.clip.media import AUDIO_FROM_ZERO, MediaError, _exe
 
 RATE = 50                  # waveform values per second (20 ms each)
 _SR = 8000                 # decode rate; plenty for loudness
@@ -28,7 +28,7 @@ _HIT_RISE = 10.0
 _HIT_AFTER = 10            # …up to a level (next 200 ms) at least _HIT_JUMP dB above the
 _HIT_BEFORE = 100          # usual loud level of the 2 s before
 _HIT_JUMP = 6.0
-_VERSION = 2               # bump to recompute cached files
+_VERSION = 3               # bump to recompute cached files (3: audio that starts late lines up)
 
 
 @dataclass
@@ -60,7 +60,7 @@ def analyse(src: Path, cache: Path | None = None) -> Waveform:
             pass
     try:
         out = subprocess.run([_exe("ffmpeg"), "-v", "error", "-i", str(src), "-vn", "-ac", "1",
-                              "-ar", str(_SR), "-f", "s16le", "-"], capture_output=True, timeout=300)
+                              "-ar", str(_SR), *AUDIO_FROM_ZERO, "-f", "s16le", "-"], capture_output=True, timeout=300)
     except subprocess.TimeoutExpired as e:
         raise MediaError(f"reading the audio of {src.name} timed out") from e
     if out.returncode != 0:

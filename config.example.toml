@@ -69,6 +69,8 @@ auto = true                    # after each clip downloads; false = only the edi
 model = "large-v3-turbo"       # or "small": about a third faster, more misheard words
 language = ""                  # "" = detect per line (mixed English/Indonesian is fine); or "en", "id", "ja"
 threads = 0                    # CPU threads; 0 = all
+speakers = false               # guess who says each line (pip install sherpa-onnx); off: you pick people in the editor
+speaker_threshold = 0.6        # higher = fewer voices; one person shouting may show up as a second voice
 
 [subtitles]                    # burned into the editor's render, from Whisper's word timings
 on = true                      # for new edits (karaoke clips start off); each edit has its own switch

@@ -2,13 +2,16 @@
 
 A cue is {"id", "t0", "t1", "text", "by": "auto" | "you"} in clip seconds (stream time in
 the database, like effects, so it stays on the same words when you trim or reorder).
-Text may put *stars* around words to show them in the highlight colour.
+Text may put *stars* around words to show them in the highlight colour. A style's
+"emphasis" (words the AI edit picked) highlights them in cues built from the words, so
+they stay highlighted when the clip is transcribed again.
 
 Long text wraps into two balanced lines. wrap() here (the render) and wrap() in editor.js
 (the preview) are the same rule, so change them together."""
 
 from __future__ import annotations
 
+import bisect
 import math
 import re
 from typing import Any
@@ -18,6 +21,7 @@ MAX_CUE = 80           # a new cue starts before one gets wider than this
 MAX_CUE_S = 6.0
 MIN_CUE_S = 0.8
 GAP_S = 0.6            # a pause this long between words starts a new cue
+REPLY_S = 0.6          # …and so does another voice talking this long in between
 HOLD_S = 0.25          # a cue stays up this long after its last word
 MIN_SHOWN_S = 0.25     # a cue cut down to less than this by a cut isn't shown
 MAX_CUES = 500
@@ -32,6 +36,7 @@ SHORT_LINES = 4
 SHORT_CUE = 44
 WORD_CUE = 14         # "words" mode: one to three words at a time, like clip channels
 MODES = ("lines", "words")
+MAX_EMPHASIS = 12
 TITLE_SIZE = 0.075     # the Short's title, as a fraction of the width
 TITLE_LINE = 20
 FONT = "Noto Sans CJK JP"
@@ -58,17 +63,37 @@ def words_of(data: dict[str, Any]) -> list[tuple[float, float, str]]:
     return out
 
 
-def build(data: dict[str, Any], max_cue: int = MAX_CUE) -> list[dict[str, Any]]:
-    """Cues from Whisper's words: a new one at a pause, after a sentence, or before it gets
-    too long (max_cue wide) or too slow to read (then preferably after a comma).
-    max_cue=WORD_CUE gives word-by-word captions."""
+def said(data: dict[str, Any]) -> list[tuple[float, float, str, int | None]]:
+    """words_of with each word's voice (subs.speakers), None when unknown."""
+    out = []
+    for line in data.get("lines") or []:
+        for w in line.get("words") or []:
+            if str(w[2]).strip():
+                v = w[4] if len(w) > 4 and isinstance(w[4], int) and not isinstance(w[4], bool) else None
+                out.append((float(w[0]), float(w[1]), str(w[2]), v))
+    return out
+
+
+def _groups(words: list[tuple[float, float, str]], max_cue: int,
+            others: list[tuple[float, float]]) -> list[list[tuple[float, float, str]]]:
+    """Words → cues: a new one at a pause, when another voice answers in between (others:
+    their words, by start), after a sentence, or before it gets too long (max_cue wide) or
+    too slow to read (then preferably after a comma)."""
+    starts = [a for a, _ in others]
     groups: list[list[tuple[float, float, str]]] = []
     cur: list[tuple[float, float, str]] = []
     text = lambda ws: "".join(w[2] for w in ws).strip()        # noqa: E731
-    for w in words_of(data):
+
+    def answered(t0: float, t1: float) -> bool:
+        busy = 0.0
+        for a, b in others[max(0, bisect.bisect_left(starts, t0) - 1): bisect.bisect_right(starts, t1)]:
+            busy += max(0.0, min(b, t1) - max(a, t0))
+        return busy >= REPLY_S
+
+    for w in words:
         if cur:
             gap = w[0] - cur[-1][1]
-            if gap >= GAP_S or w[1] - cur[0][0] > MAX_CUE_S:
+            if gap >= GAP_S or w[1] - cur[0][0] > MAX_CUE_S or (others and answered(cur[-1][1], w[0])):
                 groups.append(cur)
                 cur = []
             elif width(text(cur + [w])) > max_cue:
@@ -76,18 +101,40 @@ def build(data: dict[str, Any], max_cue: int = MAX_CUE) -> list[dict[str, Any]]:
                             if _BREAK_AFTER.search(cur[j][2].strip())), len(cur) - 1)
                 groups.append(cur[:cut + 1])
                 cur = cur[cut + 1:]
-            elif _SENTENCE_END.search(cur[-1][2].strip()) and (width(text(cur)) >= 12 or gap > 0.25):
-                groups.append(cur)                              # "Okay." alone waits for company
+            elif _SENTENCE_END.search(cur[-1][2].strip()) and (width(text(cur)) >= 12 or gap > 0.25
+                                                                or max_cue <= WORD_CUE):
+                groups.append(cur)                              # a line's "Okay." alone waits for company
                 cur = []
         cur.append(w)
     if cur:
         groups.append(cur)
+    return groups
+
+
+def build(data: dict[str, Any], max_cue: int = MAX_CUE) -> list[dict[str, Any]]:
+    """Cues from Whisper's words (see _groups). max_cue=WORD_CUE gives word-by-word
+    captions. With two or more voices each voice gets its own cues, marked "speaker", so
+    when two talk at once their cues overlap (the render stacks them)."""
+    ws = said(data)
+    voices = {w[3] for w in ws if w[3] is not None}
+    if len(voices) < 2:
+        groups = [(g, None) for g in _groups([w[:3] for w in ws], max_cue, [])]
+    else:
+        groups = []
+        for v in {w[3] for w in ws}:
+            others = sorted((w[0], w[1]) for w in ws if w[3] != v)
+            groups += [(g, v) for g in _groups([w[:3] for w in ws if w[3] == v], max_cue, others)]
+        groups.sort(key=lambda gv: (gv[0][0][0], gv[0][-1][1]))
+    text = lambda ws: "".join(w[2] for w in ws).strip()        # noqa: E731
     cues = []
-    for k, g in enumerate(groups):
+    for k, (g, v) in enumerate(groups):
         start, last = g[0][0], g[-1][1]
-        nxt = groups[k + 1][0][0] if k + 1 < len(groups) else math.inf
+        nxt = next((h[0][0] for h, u in groups[k + 1:] if u == v), math.inf)    # that voice's next cue
         end = max(min(max(last + HOLD_S, start + MIN_CUE_S), nxt - 0.04), last)
-        cues.append({"id": f"a{k + 1}", "t0": round(start, 3), "t1": round(end, 3), "text": text(g), "by": "auto"})
+        cue = {"id": f"a{k + 1}", "t0": round(start, 3), "t1": round(end, 3), "text": text(g), "by": "auto"}
+        if v is not None:
+            cue["speaker"] = v
+        cues.append(cue)
     return cues
 
 
@@ -121,8 +168,12 @@ def clean(raw: Any, duration: float) -> list[dict[str, Any]]:
         while cid in ids:
             cid += "x"
         ids.add(cid)
-        out.append({"id": cid, "t0": round(t0, 3), "t1": round(t1, 3), "text": text,
-                    "by": "auto" if c.get("by") == "auto" else ("claude" if c.get("by") == "claude" else "you")})
+        cue = {"id": cid, "t0": round(t0, 3), "t1": round(t1, 3), "text": text,
+               "by": "auto" if c.get("by") == "auto" else ("claude" if c.get("by") == "claude" else "you")}
+        sp = c.get("speaker")
+        if isinstance(sp, int) and not isinstance(sp, bool) and 0 <= sp < 8:
+            cue["speaker"] = sp
+        out.append(cue)
     return sorted(out, key=lambda c: c["t0"])
 
 
@@ -131,7 +182,32 @@ def clean_style(raw: Any, default: dict[str, Any]) -> dict[str, Any]:
     return {"on": bool(raw.get("on", default["on"])),
             "size": raw.get("size") if raw.get("size") in SIZES else default["size"],
             "position": raw.get("position") if raw.get("position") in POSITIONS else default["position"],
-            "mode": raw.get("mode") if raw.get("mode") in MODES else default.get("mode", "lines")}
+            "mode": raw.get("mode") if raw.get("mode") in MODES else default.get("mode", "lines"),
+            "emphasis": emphasis_terms(raw.get("emphasis"))}
+
+
+def emphasis_terms(raw: Any) -> list[str]:
+    terms = raw if isinstance(raw, list) else []
+    out = []
+    for t in terms:
+        t = " ".join(str(t).replace("*", "").split())[:40]
+        if t and t.lower() not in {x.lower() for x in out}:
+            out.append(t)
+    return out[:MAX_EMPHASIS]
+
+
+def emphasise(cues: list[dict[str, Any]], terms: list[str]) -> list[dict[str, Any]]:
+    """The cues with each term (a word or short phrase, any case) put in *stars*."""
+    terms = sorted(emphasis_terms(terms), key=len, reverse=True)
+    if not terms:
+        return cues
+    out = []
+    for c in cues:
+        text = c["text"]
+        for term in terms:
+            text = re.sub(rf"(?<![\w*])({re.escape(term)})(?![\w*])", r"*\1*", text, flags=re.I)
+        out.append(c | {"text": text})
+    return out
 
 
 # ── layout: the same in the preview (editor.js) ──────────────────────────────
@@ -182,23 +258,28 @@ def plain(text: str) -> str:
 
 # ── timelines ────────────────────────────────────────────────────────────────
 
-def local(cues: list[dict[str, Any]], start: float, length: float) -> list[tuple[float, float, str]]:
-    """The cues that show in [start, start + length) of the clip, in that span's own time."""
+Shown = tuple[float, float, str, "dict[str, str] | None"]     # start, end, text, voice {"color", "name"}
+
+
+def local(cues: list[dict[str, Any]], start: float, length: float) -> list[Shown]:
+    """The cues that show in [start, start + length) of the clip, in that span's own time,
+    with their voice's colour and name (subs.speakers.paint) when they have one."""
     out = []
     for c in cues:
         a, b = max(c["t0"], start), min(c["t1"], start + length)
         if b - a >= min(MIN_SHOWN_S, c["t1"] - c["t0"]) and b > a:
-            out.append((a - start, b - start, c["text"]))
+            who = {"color": c["color"], "name": c.get("name") or ""} if c.get("color") else None
+            out.append((a - start, b - start, c["text"], who))
     return out
 
 
-def on_edit(cues: list[dict[str, Any]], segments: list[list[float]], seg_lengths: list[float]) -> list[tuple[float, float, str]]:
+def on_edit(cues: list[dict[str, Any]], segments: list[list[float]], seg_lengths: list[float]) -> list[Shown]:
     """Every cue where it shows in the edit (once per segment it shows in)."""
     out, offset = [], 0.0
     for (s, *_), length in zip(segments, seg_lengths):
-        out += [(offset + a, offset + b, t) for a, b, t in local(cues, s, length)]
+        out += [(offset + a, offset + b, t, who) for a, b, t, who in local(cues, s, length)]
         offset += length
-    return sorted(out)
+    return sorted(out, key=lambda x: (x[0], x[1]))
 
 
 # ── files ────────────────────────────────────────────────────────────────────
@@ -208,22 +289,35 @@ def _ass_time(t: float) -> str:
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
-def _ass_text(text: str, max_line: int = MAX_LINE, max_lines: int = 2) -> str:
+def _who(rest: list[Any]) -> dict[str, str]:
+    return (rest[0] if rest and isinstance(rest[0], dict) else None) or {}
+
+
+def _ass_color(rgb: str) -> str:
+    return f"{{\\c&H{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}&}}"
+
+
+def _ass_text(text: str, max_line: int = MAX_LINE, max_lines: int = 2, color: str = "FFFFFF") -> str:
+    """color: the text's colour (a voice's); *highlighted* words stay HIGHLIGHT, or white
+    when the voice's colour is that yellow already."""
     esc = lambda s: s.replace("\\", "＼").replace("{", "｛").replace("}", "｝")     # noqa: E731
-    hi = f"{{\\c&H{HIGHLIGHT[4:6]}{HIGHLIGHT[2:4]}{HIGHLIGHT[0:2]}&}}"
+    color = color if re.fullmatch(r"[0-9A-Fa-f]{6}", color or "") else "FFFFFF"
+    hi = _ass_color(HIGHLIGHT if color.upper() != HIGHLIGHT else "FFFFFF")
+    base = _ass_color(color.upper())
     out, on = [], False
     for line in wrap(text, max_line, max_lines):
         pieces, on_after = runs(line, on)
-        out.append("".join((hi if h else "{\\c&HFFFFFF&}") + esc(p) for p, h in pieces))
+        out.append("".join((hi if h else base) + esc(p) for p, h in pieces))
         on = on_after
     return "\\N".join(out)
 
 
-def ass(cues: list[tuple[float, float, str]], style: dict[str, Any], width_px: int, height_px: int,
+def ass(cues: list[Shown], style: dict[str, Any], width_px: int, height_px: int,
         font: str = FONT, title: str = "", title_until: float = 0.0) -> str:
-    """An ASS subtitle file for libass, sized for this video: bold white with a thick black
-    outline, bottom or top centre. title: a Short's title in the top band, shown from 0 to
-    title_until."""
+    """An ASS subtitle file for libass, sized for this video: bold white (or the voice's
+    colour) with a thick black outline, bottom or top centre. Cues that overlap (two voices
+    at once) are stacked by libass, the later one further from the edge. title: a Short's
+    title in the top band, shown from 0 to title_until."""
     w, h = width_px or 1280, height_px or 720
     rules = frame_rules(w, h)
     base = w if rules["vertical"] else h
@@ -247,13 +341,20 @@ def ass(cues: list[tuple[float, float, str]], style: dict[str, Any], width_px: i
     if title and title_until > 0:
         body += f"Dialogue: 1,{_ass_time(0)},{_ass_time(title_until)},Title,,0,0,0,,{_ass_text(title, TITLE_LINE, 3)}\n"
     body += "".join(f"Dialogue: 0,{_ass_time(a)},{_ass_time(b)},Clip,,0,0,0,,"
-                    f"{_ass_text(t, rules['max_line'], rules['max_lines'])}\n" for a, b, t in cues)
+                    f"{_ass_text(t, rules['max_line'], rules['max_lines'], _who(rest).get('color') or 'FFFFFF')}\n"
+                    for a, b, t, *rest in cues)
     return head + body
 
 
-def srt(cues: list[tuple[float, float, str]]) -> str:
+def srt(cues: list[Shown]) -> str:
+    """An .srt (for YouTube); with two or more named people, each line starts "Name: "."""
     def ts(t: float) -> str:
         ms = max(0, round(t * 1000))
         return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
-    return "".join(f"{k}\n{ts(a)} --> {ts(b)}\n" + "\n".join(plain(x) for x in wrap(t)) + "\n\n"
-                   for k, (a, b, t) in enumerate(cues, 1))
+    people = {(_who(rest).get("name") or "").lower() for *_, rest in ((c[:3], c[3:]) for c in cues)} - {""}
+    out = []
+    for k, (a, b, t, *rest) in enumerate(cues, 1):
+        name = (_who(rest).get("name") or "") if len(people) >= 2 else ""
+        out.append(f"{k}\n{ts(a)} --> {ts(b)}\n" + "\n".join(plain(x) for x in wrap(f"{name}: {t}" if name else t))
+                   + "\n\n")
+    return "".join(out)

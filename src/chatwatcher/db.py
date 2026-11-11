@@ -390,6 +390,42 @@ MIGRATIONS: list[str] = [
     ALTER TABLE thumbs ADD COLUMN short_json TEXT;      -- like settings_json, for short_cover.jpg
     ALTER TABLE thumbs ADD COLUMN short_made_at TEXT;
     """,
+    # 17 — who's talking: each clip's voices named and coloured, and each person's colour
+    # remembered per channel (subs.speakers)
+    """
+    CREATE TABLE voices (
+        moment_id   INTEGER PRIMARY KEY REFERENCES moments(id) ON DELETE CASCADE,
+        voices_json TEXT NOT NULL,                  -- {"0": {"name": "Gigi", "color": "FF8FC8"}, ...}
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE people (
+        scope TEXT NOT NULL,                        -- like regions: the channel
+        name  TEXT NOT NULL,                        -- lower case
+        color TEXT NOT NULL,
+        PRIMARY KEY (scope, name)
+    );
+    """,
+    # 18 — one colour per VTuber, for every channel (the VTubers page): replaces the
+    # per-channel memory of 17
+    """
+    CREATE TABLE vtubers (
+        key        TEXT PRIMARY KEY,                -- the name in lower case
+        name       TEXT NOT NULL,                   -- as you write it
+        color      TEXT NOT NULL,                   -- RRGGBB
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT OR IGNORE INTO vtubers (key, name, color)
+        SELECT name, upper(substr(name, 1, 1)) || substr(name, 2), color FROM people;
+    DROP TABLE people;
+    """,
+    # 19 — the VTubers list from a CSV: Japanese name (matches Japanese subtitles), the
+    # accent colour, active / alum, profile page
+    """
+    ALTER TABLE vtubers ADD COLUMN japanese_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE vtubers ADD COLUMN accent TEXT NOT NULL DEFAULT '';
+    ALTER TABLE vtubers ADD COLUMN status TEXT NOT NULL DEFAULT '';
+    ALTER TABLE vtubers ADD COLUMN profile_url TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

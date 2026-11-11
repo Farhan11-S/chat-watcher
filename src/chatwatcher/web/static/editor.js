@@ -49,7 +49,9 @@
   let regionMode = false, regSel = null, regDrag = null, regTimer = null, previewUntil = null, stageOn = false;
   let txPoll = null;
   let subs = [], subStyle = { on: true, size: "normal", position: "bottom", mode: "lines" }, selSub = null;
-  let subsMine = false;        // false: the lines follow Whisper's words (saved as "auto"); true: you changed them
+  let subsMine = false;
+  const ticked = new Set();     // lines ticked in the list, to give them a person at once
+  let lastTick = null;          // the last one ticked: Shift+click ticks everything between        // false: the lines follow Whisper's words (saved as "auto"); true: you changed them
   let subKey = "", listFor = null;
   let kind = "long";           // which edit: long (edit.mp4) | short (short.mp4, 9:16)
   let layout = null;           // the Short's layout (edit/layout.py)
@@ -603,14 +605,23 @@
   // The subtitle lane: one block per line, its text inside. Drag an edge to retime it, the
   // middle to move it; edges snap to Whisper's word times.
   function drawSubs(x, t0, t1, w) {
-    const top = Y_SUBS + 3, bot = Y_SUBS + ROW.subs - 3;
     ctx.fillStyle = C.border;
     ctx.fillRect(0, Y_SUBS, w, 1);
     ctx.font = "11px system-ui, sans-serif";
+    // Lines that overlap (two voices at once) share the lane: one on top, one below.
+    const order = subs.slice().sort((p, q) => p.t0 - q.t0), half = new Map();
+    for (let i = 0; i < order.length; i++)
+      for (let j = i + 1; j < order.length && order[j].t0 < order[i].t1; j++) {
+        if (!half.has(order[i].id)) half.set(order[i].id, 0);
+        half.set(order[j].id, half.get(order[i].id) === 0 ? 1 : 0);
+      }
     for (const c of subs) {
       if (c.t1 < t0 || c.t0 > t1) continue;
-      const a = x(c.t0), z = Math.max(x(c.t1), a + 3), on = c.id === selSub;
-      const col = on ? C.sel : c.by === "you" ? C.hot : c.by === "claude" ? C.cool : C.other;
+      const row = half.get(c.id), mid = (Y_SUBS + 3 + Y_SUBS + ROW.subs - 3) / 2;
+      const top = row === undefined ? Y_SUBS + 3 : row === 0 ? Y_SUBS + 3 : mid + 1;
+      const bot = row === undefined ? Y_SUBS + ROW.subs - 3 : row === 0 ? mid - 1 : Y_SUBS + ROW.subs - 3;
+      const a = x(c.t0), z = Math.max(x(c.t1), a + 3), on = c.id === selSub, vc = cueColor(c);
+      const col = on ? C.sel : vc ? "#" + vc : c.by === "you" ? C.hot : c.by === "claude" ? C.cool : C.other;
       ctx.globalAlpha = (subStyle.on ? 1 : 0.5) * (segs.some(s => c.t0 < s[1] && c.t1 > s[0]) ? 1 : 0.35);
       ctx.fillStyle = col;
       ctx.globalAlpha *= on ? 0.55 : 0.3;
@@ -658,37 +669,59 @@
   }
   const curSub = () => subs.find(c => c.id === selSub);
   const subAt = t => subs.find(c => c.t0 <= t && t < c.t1);
-  // The current line over the video, styled like the render (bold white, black outline).
+  // ── people (collabs): who says each line, a colour each; lines stacked when two talk at once ──
+  const V = () => D.voices || { count: 0, map: {}, people: {}, palette: [] };
+  function voiceColor(k) {     // a voice's colour; voices with one name are one person: the first one's
+    const v = V(), m = v.map || {}, me = m[k] || {}, name = (me.name || "").toLowerCase();
+    if (name) for (let j = 0; j < v.count; j++)
+      if (((m[j] || {}).name || "").toLowerCase() === name) return (m[j] || {}).color || me.color || "FFFFFF";
+    const pal = v.palette || [];
+    return me.color || pal[k % Math.max(1, pal.length)] || "FFFFFF";
+  }
+  const voiceName = k => ((V().map || {})[k] || {}).name || `Person ${k + 1}`;
+  // Caption text: the readable shade the server made of a dark colour (speakers.readable).
+  const voiceText = k => { const m = (V().map || {})[k] || {}; return m.text && m.color === voiceColor(k) ? m.text : voiceColor(k); };
+  const cueColor = c => (c.speaker != null ? voiceText(c.speaker) : null);
+  const subsAt = t => subs.filter(c => c.t0 <= t && t < c.t1).sort((a, b) => a.t0 - b.t0 || a.t1 - b.t1);
+  // The lines over the video, styled like the render (bold white or the voice's colour,
+  // black outline). Two at once stack like libass does: the later one further from the edge.
   function drawSubPreview() {
-    const c = !regionMode && subStyle.on && video.videoWidth ? subAt(video.currentTime) : null;
+    const shown = !regionMode && subStyle.on && video.videoWidth ? subsAt(video.currentTime) : [];
     const box = viewBox(), L = D.sub_layout, titled = isShort() && !!layout.title;
-    const key = c ? [c.id, c.text, subStyle.size, subStyle.position, Math.round(box.width), Math.round(box.height),
-                     box.left, titled].join("|") : "";
+    const key = shown.length ? [shown.map(c => `${c.id}:${c.text}:${cueColor(c) || ""}`).join(","), subStyle.size,
+                                subStyle.position, Math.round(box.width), Math.round(box.height), box.left, titled].join("|") : "";
     if (key === subKey) return;
     subKey = key;
-    subLayer.hidden = !c;
-    if (!c) return;
+    subLayer.hidden = !shown.length;
+    if (!shown.length) return;
     place(subLayer, box);
     const size = L.sizes[subStyle.size] * (L.vertical ? box.width : box.height);      // libass size in screen pixels
+    const top = subStyle.position === "top";
     const inner = el("div", "ed-subs-text");
     Object.assign(inner.style, {
       fontFamily: `"${D.sub_layout.font}", "Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif`,
       fontSize: size * ASS_TO_CSS + "px", lineHeight: size + "px", WebkitTextStroke: size * 0.2 + "px #000",
       textShadow: `${size * 0.045}px ${size * 0.045}px 0 rgba(0,0,0,.5)`,
-      [subStyle.position === "top" ? "top" : "bottom"]:
-        box.height * (subStyle.position === "top" ? (titled ? L.top_title : L.top) : L.bottom) + "px",
+      display: "flex", flexDirection: top ? "column" : "column-reverse",
+      [top ? "top" : "bottom"]: box.height * (top ? (titled ? L.top_title : L.top) : L.bottom) + "px",
     });
-    let on = false;
-    wrapSub(c.text, L.max_line, L.max_lines).forEach((line, k) => {
-      if (k) inner.appendChild(el("br"));
-      const [pieces, after] = runsOf(line, on);
-      on = after;
-      for (const [text, hi] of pieces) {
-        const sp = el("span", "", text);
-        if (hi) sp.style.color = "#" + D.sub_layout.highlight;
-        inner.appendChild(sp);
-      }
-    });
+    const hiOf = col => "#" + (col && col.toUpperCase() === D.sub_layout.highlight.toUpperCase() ? "FFFFFF" : D.sub_layout.highlight);
+    for (const c of shown) {
+      const col = cueColor(c), block = el("div");
+      let on = false;
+      wrapSub(c.text, L.max_line, L.max_lines).forEach((line, k) => {
+        if (k) block.appendChild(el("br"));
+        const [pieces, after] = runsOf(line, on);
+        on = after;
+        for (const [text, hi] of pieces) {
+          const sp = el("span", "", text);
+          if (hi) sp.style.color = hiOf(col);
+          else if (col) sp.style.color = "#" + col;
+          block.appendChild(sp);
+        }
+      });
+      inner.appendChild(block);
+    }
     subLayer.textContent = "";
     subLayer.appendChild(inner);
   }
@@ -1161,6 +1194,13 @@
     selSub = null;
     subsChanged();
   }
+  function setSubVoice(id, k) {
+    const c = subs.find(x => x.id === id);
+    if (!c || (c.speaker ?? null) === k) return;
+    pushUndo();
+    setSpeaker(c, k);
+    subsChanged();
+  }
   function setSubText(id, text) {
     const c = subs.find(x => x.id === id);
     text = text.replace(/\s+/g, " ").trim();
@@ -1326,6 +1366,7 @@
     paintButtons();
     paintList();
     paintSubBar();
+    paintVoices();
     paintLayout();
     followSelection();
   }
@@ -1545,6 +1586,13 @@
     input.setAttribute("aria-label", "Subtitle text");
     input.title = "*stars* around a word make it yellow";
     box.appendChild(input);
+    const who = el("label", "muted ed-sub-who");
+    const opts = [["", "nobody (white)"], ...[...Array(V().count).keys()].map(k => [k, `${k + 1} · ${voiceName(k)}`])];
+    const pick = select(opts, c.speaker ?? "", { subVoice: c.id }, "Who says it", v => v);
+    if (c.speaker != null) pick.style.color = "#" + voiceText(c.speaker);
+    who.append(el("small", "", "said by "), pick);
+    if (!V().count) who.append(el("small", "faint", " · add people under Captions first"));
+    box.appendChild(who);
     const f = 1 / (D.fps || 30);
     box.appendChild(edgeRow("Start", c.t0, "subNudge0", "Start it at the playhead", f));
     box.appendChild(edgeRow("End", c.t1, "subNudge1", "End it at the playhead", f));
@@ -1558,6 +1606,112 @@
       box.appendChild(el("p", "ed-warn ed-why", "Long for two lines on screen: split it, or shorten it."));
   }
   function subStatus(text) { $("[data-ed-sub-status]").textContent = text; }
+  // The people panel: who's in this clip, a name (a datalist of people already named on
+  // this channel) and a colour each; ▶ plays their first line. Lines get a person with
+  // "said by", or with the number keys (see tagKey).
+  function paintVoices() {
+    const box = $("[data-ed-voices]"), v = V();
+    box.hidden = false;
+    const want = JSON.stringify([v.count, v.map, v.names || [], subs.map(c => c.speaker ?? "").join()]);
+    if (box.dataset.painted === want || box.contains(document.activeElement)) return;   // not while you type
+    box.dataset.painted = want;
+    box.textContent = "";
+    box.appendChild(el("b", "", "People in this clip"));
+    box.appendChild(el("p", "faint", ""));
+    box.lastChild.appendChild(el("small", "", (v.count
+      ? "Who says a line: select it and press their number (it moves on to the next line), or press the number "
+        + "while the video plays to tag the line on screen. 0 = nobody (white)."
+      : "In a collab, add each person to colour their lines.") + " Colours come from the VTubers page."));
+    const list = el("datalist");
+    list.id = "ed-people";
+    for (const n of v.names || []) { const o = el("option"); o.value = n; list.appendChild(o); }
+    box.appendChild(list);
+    for (let k = 0; k < v.count; k++) {
+      const row = el("div", "ed-voice");
+      row.appendChild(el("kbd", "", String(k + 1)));
+      const color = el("input");
+      Object.assign(color, { type: "color", value: "#" + voiceColor(k).toLowerCase(), title: "Colour of their lines" });
+      color.dataset.voiceColor = k;
+      const name = el("input");
+      Object.assign(name, { type: "text", value: ((v.map || {})[k] || {}).name || "", placeholder: `Person ${k + 1}`, maxLength: 24 });
+      name.setAttribute("list", "ed-people");
+      name.setAttribute("aria-label", `Name of person ${k + 1}`);
+      name.dataset.voiceName = k;
+      const n = subs.filter(c => c.speaker === k).length;
+      row.append(color, name, btn("▶", "Play their first line", { voicePlay: k }), el("small", "faint", `${n} line${n === 1 ? "" : "s"}`));
+      box.appendChild(row);
+    }
+    const add = btn("+ Add person", "Someone else talks in this clip", { voiceAdd: "" });
+    add.disabled = v.count >= (v.max || 8);
+    box.appendChild(add);
+  }
+  function addPerson() {
+    const v = V();
+    if (v.count >= (v.max || 8)) return;
+    v.map = v.map || {};
+    const k = v.count;
+    v.map[k] = { name: "", color: (v.palette || [])[k % Math.max(1, (v.palette || []).length)] || "FFFFFF" };
+    v.count += 1;
+    D.voices = v;
+    paintVoices();
+    const inp = $(`[data-voice-name="${k}"]`);
+    if (inp) inp.focus();
+  }
+  // A number key: that person says the selected line (then on to the next one), or, while
+  // the video plays, the line on screen. 0: nobody.
+  function tagKey(n) {
+    const k = n === 0 ? null : n - 1;
+    if (giveTicked(k)) return;
+    if (k !== null && k >= V().count) { flash(`Add person ${n} under Captions first.`); return; }
+    if (!video.paused) {
+      const here = subsAt(video.currentTime);
+      if (!here.length) return;
+      pushUndo();
+      for (const c of here) setSpeaker(c, k);
+      subsChanged();
+      return;
+    }
+    const c = curSub();
+    if (!c) { flash("Select a line first (or press the number while the video plays)."); return; }
+    pushUndo();
+    setSpeaker(c, k);
+    subsChanged();
+    const next = subs.slice().sort((a, b) => a.t0 - b.t0).find(x => x.t0 > c.t0);
+    if (next) selectSub(next.id); else paintAll();
+  }
+  function setSpeaker(c, k) {
+    if (k === null) delete c.speaker; else c.speaker = k;
+    c.by = "you";
+  }
+  async function setVoice(k, change) {
+    const v = V();
+    v.map = v.map || {};
+    const next = { ...(v.map[k] || {}), ...change };
+    if (change.name && !("color" in change)) {          // someone named before on this channel: her colour
+      const known = (v.people || {})[change.name.toLowerCase()];
+      if (known) next.color = known;
+    }
+    v.map[k] = next;
+    subKey = "";
+    needsDraw = true;
+    try {
+      const d = await post(`/moment/${pk}/voices`, { voices: v.map, recolor: "color" in change ? k : null });
+      v.map = { ...v.map, ...d.voices };
+      v.people = d.people;
+      v.names = d.names;
+    } catch (e) { flash(e.message); }
+    delete $("[data-ed-voices]").dataset.painted;
+    subKey = "";
+    paintAll();
+  }
+  function playVoice(k) {
+    const c = subs.filter(x => x.speaker === k).sort((a, b) => a.t0 - b.t0)[0];
+    if (!c) return;
+    stopEditPlay();
+    seek(Math.max(0, c.t0 - 0.2));
+    previewUntil = Math.min(D.duration, c.t1 + 0.3);
+    video.play();
+  }
   function paintSubBar() {
     $("[data-sub-on]").checked = subStyle.on;
     $("[data-sub-size]").value = subStyle.size;
@@ -1859,11 +2013,55 @@
   // The list beside the player: your subtitle lines (click one to retype it) once there
   // are any, otherwise the transcript. ⇤ / ⇥ start or end the selected segment at a line.
   const listMode = () => (subs.length ? "subs" : "lines");
+  // Above the lines: with lines ticked, one button per person gives them all to her.
+  function bulkBar() {
+    const bar = el("div", "ed-list-head ed-bulk");
+    const n = subs.filter(c => ticked.has(c.id)).length;
+    if (!n) {
+      bar.append(el("small", "muted", V().count
+        ? "Tick lines (Shift+click for a range) to give them a person in one go."
+        : "Add the people in this clip under Captions, then tick lines to colour them."),
+        btn("Select all", "Tick every line", { bulkAll: "" }));
+      return bar;
+    }
+    bar.appendChild(el("b", "", `${n} selected:`));
+    for (let k = 0; k < V().count; k++) {
+      const b = btn(`${k + 1} · ${voiceName(k)}`, `Give the ${n} ticked line${n === 1 ? "" : "s"} to ${voiceName(k)} (or press ${k + 1})`,
+                    { bulkVoice: k });
+      b.style.borderColor = b.style.color = "#" + voiceText(k);
+      bar.appendChild(b);
+    }
+    bar.append(btn("nobody", "Back to white (or press 0)", { bulkVoice: "" }),
+               btn("Select all", "Tick every line", { bulkAll: "" }), btn("Clear", "Untick them all (Esc)", { bulkClear: "" }));
+    return bar;
+  }
+  function pickLine(id, on, range) {
+    const order = subs.slice().sort((a, b) => a.t0 - b.t0).map(c => c.id);
+    const i = order.indexOf(id), j = range && lastTick ? order.indexOf(lastTick) : -1;
+    for (const x of j >= 0 ? order.slice(Math.min(i, j), Math.max(i, j) + 1) : [id]) on ? ticked.add(x) : ticked.delete(x);
+    lastTick = id;
+    listFor = null;
+    paintList();
+  }
+  function giveTicked(k) {
+    const lines = subs.filter(c => ticked.has(c.id));
+    if (!lines.length) return false;
+    if (k !== null && k >= V().count) { flash(`Add person ${k + 1} under Captions first.`); return true; }
+    pushUndo();
+    for (const c of lines) setSpeaker(c, k);
+    ticked.clear();
+    subsChanged();
+    flash(`${lines.length} line${lines.length === 1 ? "" : "s"} → ${k === null ? "nobody" : voiceName(k)}. Ctrl+Z undoes.`);
+    listFor = null;
+    paintAll();
+    return true;
+  }
   function paintList() {
     const box = $("[data-ed-lines]");
     if (box.contains(document.activeElement)) return;      // not under your cursor; again after the edit
     const mode = listMode();
-    const key = mode === "subs" ? JSON.stringify(subs.map(c => [c.id, c.t0, c.t1, c.text, c.by, c.id === selSub])) : "lines:" + D.lines.length;
+    const key = mode === "subs" ? JSON.stringify([subs.map(c => [c.id, c.t0, c.t1, c.text, c.by, c.id === selSub, c.speaker ?? "",
+                                                                 ticked.has(c.id)]), V().count, V().map]) : "lines:" + D.lines.length;
     if (key === listFor) return;
     listFor = key;
     box.textContent = "";
@@ -1891,10 +2089,19 @@
       });
       return;
     }
+    box.appendChild(bulkBar());
     subs.forEach((c, k) => {
-      const row = el("div", "ed-line ed-sub-row" + (c.id === selSub ? " sel" : "") + (c.by === "you" ? " mine" : ""));
+      const row = el("div", "ed-line ed-sub-row" + (c.id === selSub ? " sel" : "") + (c.by === "you" ? " mine" : "")
+                     + (ticked.has(c.id) ? " picked" : ""));
       row.dataset.k = k;
       row.dataset.sub = c.id;
+      if (c.speaker != null) row.style.borderLeft = `4px solid #${voiceText(c.speaker)}`;
+      const tick = el("input", "ed-pick");
+      Object.assign(tick, { type: "checkbox", checked: ticked.has(c.id),
+                            title: "Tick to give many lines a person at once (Shift+click: every line in between)" });
+      tick.dataset.subPick = c.id;
+      tick.setAttribute("aria-label", "Select: " + c.text);
+      row.appendChild(tick);
       const times = el("div", "ed-times");
       for (const edge of ["t0", "t1"]) {
         const inp = el("input", "ed-tin mono" + (edge === "t1" ? " end" : ""));
@@ -2019,6 +2226,12 @@
       if (c) { selSub = c.id; selFx = null; seek(ti.dataset.edge === "t0" ? c.t0 : Math.max(c.t0, c.t1 - 0.05)); paintAll(); }
     }
   });
+  subsList.addEventListener("click", ev => {
+    const tick = ev.target.closest("[data-sub-pick]");
+    if (!tick) return;
+    tick.blur();
+    pickLine(tick.dataset.subPick, tick.checked, ev.shiftKey);
+  });
   subsList.addEventListener("keydown", ev => {
     const ti = ev.target.closest("[data-sub-t]");
     if (ti) {
@@ -2090,13 +2303,14 @@
     clearTimeout(txPoll);
     txPoll = setTimeout(async () => {
       try {
-        const d = await (await fetch(`/api/moment/${pk}/transcript`, { cache: "no-store" })).json();
+        const d = await (await fetch(`/api/moment/${pk}/transcript?kind=${kind}`, { cache: "no-store" })).json();
         const was = D.transcript.state;
         D.transcript = d.transcript;
         if (d.transcript.state === "queued" || d.transcript.state === "running") pollTranscript();
         else if (was !== "none") {
           D.lines = d.lines;
-          Object.assign(D, { subs_auto: d.subs_auto, sub_words: d.sub_words, sub_language: d.sub_language });
+          Object.assign(D, { subs_auto: d.subs_auto, subs_auto_by_mode: d.subs_auto_by_mode, sub_words: d.sub_words,
+                             sub_language: d.sub_language, voices: d.voices });
           if (!subsMine) subs = cloneFx(d.subs_auto);     // lines that follow the words: the new ones
           listFor = null;
           subKey = "";
@@ -2545,6 +2759,11 @@
     else if (ds.subSplit) splitSub(ds.subSplit);
     else if (ds.subJoin) joinSub(ds.subJoin);
     else if (ds.subDel) deleteSub(ds.subDel);
+    else if (ds.voicePlay !== undefined) playVoice(+ds.voicePlay);
+    else if (ds.voiceAdd !== undefined) addPerson();
+    else if (ds.bulkVoice !== undefined) { b.blur(); giveTicked(ds.bulkVoice === "" ? null : +ds.bulkVoice); }
+    else if (ds.bulkAll !== undefined) { b.blur(); subs.forEach(c => ticked.add(c.id)); listFor = null; paintList(); }
+    else if (ds.bulkClear !== undefined) { b.blur(); ticked.clear(); listFor = null; paintList(); }
     else if (ds.subNudge0 !== undefined || ds.subNudge1 !== undefined) {
       const edge = ds.subNudge0 !== undefined ? "t0" : "t1", v = nudgeVal(edge === "t0" ? ds.subNudge0 : ds.subNudge1), c = curSub();
       if (c) setSubTime(c.id, edge, v === null ? video.currentTime : c[edge] + v);
@@ -2606,6 +2825,9 @@
     else if (t.matches("[data-vis-color]")) editFx({ color: t.value });
     else if (t.matches("[data-reg-name]")) renameRegion(t.dataset.regName, t.value);
     else if (t.matches("[data-sub-input]")) setSubText(t.dataset.subInput, t.value);
+    else if (t.matches("[data-sub-voice]")) setSubVoice(t.dataset.subVoice, t.value === "" ? null : +t.value);
+    else if (t.matches("[data-voice-name]")) setVoice(+t.dataset.voiceName, { name: t.value.trim() });
+    else if (t.matches("[data-voice-color]")) setVoice(+t.dataset.voiceColor, { color: t.value.replace("#", "").toUpperCase() });
     else if (t.matches("[data-sub-on]")) setSubStyle({ on: t.checked });
     else if (t.matches("[data-sub-size]")) setSubStyle({ size: t.value });
     else if (t.matches("[data-sub-pos]")) setSubStyle({ position: t.value });
@@ -2647,10 +2869,14 @@
       "[": () => selectSeg(sel - 1), "]": () => selectSeg(sel + 1),
       Delete: del, Backspace: del,
       Enter: () => (editPlay ? (video.pause(), stopEditPlay()) : ev.shiftKey ? playEdit(0) : playFromHere()),
-      Escape: () => { if (selFx || selSub) { selFx = null; selSub = null; paintAll(); } },
+      Escape: () => {
+        if (ticked.size) { ticked.clear(); listFor = null; paintList(); return; }
+        if (selFx || selSub) { selFx = null; selSub = null; paintAll(); }
+      },
       "+": () => setZoom(Math.min(16, zoom * 2)), "=": () => setZoom(Math.min(16, zoom * 2)),
       "-": () => setZoom(Math.max(1, zoom / 2)),
     };
+    for (let n = 0; n <= 9; n++) keys[String(n)] = () => tagKey(n);
     const fn = keys[ev.key] || keys[ev.key.toLowerCase()];
     if (!fn) return;
     ev.preventDefault();

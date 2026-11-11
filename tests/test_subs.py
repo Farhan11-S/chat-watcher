@@ -93,7 +93,8 @@ def test_clean_and_timelines():
         clean([{"text": "no times"}], 10)
     # Cut at 5.5 and played first: each part shows where its words play; slivers aren't shown.
     shown = on_edit(cues, [[5.5, 10, 0], [0, 5.45, 0]], [4.5, 5.45])
-    assert shown == [(0.0, 0.5, "two lines"), (3.5, 4.5, "past the end"), (5.5, 6.5, "one"), (9.5, 9.95, "two lines")]
+    assert shown == [(0.0, 0.5, "two lines", None), (3.5, 4.5, "past the end", None), (5.5, 6.5, "one", None),
+                     (9.5, 9.95, "two lines", None)]
     srt = lines.srt(shown[:1])
     assert srt == "1\n00:00:00,000 --> 00:00:00,500\ntwo lines\n\n"
     ass = lines.ass([(0.0, 1.5, "Good thing I put a *limiter* in there, said nobody ever")], {"position": "top"}, 1280, 720)
@@ -130,7 +131,7 @@ def test_editor_subtitles_follow_words_until_you_edit(site):  # noqa: F811
     m = mid(conn)
     folder = Path(conn.execute("SELECT folder FROM clips WHERE moment_id = ?", (m,)).fetchone()[0])
     d = client.get(f"/api/moment/{m}/edit").json()
-    assert d["subs"] == [] and d["subs_source"] == "none" and d["subs_style"] == {"on": True, "size": "normal", "position": "bottom", "mode": "lines"}
+    assert d["subs"] == [] and d["subs_source"] == "none" and d["subs_style"] == {"on": True, "size": "normal", "position": "bottom", "mode": "lines", "emphasis": []}
     (folder / "words.json").write_text(json.dumps(words(("Good thing I put a limiter in there.", 2.0, 0.25),
                                                          ("Are you deaf?", 6.0, 0.3))), encoding="utf-8")
     d = client.get(f"/api/moment/{m}/edit").json()
@@ -152,10 +153,38 @@ def test_editor_subtitles_follow_words_until_you_edit(site):  # noqa: F811
     client.post(f"/moment/{m}/edit", json=seg | {"subs": mine})
     d = client.get(f"/api/moment/{m}/edit").json()
     assert d["subs_source"] == "saved" and d["subs"][1]["text"] == "Are you *deaf*?!" and d["subs"][1]["by"] == "you"
-    assert d["subs_style"] == {"on": True, "size": "large", "position": "top", "mode": "lines"}
+    assert d["subs_style"] == {"on": True, "size": "large", "position": "top", "mode": "lines", "emphasis": []}
     assert client.get(f"/api/moment/{m}/render").json()["render"]["state"] == "stale"
     client.post(f"/moment/{m}/edit", json=seg | {"subs": "auto"})
     assert client.get(f"/api/moment/{m}/edit").json()["subs_source"] == "auto"
     assert client.get(f"/api/moment/{m}/render").json()["render"]["state"] == "done"
+    # Emphasis words (the AI edit's) stay highlighted in cues that follow the words.
+    client.post(f"/moment/{m}/edit", json=seg | {"subs_style": seg["subs_style"] | {"emphasis": ["*deaf*"]}})
+    d = client.get(f"/api/moment/{m}/edit").json()
+    assert d["subs_source"] == "auto" and d["subs"][1]["text"] == "Are you *deaf*?"
+    assert d["subs_auto_by_mode"]["lines"][1]["text"] == "Are you *deaf*?"
+    t = client.get(f"/api/moment/{m}/transcript?kind=long").json()
+    assert t["subs_auto"][1]["text"] == "Are you *deaf*?"
+    assert client.get(f"/api/moment/{m}/transcript?kind=wide").status_code == 400
+    # People: none until you add them; a line you give person 0 gets her colour.
+    assert client.get(f"/api/moment/{m}/edit").json()["voices"]["count"] == 0
+    r = client.post(f"/moment/{m}/voices", json={"voices": {"0": {"name": "Gigi", "color": "#ff8fc8"}}}).json()
+    assert r["voices"]["0"]["name"] == "Gigi" and r["voices"]["0"]["color"] == "FF8FC8" and r["people"] == {"gigi": "FF8FC8"}
+    tagged = [c | {"speaker": 0, "by": "you"} if i == 0 else c for i, c in enumerate(d["subs"])]
+    client.post(f"/moment/{m}/edit", json=seg | {"subs": tagged})
+    d = client.get(f"/api/moment/{m}/edit").json()
+    assert d["voices"]["count"] == 1 and d["voices"]["map"]["0"]["name"] == "Gigi"
+    assert d["subs"][0]["speaker"] == 0 and d["subs"][0]["color"] == "FF8FC8" and "speaker" not in d["subs"][1]
+    # The VTubers page: her colour there is her colour in the clip.
+    page = client.get("/vtubers")
+    assert page.status_code == 200 and "Gigi" in page.text and "1 clip" in page.text
+    assert client.post("/vtubers/save", data={"name": "Gigi", "color": "#0f0", "old": "Gigi"},
+                       follow_redirects=False).status_code == 303
+    assert client.get(f"/api/moment/{m}/edit").json()["subs"][0]["color"] == "00FF00"
+    bad = client.post("/vtubers/save", data={"name": "Gigi", "color": "green"}, follow_redirects=False)
+    assert "error=" in bad.headers["location"]
+    client.post("/vtubers/save", data={"name": "Kyoko", "color": "7FD3FF"})
+    client.post("/vtubers/delete", data={"name": "kyoko"})
+    assert "Kyoko" not in client.get("/vtubers").text
     bad = client.post(f"/moment/{m}/edit", json=seg | {"subs": [{"text": "no times"}]})
     assert bad.status_code == 400

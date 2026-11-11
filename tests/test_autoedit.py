@@ -81,7 +81,16 @@ def test_word_captions_with_emphasis():
     assert all(lines.width(c["text"]) <= lines.WORD_CUE + 4 for c in cues)
     text = " ".join(c["text"] for c in cues)
     assert "*evil*" in text and "*No*" in text or "*No way*" in text
-    assert all(c["by"] == "claude" for c in cues)
+    assert all(c["by"] == "auto" for c in cues)       # built from the words, so a new transcript updates them
+    assert lines.emphasis_terms(["*evil*", "Evil", " no  way ", "", 3]) == ["evil", "no way", "3"]
+    style = lines.clean_style({"mode": "words", "emphasis": ["evil"] * 2 + [f"w{i}" for i in range(20)]},
+                              {"on": True, "size": "normal", "position": "top"})
+    assert style["emphasis"][:2] == ["evil", "w0"] and len(style["emphasis"]) == lines.MAX_EMPHASIS
+    assert lines.emphasise([{"text": "so evil, evilness"}], ["evil"])[0]["text"] == "so *evil*, evilness"
+    said = {"lines": [{"words": [[35.24, 36.5, " Whaaat?", 0.9], [36.66, 36.78, " It", 0.9],
+                                 [36.82, 37.14, " literally", 0.9]]}]}
+    assert [c["text"] for c in lines.build(said, lines.WORD_CUE)] == ["Whaaat?", "It literally"]
+    assert [c["text"] for c in lines.build(said)] == ["Whaaat? It literally"]     # lines: "Whaaat?" waits
     assert lines.clean_style({"mode": "words"}, {"on": True, "size": "normal", "position": "top"})["mode"] == "words"
     assert lines.clean_style({"mode": "bad"}, {"on": True, "size": "normal", "position": "top"})["mode"] == "lines"
 
@@ -108,22 +117,51 @@ def test_volume_per_piece():
     assert ae.apply_volume([], ps, segs) == (segs, 0)
 
 
-def test_align_pulls_words_onto_speech():
+def _heard(T: int = 400):
+    """Letter scores like the alignment model's: blank everywhere, letters where said."""
+    import numpy as np
     from chatwatcher.subs import align
-    speech = [(1.0, 2.0), (5.0, 6.0)]
-    out = align.retime([[0.5, 1.6, " so", 0.9],      # starts in silence → starts with the speech
-                        [1.6, 4.9, " i'm", 0.9],     # stretched over the pause → cut to its speech
-                        [4.4, 4.7, " ok", 0.9],      # no speech under it, speech just after → moved in
-                        [9.0, 9.5, " lost", 0.9]],   # nothing near → Whisper's time stays
-                       speech)
-    assert out[0][:2] == [1.0, 1.6] and out[1][:2] == [1.6, 2.0]
-    assert out[2][:2] == [5.0, 5.3] and out[3][:2] == [9.0, 9.5]
-    assert all(a[1] <= b[0] for a, b in zip(out, out[1:])) and out[0][2:] == [" so", 0.9]
-    data = align.align({"lines": [{"start": 0.5, "end": 4.9, "words": [[0.5, 1.6, " so", 0.9], [1.6, 4.9, " i'm", 0.9]]}]},
-                       speech)
-    assert data["aligned"] == align.VERSION and data["lines"][0]["start"] == 1.0 and data["lines"][0]["end"] == 2.0
+    em = np.full((T, 31), -9.0)
+    em[:, align.BLANK] = -0.01
+
+    def say(word: str, t0: float, t1: float) -> None:
+        ids = align.letters(word)
+        f0, f1 = int(t0 / align.FRAME_S), int(t1 / align.FRAME_S)
+        step = (f1 - f0) / len(ids)
+        for n, i in enumerate(ids):
+            a, b = f0 + int(n * step), f0 + int((n + 1) * step)
+            em[a:b, align.BLANK], em[a:b, i] = -9.0, -0.01
+    return em, say
+
+
+def test_align_finds_where_words_are_said():
+    from chatwatcher.subs import align
+    assert align.letters(" Whaaat?") == [align._INDEX[c] for c in "whaaat"]
+    assert align.letters("Don’t") == align.letters("don't") and align.letters(" café") == align.letters("cafe")
+    assert align.letters(" 123") == [] and align.letters("こんにちは") == [] and align.letters("'") == []
+    em, say = _heard()
+    say("so", 1.0, 1.3)
+    say("ok", 3.0, 3.3)
+    say("ok", 5.0, 5.3)                       # the same word again, louder, two seconds later
+    words = [[0.6, 2.4, " so", 0.9],          # Whisper stretched it over the pause
+             [2.4, 2.6, " 12", 0.9],          # no letters: stays where Whisper heard it
+             [2.8, 3.6, " ok", 0.9]]          # held near Whisper's time, not the later "ok"
+    em = align.with_star(em)
+    out = align.retime(words, em, 8.0)
+    assert abs(out[0][0] - 1.0) <= 0.04 and abs(out[0][1] - 1.3) <= 0.08
+    assert abs(out[2][0] - 3.0) <= 0.04 and abs(out[2][1] - 3.3) <= 0.08
+    assert out[1][:2] == [2.4, 2.6] and out[0][2:] == [" so", 0.9]
+    assert all(a[1] <= b[0] for a, b in zip(out, out[1:]))
+    # Nothing alignable (Japanese): Whisper's times, pauses and all.
+    ja = [[0.5, 0.9, "こんにちは", 0.9], [2.0, 2.4, "ありがとう", 0.9]]
+    assert align.retime(ja, em, 8.0) == ja
+    # words.json: line edges follow the words; speech is VAD's stretches plus the words.
+    data = align.align({"duration_s": 8.0, "lines": [{"start": 0.6, "end": 3.6, "words": words}]}, em, [(6.0, 6.5)])
+    line = data["lines"][0]
+    assert data["aligned"] == align.VERSION and line["start"] == out[0][0] and line["end"] == out[2][1]
+    assert data["speech"][-1] == [6.0, 6.5] and data["speech"][0][0] == out[0][0]
     # A laugh with no words shows on the quiet piece.
-    ps = pc.build(data | {"speech": [[1.0, 2.0], [3.0, 4.0]]}, 6.0)
+    ps = pc.build(data | {"speech": [[1.0, 1.3], [4.0, 5.0]]}, 8.0)
     assert any(p.kind == "quiet" and p.voice == 1.0 and "voice without words" in p.line() for p in ps)
 
 

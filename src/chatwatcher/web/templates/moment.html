@@ -103,7 +103,7 @@
   {# 2 · Adjust: the picture, one panel for what you picked, and the timeline #}
   <div class="ed-top">
     <div class="ed-player">
-      <video controls preload="auto" src="/media/clip/{{ clip.id }}"
+      <video controls preload="auto" src="/media/clip/{{ clip.id }}?edit=1"
              {% if frames %}poster="/media/frame/{{ clip.id }}/{{ (frames | selectattr('is_peak') | list or frames)[0].file.split('/')[-1] }}"{% endif %}></video>
       <canvas class="ed-stage" data-ed-stage hidden aria-hidden="true"></canvas>
       <div class="ed-subs" data-ed-subs hidden aria-hidden="true"></div>
@@ -140,6 +140,7 @@
           <button type="button" class="small" data-ed-act="sub-rebuild" title="Start over from Whisper's words (Ctrl+Z undoes)">↻ Rebuild from transcript</button>
         </div>
         <small class="muted" data-ed-sub-status></small>
+        <div class="ed-voices" data-ed-voices hidden></div>
         <details class="ed-names" data-ed-names>
           <summary><small>Names Claude spells right (<span data-ed-names-count>0</span>)</small></summary>
           <p class="faint"><small>For every stream of this channel: people, games, catchphrases. One per line or comma-separated.</small></p>

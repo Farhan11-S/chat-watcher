@@ -70,6 +70,11 @@ class NamesIn(BaseModel):
     add: Any = None           # or terms to add
 
 
+class VoicesIn(BaseModel):
+    voices: Any = None        # {"0": {"name": "Gigi", "color": "FF8FC8"}, ...}
+    recolor: int | None = None    # whose colour you just changed (it changes on the VTubers list)
+
+
 class SuggestIn(EditIn):
     intensity: str = "normal"
     model: str = ""
@@ -586,6 +591,25 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         have, added = names.add(conn, scope, body.add or [])
         return JSONResponse({"ok": True, "names": have, "added": added})
 
+    @app.post("/moment/{pk}/voices")
+    def subs_voices(pk: int, body: VoicesIn, conn=Depends(get_conn)):
+        """Who's in the clip, and their colour. Names join the channel's names (spelled right
+        in subtitles) and the VTubers list (their colour on every clip)."""
+        from chatwatcher.edit import regions
+        from chatwatcher.subs import names, speakers
+        try:
+            scope, _label = regions.scope_for(conn, pk)
+        except regions.RegionError:
+            raise HTTPException(404)
+        try:
+            voices = speakers.put(conn, pk, body.voices, body.recolor)
+        except speakers.SpeakerError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        names.add(conn, scope, [v["name"] for v in voices.values() if v["name"]])
+        master = speakers.vtubers(conn)
+        return JSONResponse({"ok": True, "voices": voices, "people": {k: v["color"] for k, v in master.items()},
+                             "names": [v["name"] for v in master.values() if v["status"] not in ("Retirement",)]})
+
     @app.post("/moment/{pk}/transcribe")
     def edit_transcribe(pk: int, conn=Depends(get_conn)):
         """Queue Whisper on this clip (again). It goes behind the job that's running."""
@@ -605,14 +629,16 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         return JSONResponse({"ok": True, "transcript": transcript_state(cfg, conn, pk, clip)})
 
     @app.get("/api/moment/{pk}/transcript")
-    def api_transcript(pk: int, conn=Depends(get_conn)):
-        from chatwatcher.edit.service import EditError, clip_ref, subtitles, transcript_lines, transcript_state
+    def api_transcript(pk: int, kind: str = "long", conn=Depends(get_conn)):
+        """kind: whose subtitles come with it (the Short's are shorter, and may be saved apart)."""
+        from chatwatcher.edit.service import EditError, check_kind, clip_ref, subtitles, transcript_lines, transcript_state
         try:
             clip = clip_ref(conn, pk)
+            check_kind(kind)
         except EditError as e:
             return edit_error(e)
         return JSONResponse({"ok": True, "transcript": transcript_state(cfg, conn, pk, clip),
-                             "lines": transcript_lines(clip.folder), **subtitles(cfg, conn, pk, clip)})
+                             "lines": transcript_lines(clip.folder), **subtitles(cfg, conn, pk, clip, kind)})
 
     @app.post("/moment/{pk}/regions")
     def edit_regions(pk: int, body: RegionsIn, conn=Depends(get_conn)):
@@ -877,6 +903,47 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
 
     # ── sound library ────────────────────────────────────────────────────────
 
+    @app.get("/vtubers", response_class=HTMLResponse)
+    def vtubers_page(request: Request, conn=Depends(get_conn)):
+        """Each VTuber's subtitle colour, for every clip (subs.speakers)."""
+        from chatwatcher.subs import speakers
+        used: dict[str, int] = {}
+        for (raw,) in conn.execute("SELECT voices_json FROM voices"):
+            for v in speakers.clean(json.loads(raw)).values():
+                if v["name"]:
+                    used[v["name"].lower()] = used.get(v["name"].lower(), 0) + 1
+        master = speakers.vtubers(conn)
+        return render(request, "vtubers.html", vtubers=master, used=used,
+                      suggest=speakers.PALETTE[len(master) % len(speakers.PALETTE)])
+
+    @app.post("/vtubers/import")
+    async def vtubers_import(file: UploadFile = File(...), conn=Depends(get_conn)):
+        from chatwatcher.subs import speakers
+        raw = await file.read(2_000_000)
+        try:
+            added, updated, problems = speakers.import_csv(conn, raw.decode("utf-8", errors="replace"))
+        except speakers.SpeakerError as e:
+            return _redirect("/vtubers", error=str(e))
+        msg = f"Imported {file.filename}: {added} added, {updated} updated."
+        if problems:
+            msg += f" Skipped {len(problems)}: " + "; ".join(problems[:5])
+        return _redirect("/vtubers", msg=msg)
+
+    @app.post("/vtubers/save")
+    def vtubers_save(name: str = Form(""), color: str = Form(""), old: str = Form(""), conn=Depends(get_conn)):
+        from chatwatcher.subs import speakers
+        try:
+            v = speakers.save_vtuber(conn, name, color, old or None)
+        except speakers.SpeakerError as e:
+            return _redirect("/vtubers", error=str(e))
+        return _redirect("/vtubers", msg=f"Saved {v['name']} (#{v['color']}).")
+
+    @app.post("/vtubers/delete")
+    def vtubers_delete(name: str = Form(""), conn=Depends(get_conn)):
+        from chatwatcher.subs import speakers
+        speakers.delete_vtuber(conn, name)
+        return _redirect("/vtubers", msg=f"Removed {name}. Clips that named her keep her name, in a default colour.")
+
     @app.get("/sounds", response_class=HTMLResponse)
     def sounds_page(request: Request, conn=Depends(get_conn)):
         from chatwatcher.edit import sounds
@@ -995,11 +1062,15 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
     # ── media: only files the database points at ─────────────────────────────
 
     @app.get("/media/clip/{clip_id}")
-    def media_clip(clip_id: int, conn=Depends(get_conn)):
-        c = conn.execute("SELECT path FROM clips WHERE id = ?", (clip_id,)).fetchone()
+    def media_clip(clip_id: int, edit: int = 0, conn=Depends(get_conn)):
+        """edit=1: the editor's fast-seeking copy when there is one (edit.proxy)."""
+        c = conn.execute("SELECT path, folder FROM clips WHERE id = ?", (clip_id,)).fetchone()
         if not c or not Path(c["path"]).is_file():
             raise HTTPException(404)
         p = Path(c["path"])
+        if edit:
+            from chatwatcher.edit import proxy
+            p = proxy.fresh(Path(c["folder"] or p.parent), p) or p
         kind = "video/mp4" if p.suffix == ".mp4" else "video/x-matroska"
         return FileResponse(p, media_type=kind)
 

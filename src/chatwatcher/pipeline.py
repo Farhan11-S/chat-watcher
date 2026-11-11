@@ -150,14 +150,16 @@ def _clip(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
 
 def _transcribe(cfg, conn, video_id, attempt, deps, say, rank: int | None = None) -> StageOutcome:
     """Whisper on each downloaded clip that has no words yet; rank: (re)do that one clip.
-    Between clips it gives way to a render you queued, then carries on."""
+    Between clips it gives way to a render you queued, then carries on. First, each clip
+    without one gets the editor's fast-seeking copy (edit.proxy)."""
     from chatwatcher.subs.transcribe import TranscribeError, Whisper, available, transcribe_clip, WORDS_FILE
-    if deps.whisper is None and not available():
-        return StageOutcome("skip", "Whisper isn't installed (pip install faster-whisper)")
     rows = conn.execute(
         """SELECT m.rank, c.path, c.folder FROM clips c JOIN moments m ON m.id = c.moment_id
            JOIN videos v ON v.id = m.video_id WHERE v.video_id = ?""" + (" AND m.rank = ?" if rank else "")
         + " ORDER BY m.rank", (video_id, rank) if rank else (video_id,)).fetchall()
+    _proxies(rows, say)
+    if deps.whisper is None and not available():
+        return StageOutcome("skip", "Whisper isn't installed (pip install faster-whisper)")
     todo = [r for r in rows if Path(r["path"]).is_file()
             and (rank or not (Path(r["folder"] or Path(r["path"]).parent) / WORDS_FILE).is_file())]
     if not todo:
@@ -186,6 +188,22 @@ def _transcribe(cfg, conn, video_id, attempt, deps, say, rank: int | None = None
     if failed:
         msg += f", {len(failed)} failed: " + "; ".join(failed)[:400]
     return StageOutcome("done" if done or not failed else "error", msg)
+
+
+def _proxies(rows, say) -> None:
+    """The editor's copy of each downloaded clip that has none (a failure only means the
+    editor plays clip.mp4, which seeks slowly)."""
+    from chatwatcher.clip.media import MediaError
+    from chatwatcher.edit import proxy
+    for r in rows:
+        clip = Path(r["path"])
+        folder = Path(r["folder"] or clip.parent)
+        if not clip.is_file() or proxy.fresh(folder, clip):
+            continue
+        try:
+            proxy.make(clip, folder, say=lambda m, k=r["rank"]: say(f"#{k}: {m}"))
+        except MediaError as e:
+            say(f"#{r['rank']}: {e}")
 
 
 def _frames(cfg, conn, video_id, attempt, deps, say) -> StageOutcome:

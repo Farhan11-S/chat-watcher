@@ -20,6 +20,7 @@ def test_migrate_creates_schema_and_is_idempotent(tmp_path):
     assert set(db.table_counts(c)) == {
         "channels", "videos", "moments", "clips", "analyses", "jobs", "settings", "discovered",
         "moment_chats", "previews", "edits", "sounds", "regions", "names", "intros", "thumbs", "shorts",
+        "voices", "vtubers",
     }
     assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     c.close()

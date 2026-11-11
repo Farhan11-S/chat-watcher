@@ -85,8 +85,12 @@ class Polished:
 
 def build_prompt(*, meta: dict[str, Any], channel: str, summary: str, language: str, names: list[str],
                  chat: str, cues: list[dict[str, Any]]) -> str:
-    lines = [f"{c['id']} [{c['t0']:.2f}-{c['t1']:.2f}]" + (" (fixed)" if c.get("by") == "you" else "") + f" {c['text']}"
-             for c in cues]
+    def who(c: dict[str, Any]) -> str:
+        if c.get("speaker") is None:
+            return ""
+        return f" <{c.get('name') or 'voice ' + str(c['speaker'] + 1)}>"
+    lines = [f"{c['id']} [{c['t0']:.2f}-{c['t1']:.2f}]{who(c)}" + (" (fixed)" if c.get("by") == "you" else "")
+             + f" {c['text']}" for c in cues]
     return f"""\
 <material>
 Stream: {meta.get('title', '?')} · channel: {channel} · {meta.get('stream_type', '?')}
@@ -99,7 +103,8 @@ Chat during the clip (clip time, 5 s buckets):
 {chat or '(no chat)'}
 </material>
 
-Subtitle lines in the cut (id [clip seconds] text):
+Subtitle lines in the cut (id [clip seconds] <who says it, in a collab> text; lines of \
+different people may overlap in time):
 {chr(10).join(lines)}"""
 
 
@@ -118,7 +123,8 @@ def apply(cues: list[dict[str, Any]], out: list[dict[str, Any]], ids: set[str]) 
             dropped += 1
             continue
         nxt = cues[i] if i < len(cues) else None
-        if o.get("join_next") and nxt and nxt["id"] in ids and nxt.get("by") != "you":
+        if o.get("join_next") and nxt and nxt["id"] in ids and nxt.get("by") != "you" \
+                and nxt.get("speaker") == c.get("speaker"):              # never two people's lines
             c["t1"] = nxt["t1"]
             joined += 1
             i += 1

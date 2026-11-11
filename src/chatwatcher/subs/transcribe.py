@@ -1,8 +1,8 @@
 """Speech to text on one downloaded clip with Whisper (faster-whisper, on this computer).
 
 Writes two files into the clip folder:
-    words.json       every line with every word's start and end (clip seconds): the source
-                     for subtitles
+    words.json       every line with every word's start and end (clip seconds), aligned on
+                     the audio (subs.align): the source for subtitles and the AI edit's cuts
     transcript.txt   the same lines as "[mm:ss.s] text", replacing the YouTube auto-caption
                      excerpt (kept as transcript.youtube.txt), so the editor, "Analyse again"
                      and "Ask Claude" read Whisper's text
@@ -64,7 +64,12 @@ def available() -> bool:
 
 
 class Whisper:
-    """faster-whisper on the CPU, int8. One model per process, shared by every caller."""
+    """faster-whisper on the CPU, int8. One model per process, shared by every caller.
+
+    No vad_filter: it runs Silero VAD first and only lets Whisper hear what VAD calls
+    speech. Over loud game audio VAD drops whole sentences (on one clip, the punchline:
+    15 words over 10 s), and the words either side get stretched across the hole. keep()
+    still drops the lines Whisper invents over silence or music."""
     _lock = threading.Lock()
     _models: dict[tuple[str, int], Any] = {}
 
@@ -91,7 +96,7 @@ class Whisper:
         with self._lock:          # one transcription at a time: it already uses every core
             segs, info = model.transcribe(
                 audio, language=language or None, multilingual=not language, word_timestamps=True,
-                vad_filter=True, beam_size=5, condition_on_previous_text=False)
+                vad_filter=False, beam_size=5, condition_on_previous_text=False)
             lines = [Line(s.start, s.end, s.text.strip(),
                           [[round(w.start, 3), round(w.end, 3), w.word, round(w.probability, 3)] for w in s.words or []],
                           getattr(s, "language", None) or info.language, s.no_speech_prob, s.avg_logprob)
@@ -100,12 +105,12 @@ class Whisper:
 
 
 def decode_audio(path: Path) -> Any:
-    """The clip's sound as 16 kHz mono float samples."""
+    """The clip's sound as 16 kHz mono float samples, sample 0 at clip time 0."""
     import numpy as np
-    from chatwatcher.clip.media import _exe
+    from chatwatcher.clip.media import AUDIO_FROM_ZERO, _exe
     try:
         raw = subprocess.run([_exe("ffmpeg"), "-v", "error", "-nostdin", "-i", str(path), "-vn", "-ac", "1",
-                              "-ar", str(RATE), "-f", "f32le", "-"], capture_output=True, check=True,
+                              "-ar", str(RATE), *AUDIO_FROM_ZERO, "-f", "f32le", "-"], capture_output=True, check=True,
                              timeout=600).stdout
     except subprocess.CalledProcessError as e:
         raise TranscribeError(f"ffmpeg couldn't read the clip's audio: {e.stderr.decode(errors='replace')[-300:]}")
@@ -121,6 +126,18 @@ def keep(line: Line) -> bool:
     if _HALLUCINATIONS.match(line.text) and line.logprob < -0.5:
         return False
     return sum(w[3] for w in line.words) / len(line.words) >= 0.2
+
+
+def echo(line: Line, before: Line | None) -> bool:
+    """True for a line that only repeats the end of the line before, right after it, with
+    words of next to no length: Whisper says the last words again at the end of the audio."""
+    if before is None or not line.words or line.start - before.end > 1.0:
+        return False
+    if sum(w[1] - w[0] for w in line.words) / len(line.words) >= 0.1:
+        return False
+    norm = lambda t: " ".join(re.sub(r"[^\w\s']", " ", t.lower()).split())     # noqa: E731
+    said, again = norm(before.text), norm(line.text)
+    return bool(again) and said.endswith(again)
 
 
 _END = re.compile(r"[.?!。？！]$")
@@ -159,7 +176,10 @@ def transcribe_clip(cfg: Config, folder: Path, clip: Path, *, engine: Engine | N
         raise TranscribeError("The clip has no audio to transcribe.", "no_audio")
     say(f"Whisper {engine.name} on {len(audio) / RATE:.0f}s of audio…")
     lines, lang, sure = engine.run(audio, language or cfg.transcribe.language or None)
-    kept = [ln for ln in lines if keep(ln)]
+    kept: list[Line] = []
+    for ln in lines:
+        if keep(ln) and not echo(ln, kept[-1] if kept else None):
+            kept.append(ln)
     data = {
         "model": engine.name, "language": lang, "language_p": round(float(sure or 0), 3),
         "duration_s": round(len(audio) / RATE, 3), "took_s": round(time.monotonic() - t0, 1),
@@ -171,14 +191,21 @@ def transcribe_clip(cfg: Config, folder: Path, clip: Path, *, engine: Engine | N
     words, transcript = folder / WORDS_FILE, folder / TRANSCRIPT_FILE
     if transcript.is_file() and not words.is_file():
         transcript.replace(folder / YOUTUBE_FILE)        # the auto-caption excerpt, kept for reference
-    try:                                                 # Whisper's word times are loose: pull them onto the speech
+    try:                                                 # Whisper's word times are loose: align them on the audio
         from chatwatcher.subs import align
-        say("Lining the words up with the speech…")
-        data = align.write(folder, data, audio)
-    except Exception:                                    # noqa: BLE001 — no VAD: keep Whisper's times
+        data = align.write(folder, data, audio, Path(cfg.paths.data_dir) / "models", cfg.transcribe.threads, say)
+    except Exception:                                    # noqa: BLE001 — no aligner: keep Whisper's times
         tmp = folder / (WORDS_FILE + ".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         tmp.replace(words)
+    if cfg.transcribe.speakers:                          # who says what (a colour per person in collabs)
+        from chatwatcher.subs import speakers
+        try:
+            if speakers.available():
+                data = speakers.write(folder, data, audio, Path(cfg.paths.data_dir) / "models",
+                                      cfg.transcribe.speaker_threshold, cfg.transcribe.threads, say)
+        except Exception:                                # noqa: BLE001 — no voices: one colour for all
+            pass
     transcript.write_text("".join(f"[{_ts(t)}] {text}\n" for ln in data["lines"] for t, text in sentences(ln)),
                           encoding="utf-8")
     return data

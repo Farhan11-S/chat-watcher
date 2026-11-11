@@ -476,4 +476,40 @@
       });
     }
   });
+  // Every colour picker gets a hex box beside it ("#FF8FC8", or short "#F8C"). Typing a
+  // colour sets the picker and fires its input and change events, so a page reacts as if
+  // it was picked; picking fills the box. Pickers added later (the editor) get one too.
+  function hexFor(picker) {
+    if (picker.dataset.hexed) return;
+    picker.dataset.hexed = "1";
+    const box = document.createElement("input");
+    Object.assign(box, { type: "text", className: "hex", maxLength: 7, spellcheck: false,
+                         value: picker.value.toUpperCase(), title: "Hex colour, e.g. #FF8FC8 or #F8C" });
+    box.setAttribute("aria-label", (picker.getAttribute("aria-label") || picker.title || "Colour") + " (hex)");
+    picker.after(box);
+    picker.addEventListener("input", () => { box.value = picker.value.toUpperCase(); box.classList.remove("bad"); });
+    const apply = () => {
+      let c = box.value.trim().replace(/^#/, "");
+      if (/^[0-9a-f]{3}$/i.test(c)) c = c.replace(/./g, ch => ch + ch);
+      if (!/^[0-9a-f]{6}$/i.test(c)) { box.classList.add("bad"); return false; }
+      box.classList.remove("bad");
+      box.value = "#" + c.toUpperCase();
+      if (picker.value.toLowerCase() !== "#" + c.toLowerCase()) {
+        picker.value = "#" + c.toLowerCase();
+        picker.dispatchEvent(new Event("input", { bubbles: true }));
+        picker.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return true;
+    };
+    box.addEventListener("change", apply);
+    box.addEventListener("keydown", ev => { if (ev.key === "Enter" && !apply()) ev.preventDefault(); });
+  }
+  const hexAll = el => el.querySelectorAll('input[type="color"]').forEach(hexFor);
+  hexAll(document);
+  new MutationObserver(changes => {
+    for (const m of changes) for (const n of m.addedNodes) {
+      if (n.nodeType !== 1) continue;
+      if (n.matches('input[type="color"]')) hexFor(n); else hexAll(n);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
 })();

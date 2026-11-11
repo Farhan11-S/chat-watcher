@@ -80,7 +80,10 @@ def test_transcribe_stage_does_each_clip_once(site):  # noqa: F811
     n = len(_folders(conn))
     out = run_stage(cfg, conn, VID, "transcribe", deps=Deps(whisper=fake))
     assert out.status == "done" and out.message == f"{n} transcribed (en)" and fake.calls == n
-    assert all((f / "words.json").is_file() for f in _folders(conn))
+    assert all((f / "words.json").is_file() and (f / "edit_proxy.mp4").is_file() for f in _folders(conn))
+    cid, folder = conn.execute("SELECT id, folder FROM clips ORDER BY id LIMIT 1").fetchone()
+    assert len(client.get(f"/media/clip/{cid}?edit=1").content) == (Path(folder) / "edit_proxy.mp4").stat().st_size
+    assert len(client.get(f"/media/clip/{cid}").content) == (Path(folder) / "clip.mp4").stat().st_size
     assert run_stage(cfg, conn, VID, "transcribe", deps=Deps(whisper=fake)).message == "every clip already transcribed"
     m = mid(conn)                                             # one clip again, on request
     jobs.enqueue(conn, conn.execute("SELECT video_id FROM moments WHERE id = ?", (m,)).fetchone()[0], "transcribe",
@@ -136,3 +139,47 @@ def test_editor_button_and_state(site):  # noqa: F811
     assert client.get(f"/api/moment/{m}/edit").json()["lines"][1]["t"] == 3.0     # the editor reads Whisper's lines
     cfg.transcribe.enabled = False
     assert client.post(f"/moment/{m}/transcribe").status_code == 400
+
+
+def test_late_audio_lines_up_with_the_picture(tmp_path):
+    """Audio that starts after the picture (common in clips cut from a stream) is decoded
+    with silence in front, so sample times are clip times."""
+    import subprocess
+    import numpy as np
+    from chatwatcher.edit.audio import analyse
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=5:size=160x120:rate=30",
+                    "-itsoffset", "2", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(clip)], check=True)
+    audio = tr.decode_audio(clip)
+    sound = np.flatnonzero(np.abs(audio) > 0.01)
+    assert abs(len(audio) / tr.RATE - 5.0) < 0.1 and abs(sound[0] / tr.RATE - 2.0) < 0.05
+    assert abs(analyse(clip).duration_s - 5.0) < 0.1
+
+
+def test_an_echo_of_the_last_words_is_dropped():
+    said = Line(52.0, 57.3, "okay you can unpause now that's good",
+                [[52.0, 56.1, " okay", 0.9], [56.1, 57.2, " that's", 0.9], [57.2, 57.3, " good", 0.9]], "en")
+    echo = Line(57.34, 57.4, "That's good.", [[57.34, 57.34, " That's", 0.4], [57.34, 57.4, " good.", 0.6]], "en")
+    assert tr.echo(echo, said) and not tr.echo(echo, None)
+    # Really said again (words with length), or something else: kept.
+    again = Line(57.4, 58.2, "That's good.", [[57.4, 57.8, " That's", 0.9], [57.8, 58.2, " good.", 0.9]], "en")
+    other = Line(57.34, 57.4, "Bye.", [[57.34, 57.4, " Bye.", 0.6]], "en")
+    assert not tr.echo(again, said) and not tr.echo(other, said)
+
+
+def test_the_editor_gets_a_fast_seeking_copy(tmp_path):
+    import subprocess
+    from chatwatcher.edit import proxy
+    clip = make_video(tmp_path / "clip.mp4", 4)
+    assert proxy.fresh(tmp_path, clip) is None
+    p = proxy.make(clip)
+    assert proxy.fresh(tmp_path, clip) == p
+    keys = [float(line.split(",")[0]) for line in subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0",
+         str(p)], capture_output=True, text=True, check=True).stdout.split() if "K" in line]
+    assert keys[0] == 0.0 and max(b - a for a, b in zip(keys, keys[1:])) <= proxy.KEY_S + 0.05
+    clip.touch()                                         # downloaded again: the copy is stale
+    import os
+    os.utime(p, (p.stat().st_mtime - 10, p.stat().st_mtime - 10))
+    assert proxy.fresh(tmp_path, clip) is None

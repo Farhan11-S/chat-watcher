@@ -93,7 +93,7 @@ def spec(cfg: Config, conn: sqlite3.Connection, pk: int, clip: es.ClipRef,
     subs = []
     if ctx["style"]["on"]:
         for s, e, *_ in tz:
-            subs += [[round(a + s + clip.zero_s, 2), round(bb + s + clip.zero_s, 2), t] for a, bb, t in lines.local(ctx["cues"], s, e - s)]
+            subs += [[round(a + s + clip.zero_s, 2), round(bb + s + clip.zero_s, 2), t] for a, bb, t, *_ in lines.local(ctx["cues"], s, e - s)]
     stream = [[round(s + clip.zero_s, 3), round(e + clip.zero_s, 3), g, st] for s, e, g, st in tz]
     return {"teasers": stream, "brand": br.fingerprint(cfg, b), "subs": subs,
             "sub_style": ctx["style"] if subs else None, "size": [clip.width, clip.height], "fps": clip.fps, "v": 1}

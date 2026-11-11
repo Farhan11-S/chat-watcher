@@ -128,6 +128,8 @@ class TranscribeConfig(_Section):
     model: str = "large-v3-turbo"     # or "small": about a third faster, more misheard words
     language: str = ""                # "" = detect per line (handles mixed English/Indonesian); or "en", "id", "ja"
     threads: int = Field(0, ge=0)     # CPU threads; 0 = all
+    speakers: bool = False            # guess who says each line (pip install sherpa-onnx); off: you pick in the editor
+    speaker_threshold: float = Field(0.6, gt=0, lt=2)   # higher = fewer voices (one person may split into two)
 
 
 class SubtitlesConfig(_Section):
