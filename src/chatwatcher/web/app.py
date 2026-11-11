@@ -32,17 +32,10 @@ from chatwatcher.web import charts, queries
 
 log = logging.getLogger("chatwatcher.web")
 HERE = Path(__file__).parent
-CLAUDE_MODELS = ("sonnet", "opus", "haiku")          # CLI aliases for the latest of each
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 class StatusIn(BaseModel):
     status: str
-
-
-class RedoIn(BaseModel):
-    model: str = ""
-    effort: str = ""
 
 
 class EditIn(BaseModel):
@@ -60,11 +53,6 @@ class RegionsIn(BaseModel):
     kind: str = "long"        # which edit's render state to answer with
 
 
-class PolishIn(EditIn):
-    model: str = ""
-    effort: str = ""
-
-
 class NamesIn(BaseModel):
     terms: Any = None         # the whole list (replaces it)
     add: Any = None           # or terms to add
@@ -75,10 +63,8 @@ class VoicesIn(BaseModel):
     recolor: int | None = None    # whose colour you just changed (it changes on the VTubers list)
 
 
-class SuggestIn(EditIn):
+class AutoEditIn(EditIn):
     intensity: str = "normal"
-    model: str = ""
-    effort: str = ""
 
 
 class IntroIn(BaseModel):
@@ -89,13 +75,6 @@ class IntroIn(BaseModel):
 class ThumbIn(BaseModel):
     settings: Any = None      # {t, text, zoom, cx, cy, side, place, style, logo, tilt}; t in clip time
     shape: str = "wide"       # wide: thumbnail.jpg 1280×720 | tall: the Short's cover, short_cover.jpg 1080×1920
-
-
-class AskIn(BaseModel):
-    question: str
-    model: str = ""
-    effort: str = ""
-    web: bool = False
 
 
 def _redirect(url: str, msg: str | None = None, error: str | None = None) -> RedirectResponse:
@@ -202,24 +181,11 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             login_cache["at"] = time.monotonic()
         return login_cache["notice"]
 
-    models = list(dict.fromkeys([cfg.claude.model, cfg.claude.redo_model, *CLAUDE_MODELS]))
-
-    def claude_choice(model: str, effort: str) -> dict[str, str]:
-        """Model/effort picked on a form; only known values reach the claude command line."""
-        out = {}
-        if model in models:
-            out["model"] = model
-        if effort in EFFORTS:
-            out["effort"] = effort
-        return out
-
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         ctx.setdefault("msg", request.query_params.get("msg"))
         ctx.setdefault("error", request.query_params.get("error"))
         return templates.TemplateResponse(request, name, {"worker": worker_status(), "cfg": cfg,
-                                                          "drive_login": drive_login(),
-                                                          "claude_models": models, "efforts": EFFORTS,
-                                                          **ctx})
+                                                          "drive_login": drive_login(), **ctx})
 
     # ── pages ────────────────────────────────────────────────────────────────
 
@@ -253,7 +219,7 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
                "to": hi.isoformat() if span and not day else "", "on": bool(span), "today": today.isoformat(),
                "label": ("today" if day == "today" else "yesterday" if day == "yesterday"
                          else lo.isoformat() if span and lo == hi else f"{lo.isoformat()} – {hi.isoformat()}" if span else "")}
-        return render(request, "home.html", summary=summary, videos=videos, queue=jobs.list_jobs(conn, limit=12),
+        return render(request, "home.html", summary=summary, videos=videos,
                       flt=flt, error=error or request.query_params.get("error"))
 
     @app.post("/add")
@@ -317,16 +283,14 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             chart = charts.score_timeline(scores, d["moments"], duration, cfg.scoring.min_score)
         if files.heatmap.is_file() and duration:
             heat = charts.heatmap_strip(json.loads(files.heatmap.read_text()), duration)
-        ranks = {m["rank"]: m for m in d["moments"]}
         kept = sum(1 for m in d["moments"] if m["status"] == "approved" and m["clip_id"])
         kept_all = sum(1 for m in d["moments"] if m["status"] == "approved")
-        return render(request, "video.html", **d, chart=chart, heat=heat, ranks=ranks, kept=kept,
+        return render(request, "video.html", **d, chart=chart, heat=heat, kept=kept,
                       kept_all=kept_all, review=_review_items(d["moments"]),
                       auto_upload=prefs.auto_upload(cfg, conn))
 
     @app.post("/video/{video_id}/{action}")
-    def video_action(video_id: str, action: str, stream_type: str = Form("auto"), model: str = Form(""),
-                     effort: str = Form(""), redo: str = Form(""), kept_only: str = Form(""),
+    def video_action(video_id: str, action: str, stream_type: str = Form("auto"), kept_only: str = Form(""),
                      back_to: str = Form(""), conn=Depends(get_conn)):
         v = store.get_video(conn, video_id)
         if v is None:
@@ -354,12 +318,6 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             jobs.enqueue(conn, v["id"], "clip", params={"kept_only": True})
             then = " Claude analyses them after." if cfg.pipeline.auto_analyze and cfg.claude.enabled else ""
             return _redirect(back, msg=f"Downloading {n} kept moment(s).{then}")
-        if action == "analyze":
-            params = claude_choice(model, effort) | ({"redo": True} if redo else {})
-            jobs.enqueue(conn, v["id"], "analyze", params=params)
-            what = "Re-analysis of every clip" if redo else "Analysis"
-            return _redirect(back, msg=f"{what} queued ({params.get('model', cfg.claude.model)}, "
-                                       f"{params.get('effort', cfg.claude.effort)} effort).")
         if action == "upload":
             if not cfg.drive.enabled:
                 return _redirect(back, error="Google Drive isn't set up (drive.enabled = false in config.toml).")
@@ -390,8 +348,7 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         d = queries.moment_detail(conn, pk)
         if d is None:
             raise HTTPException(404, "Unknown moment")
-        from chatwatcher.analyze.ask import thread
-        return render(request, "moment.html", **d, chat=thread(conn, pk))
+        return render(request, "moment.html", **d)
 
     @app.post("/moment/{pk}/status")
     def moment_status(pk: int, body: StatusIn, conn=Depends(get_conn)):
@@ -410,50 +367,6 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             (m["video_id"],)).fetchone()
         return JSONResponse({"ok": True, "status": body.status, "kept": counts["kept"] or 0,
                              "kept_clipped": counts["kept_clipped"] or 0, "to_review": counts["to_review"] or 0})
-
-    @app.post("/moment/{pk}/analyze")
-    def moment_redo(pk: int, body: RedoIn, conn=Depends(get_conn)):
-        """Analyse one moment again (e.g. with Opus) from the stream page's review panel."""
-        m = conn.execute("SELECT video_id FROM moments WHERE id = ?", (pk,)).fetchone()
-        if m is None:
-            raise HTTPException(404)
-        if not cfg.claude.enabled:
-            return JSONResponse({"ok": False, "error": "claude.enabled is false in config.toml."}, status_code=400)
-        params = claude_choice(body.model, body.effort)
-        jobs.enqueue(conn, m["video_id"], "analyze", moment_pk=pk, params=params)
-        ahead = conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'running') "
-                             "AND run_after <= datetime('now') AND NOT (moment_id = ? AND stage = 'analyze')",
-                             (pk,)).fetchone()[0]
-        return JSONResponse({"ok": True, "model": params.get("model", cfg.claude.model),
-                             "effort": params.get("effort", cfg.claude.effort), "ahead": ahead})
-
-    @app.get("/api/moment/{pk}")
-    def api_moment(pk: int, conn=Depends(get_conn)):
-        """The moment's latest analysis and its pending re-analysis, for the review panel."""
-        m = conn.execute("SELECT * FROM moments WHERE id = ?", (pk,)).fetchone()
-        if m is None:
-            raise HTTPException(404)
-        d = dict(m) | queries._j(m["features_json"], {})
-        d["analysis"] = queries.latest_analysis(conn, pk)
-        d["clip_id"] = None
-        job = conn.execute("SELECT status, error, message FROM jobs WHERE moment_id = ? AND stage = 'analyze'",
-                           (pk,)).fetchone()
-        return JSONResponse({"moment": _review_items([d])[0], "job": dict(job) if job else None})
-
-    @app.post("/moment/{pk}/ask")
-    def moment_ask(pk: int, body: AskIn, conn=Depends(get_conn)):
-        """Answer a follow-up question about the clip (takes 5-60 s; the page waits)."""
-        from chatwatcher.analyze.ask import AskError, ask
-        choice = claude_choice(body.model, body.effort)
-        try:
-            a = ask(cfg, conn, pk, body.question, runner=deps.claude if deps else None,
-                    web_search=body.web, **choice)
-        except AskError as e:
-            status = 404 if e.kind == "missing" else 400 if e.kind in ("error", "not_clipped", "disabled") else 503
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
-        return JSONResponse({"ok": True, "answer": a.text, "model": a.model,
-                             "tokens": a.usage.get("input", 0) + a.usage.get("cache_read", 0)
-                             + a.usage.get("cache_write", 0) + a.usage.get("output", 0)})
 
     # ── editor ───────────────────────────────────────────────────────────────
 
@@ -519,27 +432,8 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             state["worker"].poke()
         return JSONResponse({"ok": True, "render": with_worker(render_state(conn, pk, cfg=cfg, kind=body.kind))})
 
-    @app.post("/moment/{pk}/effects/suggest")
-    def edit_suggest(pk: int, body: SuggestIn, conn=Depends(get_conn)):
-        """Save the cut, then have Claude place sounds and camera effects on it (10-60 s; the page waits)."""
-        from chatwatcher.edit.service import EditError, render_state
-        from chatwatcher.edit.suggest import SuggestError, suggest
-        try:
-            save_body(conn, pk, body)
-            r = suggest(cfg, conn, pk, intensity=body.intensity, runner=deps.claude if deps else None,
-                        kind=body.kind, **claude_choice(body.model, body.effort))
-        except (EditError, MediaError) as e:
-            return edit_error(e)
-        except SuggestError as e:
-            return JSONResponse({"ok": False, "error": str(e), "kind": e.kind},
-                                status_code=503 if e.kind in ("usage_limit", "timeout") else 400)
-        return JSONResponse({"ok": True, "effects": r.effects, "added": r.added, "dropped": r.dropped,
-                             "added_sounds": r.added_sounds, "added_visual": r.added_visual,
-                             "note": r.note, "model": r.model,
-                             "render": with_worker(render_state(conn, pk, cfg=cfg, kind=body.kind))})
-
     @app.post("/moment/{pk}/autoedit")
-    def edit_auto(pk: int, body: SuggestIn, conn=Depends(get_conn)):
+    def edit_auto(pk: int, body: AutoEditIn, conn=Depends(get_conn)):
         """Save the edit, then have Claude cut the clip, plan the camera, place effects and
         set word-by-word captions and a Short's hook title (30-90 s; the page waits)."""
         from chatwatcher.edit.autoedit import AutoEditError, auto_edit
@@ -547,7 +441,7 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         try:
             save_body(conn, pk, body)
             r = auto_edit(cfg, conn, pk, kind=body.kind, intensity=body.intensity,
-                          runner=deps.claude if deps else None, **claude_choice(body.model, body.effort))
+                          runner=deps.claude if deps else None)
         except (EditError, MediaError) as e:
             return edit_error(e)
         except AutoEditError as e:
@@ -560,14 +454,13 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
                              "render": with_worker(render_state(conn, pk, cfg=cfg, kind=body.kind))})
 
     @app.post("/moment/{pk}/subs/polish")
-    def subs_polish(pk: int, body: PolishIn, conn=Depends(get_conn)):
+    def subs_polish(pk: int, body: EditIn, conn=Depends(get_conn)):
         """Save the edit, then have Claude fix (and translate) its subtitle lines (10-60 s; the page waits)."""
         from chatwatcher.edit.service import EditError, render_state
         from chatwatcher.subs.polish import PolishError, polish
         try:
             save_body(conn, pk, body)
-            r = polish(cfg, conn, pk, runner=deps.claude if deps else None, kind=body.kind,
-                       **claude_choice(body.model, body.effort))
+            r = polish(cfg, conn, pk, runner=deps.claude if deps else None, kind=body.kind)
         except (EditError, MediaError) as e:
             return edit_error(e)
         except PolishError as e:
@@ -812,16 +705,11 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         return Response(brand_card(cfg, conn), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.post("/moment/{pk}/{action}")
-    def moment_action(pk: int, action: str, start: str = Form(""), end: str = Form(""),
-                      model: str = Form(""), effort: str = Form(""), conn=Depends(get_conn)):
+    def moment_action(pk: int, action: str, start: str = Form(""), end: str = Form(""), conn=Depends(get_conn)):
         m = conn.execute("SELECT * FROM moments WHERE id = ?", (pk,)).fetchone()
         if m is None:
             raise HTTPException(404)
         back = f"/moment/{pk}"
-        if action in ("approve", "reject", "reset"):
-            status = {"approve": "approved", "reject": "rejected", "reset": "new"}[action]
-            conn.execute("UPDATE moments SET status = ? WHERE id = ?", (status, pk))
-            return _redirect(back, msg=f"Marked {status}.")
         if action == "cut":
             v = conn.execute("SELECT duration_s FROM videos WHERE id = ?", (m["video_id"],)).fetchone()
             try:
@@ -838,18 +726,13 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             jobs.enqueue(conn, m["video_id"], "clip", moment_pk=pk)
             return _redirect(back, msg="Queued.")
         if action == "reanalyze":
-            params = claude_choice(model, effort)
-            jobs.enqueue(conn, m["video_id"], "analyze", moment_pk=pk, params=params)
-            return _redirect(back, msg=f"Queued for {params.get('model', cfg.claude.model)} "
-                                       f"({params.get('effort', cfg.claude.effort)} effort).")
+            jobs.enqueue(conn, m["video_id"], "analyze", moment_pk=pk)
+            return _redirect(back, msg="Queued for Claude to analyse again.")
         if action == "upload":
             if not cfg.drive.enabled:
                 return _redirect(back, error="Google Drive isn't set up (drive.enabled = false in config.toml).")
             jobs.enqueue(conn, m["video_id"], "upload", moment_pk=pk)
             return _redirect(back, msg="Upload of this clip queued.")
-        if action == "clear-chat":
-            conn.execute("DELETE FROM moment_chats WHERE moment_id = ?", (pk,))
-            return _redirect(back + "#ask", msg="Conversation cleared.")
         raise HTTPException(400)
 
     # ── storage ──────────────────────────────────────────────────────────────
@@ -863,6 +746,7 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
 
     @app.get("/storage", response_class=HTMLResponse)
     def storage_page(request: Request, conn=Depends(get_conn)):
+        from chatwatcher.doctor import run_checks
         local = storage.local_usage(cfg, conn)
         drive = fresh_drive() if cfg.drive.enabled else None
         storage.merge(local, drive)
@@ -878,7 +762,8 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
                                      ("free", drive.free, "free")], drive.total)
         return render(request, "storage.html", local=local, drive=drive, channels=channels, streams=streams,
                       scale=scale, disk_parts=disk_parts, drive_parts=drive_parts, now=time.time(),
-                      drive_pending=cfg.drive.enabled and drive is None)
+                      drive_pending=cfg.drive.enabled and drive is None, checks=run_checks(cfg),
+                      auto_upload=prefs.auto_upload(cfg, conn))
 
     @app.post("/storage/delete")
     def storage_delete(key: list[str] = Form([]), mode: str = Form(""), conn=Depends(get_conn)):
@@ -1040,19 +925,14 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         jobs.enqueue(conn, j["video_id"], j["stage"], moment_pk=j["moment_id"])
         return _redirect("/jobs", msg="Queued again.")
 
-    @app.get("/settings", response_class=HTMLResponse)
-    def settings(request: Request, conn=Depends(get_conn)):
-        from chatwatcher.doctor import run_checks
-        config = cfg.model_dump(mode="json")
-        if config["youtube"].get("po_token"):
-            config["youtube"]["po_token"] = "•••• (hidden)"
-        return render(request, "settings.html", checks=run_checks(cfg), config=config, source=cfg.source,
-                      auto_upload=prefs.auto_upload(cfg, conn))
+    @app.get("/settings")
+    def settings():
+        return RedirectResponse("/storage", status_code=303)       # merged into the Storage page
 
-    @app.post("/settings/auto-upload")
+    @app.post("/storage/auto-upload")
     def set_auto_upload(on: str = Form(""), conn=Depends(get_conn)):
         prefs.put(conn, prefs.AUTO_UPLOAD, bool(on))
-        return _redirect("/settings", msg="Streams will be uploaded to Drive automatically." if on else
+        return _redirect("/storage", msg="Streams will be uploaded to Drive automatically." if on else
                          "Auto-upload is off. Use the Upload buttons on a stream or clip page.")
 
     @app.get("/api/version")

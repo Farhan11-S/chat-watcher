@@ -272,11 +272,10 @@ def analyze(
     url: Annotated[str, typer.Argument(help="VOD URL or video id (must be clipped).")],
     ranks: Annotated[Optional[str], typer.Option("--ranks", "-r", help="Only these ranks, e.g. 1,2,5.")] = None,
     top: Annotated[Optional[int], typer.Option("--top", "-n", help="Only the best N moments.")] = None,
-    force: Annotated[bool, typer.Option("--force", help="Re-analyse moments that already have a storyboard.")] = False,
-    no_digest: Annotated[bool, typer.Option("--no-digest", help="Skip the stream digest.")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Re-analyse moments that were already analysed.")] = False,
     config: ConfigOpt = None,
 ) -> None:
-    """Ask Claude (your subscription) for a summary, titles and storyboard per clip."""
+    """Ask Claude (your subscription) for a rating, summary and titles per clip."""
     from chatwatcher.analyze.service import AnalyzeError, analyze_video
 
     cfg = _load(config)
@@ -287,7 +286,7 @@ def analyze(
 
     try:
         run = analyze_video(cfg, conn, url, ranks=_parse_ranks(ranks), top=top, force=force,
-                            digest=not no_digest, on_event=on_event)
+                            on_event=on_event)
     except AnalyzeError as e:
         typer.secho(f"❌ {e}", fg="red", err=True)
         raise typer.Exit(1)
@@ -303,8 +302,6 @@ def analyze(
         if o.status in ("done", "skipped") and o.title:
             mark = "✅" if o.status == "done" else "⏭️ "
             typer.echo(f"{mark} #{o.rank:<2} {o.worthiness}/10 {o.category:<10} {o.title[:70]}")
-            if o.status == "done" and o.folder:
-                typer.echo(f"        → {o.folder.name}/storyboard.md")
         elif o.status == "deferred":
             typer.secho(f"⏸️  #{o.rank:<2} {o.message[:140]}", fg="yellow")
         else:
@@ -313,14 +310,10 @@ def analyze(
     if unclipped:
         typer.echo(f"⏭️  {len(unclipped)} moment(s) not clipped yet "
                    f"({', '.join('#' + str(r) for r in unclipped)}); run `cw clip` first")
-    if run.digest_path:
-        typer.echo(f"\n📋 {run.digest_path}")
     if run.calls:
         u = run.usage
         typer.echo(f"🧮 Claude: {run.calls} call(s) · {u['input'] + u['cache_read'] + u['cache_write']:,} "
                    f"input tokens ({u['cache_read']:,} cached) · {u['output']:,} output tokens")
-    if run.digest_error:
-        typer.secho(f"⚠️  digest failed: {run.digest_error[:200]}", fg="yellow")
     if run.count("error"):
         raise typer.Exit(1)
 
@@ -516,7 +509,7 @@ def run(
     finally:
         conn.close()
     if result == "done":
-        typer.echo(f"\n✅ {vid} done. See `cw videos`, the output folder, and stream_digest.md.")
+        typer.echo(f"\n✅ {vid} done. See `cw videos` and the output folder.")
     elif result == "waiting":
         typer.secho(f"\n⏳ {vid} is waiting (see `cw jobs`); the worker will retry it automatically.",
                     fg="yellow")

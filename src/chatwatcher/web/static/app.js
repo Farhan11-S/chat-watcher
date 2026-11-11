@@ -3,7 +3,6 @@
   // Reload the page when the worker changes something (only if the user isn't typing
   // or watching a video).
   let version = null;
-  let asking = false;   // a question to Claude is in flight: don't reload under it
   async function poll() {
     try {
       const r = await fetch("/api/version", { cache: "no-store" });
@@ -13,7 +12,7 @@
       if (version !== null && d.v !== version && document.body.dataset.autorefresh === "1") {
         const busy = document.activeElement && ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName);
         const playing = [...document.querySelectorAll("video")].some(v => !v.paused);
-        if (!busy && !playing && !asking && !window.cwHold) location.reload();
+        if (!busy && !playing && !window.cwHold) location.reload();
         else if (window.cwHold) showUpdateNotice();
       }
       version = d.v;
@@ -128,11 +127,6 @@
       $(".r-why").hidden = !m.why;
       $("[data-r-context]").textContent = m.context || "";
       $(".r-context").hidden = !m.context;
-      $("[data-r-by]").textContent = m.model ? "now: " + m.model.replace(/^claude-/, "") + (m.effort ? " · " + m.effort : "") : "";
-      const redo = $("[data-r-redo]");
-      redo.hidden = !m.redoText;
-      redo.textContent = m.redoText || "";
-      redo.className = "r-redo" + (m.redoState ? " " + m.redoState : "");
       $("[data-r-chat]").textContent = m.chat.map(([t, n]) => t.slice(0, 24) + " ×" + n).join("   ");
       $("[data-r-open]").href = "/moment/" + m.id;
       review.querySelectorAll("[data-strip] .chip").forEach(c => c.classList.toggle("current", c.dataset.goto === String(m.id)));
@@ -206,62 +200,6 @@
       if (pill) { pill.className = "pill " + m.status; pill.textContent = m.status; }
     }
 
-    // "Analyse again" for the moment on screen, e.g. with Opus when Sonnet missed the joke.
-    // The worker does it in the background; the panel updates itself when it's done.
-    const redoForm = $("[data-redo-form]");
-    function paintRating(m) {
-      const chip = review.querySelector(`[data-strip] [data-goto="${m.id}"]`);
-      if (chip && m.worthiness) {
-        let w = chip.querySelector(".w");
-        if (!w) { w = document.createElement("b"); chip.append(" ", w); }
-        w.className = "w w" + m.worthiness; w.textContent = m.worthiness;
-      }
-      const cell = document.querySelector(`[data-claude-cell="${m.id}"]`);
-      if (cell && m.worthiness) {
-        cell.textContent = "";
-        const s = document.createElement("small"), b = document.createElement("b");
-        b.textContent = m.worthiness + "/10";
-        s.append(b, " " + (m.category || ""), document.createElement("br"), (m.title || "").slice(0, 60));
-        cell.appendChild(s);
-      }
-    }
-    function setRedo(m, text, state) { m.redoText = text; m.redoState = state; if (m === current) render(); }
-    async function watchRedo(m, startAid) {
-      for (let i = 0; i < 720; i++) {          // up to an hour; the worker may be busy with other streams
-        await new Promise(r => setTimeout(r, 4000));
-        let d;
-        try { d = await (await fetch("/api/moment/" + m.id, { cache: "no-store" })).json(); } catch (e) { continue; }
-        const fresh = d.moment;
-        if (fresh.aid && fresh.aid !== startAid) {
-          for (const k of ["title", "summary", "why", "context", "worthiness", "category", "model", "effort", "aid"]) m[k] = fresh[k];
-          setRedo(m, "✓ Updated by " + (m.model || "Claude").replace(/^claude-/, "") + ".", "ok");
-          paintRating(m);
-          paintPicks();
-          return;
-        }
-        const job = d.job;
-        if (job && job.status === "error") { setRedo(m, "Failed: " + (job.error || "unknown error").slice(0, 200), "err"); return; }
-        if (job && job.status === "running") setRedo(m, "Claude is analysing it now… (usually 30–90 s)", "busy");
-        else if (job && job.status === "pending" && job.error) setRedo(m, "Waiting: " + job.error.split("\n")[0].slice(0, 200), "busy");
-      }
-    }
-    redoForm.addEventListener("submit", async ev => {
-      ev.preventDefault();
-      const m = current, f = new FormData(redoForm);
-      const body = { model: f.get("model") || "", effort: f.get("effort") || "" };
-      setRedo(m, "Queuing…", "busy");
-      try {
-        const r = await fetch("/moment/" + m.id + "/analyze", {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        const d = await r.json();
-        if (!d.ok) throw new Error(d.error || r.status);
-        setRedo(m, `Queued for ${d.model} · ${d.effort} effort` + (d.ahead ? ` (${d.ahead} job${d.ahead === 1 ? "" : "s"} ahead of it)` : "") + ". This updates by itself.", "busy");
-        watchRedo(m, m.aid);
-      } catch (e) {
-        setRedo(m, "Couldn't queue it: " + e.message, "err");
-      }
-    });
-
     panel.addEventListener("click", ev => {
       const act = ev.target.closest("[data-act]");
       if (act) setStatus(current, act.dataset.act);
@@ -274,8 +212,6 @@
         const m = byId.get(go.dataset.goto);
         if (m) { ev.preventDefault(); select(m); }
       }
-      const set = ev.target.closest("[data-set]");
-      if (set) { const m = byId.get(set.dataset.moment); if (m) setStatus(m, set.dataset.set); }
     });
     document.addEventListener("keydown", ev => {
       if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing) return;
@@ -376,8 +312,8 @@
       const size = p.reduce((s, b) => s + +(videosOnly ? b.dataset.clips : b.dataset.size), 0);
       const notOnDrive = p.filter(b => b.dataset.onDrive !== "1").length;
       let text = videosOnly
-        ? `Delete the clip videos of ${p.length} stream(s) (${fmtBytes(size)})? Summaries, storyboards and questions stay; you can download the clips again later.`
-        : `Delete ${p.length} stream(s) (${fmtBytes(size)}) from this computer, including their summaries, storyboards and questions? This can't be undone.`;
+        ? `Delete the clip videos of ${p.length} stream(s) (${fmtBytes(size)})? Summaries and frames stay; you can download the clips again later.`
+        : `Delete ${p.length} stream(s) (${fmtBytes(size)}) from this computer, including their summaries and edits? This can't be undone.`;
       if (delForm.dataset.drive === "1") {
         if (notOnDrive) text += `\n\n${notOnDrive} of them ${notOnDrive === 1 ? "isn't" : "aren't"} on Google Drive.`;
         text += "\n\nGoogle Drive copies are not touched.";
@@ -390,76 +326,6 @@
   // Storage page: ask Google Drive in the background, then show the answer.
   if (document.querySelector("[data-drive-refresh]")) {
     fetch("/storage/drive", { method: "POST" }).finally(() => location.reload());
-  }
-
-  // Moment page: questions to Claude about the clip.
-  const askForm = document.querySelector("[data-ask-form]");
-  if (askForm) {
-    const log = document.querySelector("[data-chat-log]");
-    const box = askForm.querySelector("textarea");
-    const button = askForm.querySelector("button.primary");
-    log.scrollTop = log.scrollHeight;   // newest answer in view
-    // Answers are plain text; turn [title](https://…) and bare https links into real links
-    // (built as elements, never innerHTML, since the text comes from Claude and the web).
-    const LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s)<>\]]+)/g;
-    function fillText(el, text) {
-      el.textContent = "";
-      let last = 0, m;
-      LINK.lastIndex = 0;
-      while ((m = LINK.exec(text))) {
-        el.appendChild(document.createTextNode(text.slice(last, m.index)));
-        const a = document.createElement("a");
-        a.href = m[2] || m[3]; a.textContent = m[1] || m[3];
-        a.target = "_blank"; a.rel = "noopener noreferrer";
-        el.appendChild(a);
-        last = LINK.lastIndex;
-      }
-      el.appendChild(document.createTextNode(text.slice(last)));
-    }
-    log.querySelectorAll(".bubble.assistant .bubble-text").forEach(t => fillText(t, t.textContent));
-    function bubble(cls, text, meta) {
-      const b = document.createElement("div");
-      b.className = "bubble " + cls;
-      const t = document.createElement("span");
-      t.className = "bubble-text";
-      fillText(t, text);
-      b.appendChild(t);
-      if (meta) { const m = document.createElement("div"); m.className = "bubble-meta"; m.textContent = meta; b.appendChild(m); }
-      log.appendChild(b);
-      log.scrollTop = log.scrollHeight;
-      return b;
-    }
-    async function send() {
-      const question = box.value.trim();
-      if (!question || asking) return;
-      asking = true; button.disabled = true; box.value = "";
-      const chips = document.querySelector("[data-chips]");
-      if (chips) chips.remove();
-      bubble("user", question);
-      const wait = bubble("assistant pending", "Claude is thinking… (usually 10–60 s)");
-      const f = new FormData(askForm);
-      try {
-        const r = await fetch(askForm.getAttribute("action"), {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question, model: f.get("model") || "", effort: f.get("effort") || "", web: f.get("web") === "1" }),
-        });
-        const d = await r.json();
-        wait.remove();
-        if (d.ok) bubble("assistant", d.answer, d.model + (d.tokens ? " · " + (d.tokens / 1000).toFixed(1) + "k tokens" : ""));
-        else { bubble("failed", d.error || "Something went wrong."); box.value = question; }
-      } catch (e) {
-        wait.remove(); bubble("failed", "Couldn't reach the dashboard. Is cw serve still running?"); box.value = question;
-      } finally {
-        asking = false; button.disabled = false; box.focus();
-      }
-    }
-    askForm.addEventListener("submit", ev => { ev.preventDefault(); send(); });
-    box.addEventListener("keydown", ev => {
-      if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); }
-    });
-    document.querySelectorAll("[data-ask]").forEach(chip => chip.addEventListener("click", () => {
-      box.value = chip.dataset.ask; send();
-    }));
   }
 
   // [data-seek="12.5"] jumps the clip player to that time.

@@ -39,8 +39,7 @@ translation you may move a word or two between neighbouring lines so each reads 
 - join_next: only when one short sentence is split awkwardly across two lines. Put the \
 whole sentence in the first line's text; the next line's text is then ignored.
 - Empty text drops a line: only for lines that are just filler or noise.
-- Punch words: *stars* around the one or two words that carry the punchline or the \
-emphasis, in at most one line out of three. Never a whole line.
+- Keep *stars* around the words that have them (the highlighted punch words); don't add new ones.
 - Lines marked (fixed) were typed by the editor: return them unchanged.
 - Return every line id you were given, in order.
 - names: proper names and special terms in this clip worth remembering for this channel \
@@ -153,6 +152,7 @@ def polish(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, runner: Cla
 
     scope, channel = regions.scope_for(conn, moment_pk)
     known = name_list.get(conn, scope)
+    known += [v["name"] for v in clip.voices.values() if v.get("name") and v["name"] not in known]
     words = service._words(clip) or {}
     language = LANGUAGES.get(words.get("language") or "", words.get("language") or "unknown")
     meta_path, chat_path = clip.folder / "moment.json", clip.folder / "chat_excerpt.txt"
@@ -164,7 +164,7 @@ def polish(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, runner: Cla
         runner = runner or ClaudeRunner(cfg.claude)
         res = runner.run(prompt, schema([c["id"] for c in in_cut]),
                          system=SYSTEM.format(language=cfg.claude.output_language), cwd=clip.folder,
-                         model=model or cfg.claude.edit_model, effort=effort or cfg.claude.edit_effort)
+                         model=model, effort=effort or cfg.claude.edit_effort)
     except ClaudeError as e:
         hint = {"usage_limit": "Claude's usage limit is reached; try again after it resets.",
                 "auth": "The claude CLI isn't logged in. Run `claude auth login` in a terminal.",

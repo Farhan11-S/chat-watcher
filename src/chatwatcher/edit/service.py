@@ -33,7 +33,7 @@ from typing import Any, Callable
 from chatwatcher.config import Config
 from chatwatcher.edit import layout as lay
 from chatwatcher.edit import motion, regions
-from chatwatcher.edit.audio import Waveform, analyse, snap
+from chatwatcher.edit.audio import analyse
 
 EDIT_FILE = "edit.mp4"
 SRT_FILE = "edit.srt"
@@ -116,22 +116,9 @@ def _latest_analysis(conn: sqlite3.Connection, moment_pk: int) -> dict[str, Any]
         return {}
 
 
-def proposals(a: dict[str, Any], clip: ClipRef, wf: Waveform, snap_s: float) -> dict[str, list[Segment] | None]:
-    """Claude's long and short cuts in clip time, each edge moved to the nearest pause."""
-    shift = float((a.get("_meta") or {}).get("zero_s", clip.zero_s)) - clip.zero_s
-    cut = a.get("cut") or {}
-    end = clip.duration_s
-
-    def one(i_key: str, o_key: str) -> list[Segment] | None:
-        i, o = cut.get(i_key), cut.get(o_key)
-        if i is None or o is None:
-            return None
-        s = min(max(snap(float(i) + shift, wf.pauses, snap_s), 0.0), end)
-        e = min(max(snap(float(o) + shift, wf.pauses, snap_s), 0.0), end)
-        return [[round(s, 3), round(e, 3), 0.0]] if e - s >= 1 else None
-
-    return {"long": one("long_in", "long_out"), "short": one("short_in", "short_out"),
-            "whole": [[0.0, round(end, 3), 0.0]]}
+def whole(clip: ClipRef) -> list[Segment]:
+    """The cut an unedited clip starts from: all of it (✨ AI edit makes the real one)."""
+    return [[0.0, round(clip.duration_s, 3), 0.0]]
 
 
 _LINE = re.compile(r"^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$")
@@ -216,23 +203,20 @@ def _to_clip(stream_segments: list[Segment], clip: ClipRef) -> list[Segment]:
 
 def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "long") -> dict[str, Any]:
     """Everything the editor needs, in clip time. A Short that was never saved starts from
-    Claude's short cut, with the long edit's effects and subtitle fixes."""
+    the whole clip, with the long edit's effects and subtitle fixes."""
     check_kind(kind)
     clip = clip_ref(conn, moment_pk)
     wf = analyse(clip.path, clip.folder / WAVEFORM_FILE)
     a = _latest_analysis(conn, moment_pk)
-    props = proposals(a, clip, wf, cfg.edit.snap_s)
     row = _stored(conn, moment_pk, kind)
     base = row if row is not None or kind == "long" else _stored(conn, moment_pk, "long")
     segments = _to_clip(json.loads(row["segments_json"]), clip) if row else []
     source = row["source"] if row and segments else None
     if not segments:
-        order = ("short", "long", "whole") if kind == "short" else ("long", "whole")
-        source = next(k for k in order if props[k])
-        segments = props[source]
+        source, segments = "whole", whole(clip)
     shift = float((a.get("_meta") or {}).get("zero_s", clip.zero_s)) - clip.zero_s
     beats = [{"start": round(float(b.get("start", 0)) + shift, 2), "end": round(float(b.get("end", 0)) + shift, 2),
-              "beat": b.get("beat", ""), "edit": b.get("edit", ""), "overlay": b.get("text_overlay", "")}
+              "beat": b.get("beat", "")}
              for b in a.get("storyboard") or []]
     from chatwatcher.edit.sounds import list_sounds
     sounds = [{"id": x["id"], "name": x["name"], "description": x["description"], "length": x["duration_s"],
@@ -246,8 +230,7 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
         "visual": {"types": motion.TYPES | {lay.FRAME: lay.FRAME_LIMITS}, "transitions": motion.TRANSITIONS,
                    "transition_d": motion.TRANSITION_D, "zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP,
                    "flash": motion.FLASH, "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]},
-        "presets": props, "beats": beats, "lines": transcript_lines(clip.folder),
-        "notes": (a.get("cut") or {}).get("notes", ""), "hook": a.get("hook", ""),
+        "beats": beats, "lines": transcript_lines(clip.folder),
         "snap_s": cfg.edit.snap_s, "render": render_state(conn, moment_pk, clip, cfg=cfg, kind=kind),
         "transcript": transcript_state(cfg, conn, moment_pk, clip),
         "other": {k: render_state(conn, moment_pk, clip, cfg=cfg, kind=k)["state"] for k in KINDS if k != kind},
@@ -261,8 +244,7 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
                                 "blur_down": lay.BLUR_DOWN, "src": [sw, sh],
                                 "frame": {"margin": lay.FRAME_MARGIN, "wide": lay.FRAME_WIDE,
                                           "limits": lay.FRAME_LIMITS}},
-                "titles": [t for t in (a.get("titles") or []) if isinstance(t, str)][:3],
-                "vertical_crop": a.get("vertical_crop", "")}
+                "titles": [t for t in (a.get("titles") or []) if isinstance(t, str)][:3]}
     return out
 
 
@@ -558,8 +540,7 @@ def save(cfg: Config, conn: sqlite3.Connection, moment_pk: int, raw: Any, source
          effects: Any = None, subs: Any = None, subs_style: Any = None, kind: str = "long",
          layout: Any = None) -> list[Segment]:
     """Store the browser's segments (clip time), and its effects unless effects is None
-    (a new Short keeps the long edit's then). The first save also records Claude's
-    proposals, so your final cut can later be compared with what Claude suggested.
+    (a new Short keeps the long edit's then).
     layout: a Short's layout (None = keep it; a new Short gets a first one)."""
     table = _TABLE[check_kind(kind)]
     clip = clip_ref(conn, moment_pk)
@@ -571,19 +552,12 @@ def save(cfg: Config, conn: sqlite3.Connection, moment_pk: int, raw: Any, source
         fx = [f | {"t": round(f["t"] + clip.zero_s, 3)} for f in clean_effects(effects, clip.duration_s, known)]
     else:
         fx = _effects(existing if existing is not None or kind == "long" else _stored(conn, moment_pk, "long"))
-    proposed = None
-    if existing is None:
-        wf = analyse(clip.path, clip.folder / WAVEFORM_FILE)
-        a = _latest_analysis(conn, moment_pk)
-        props = proposals(a, clip, wf, cfg.edit.snap_s)
-        proposed = json.dumps({"zero_s": clip.zero_s, "model": a.get("model") or (a.get("_meta") or {}).get("model"),
-                               "cut": a.get("cut"), "snapped": props})
     conn.execute(
-        f"""INSERT INTO {table} (moment_id, segments_json, source, proposed_json, effects_json) VALUES (?, ?, ?, ?, ?)
+        f"""INSERT INTO {table} (moment_id, segments_json, source, effects_json) VALUES (?, ?, ?, ?)
            ON CONFLICT (moment_id) DO UPDATE SET segments_json = excluded.segments_json,
                effects_json = excluded.effects_json,
                source = COALESCE(excluded.source, {table}.source), updated_at = datetime('now')""",
-        (moment_pk, json.dumps(stream), source if source in ("long", "short", "whole") else None, proposed,
+        (moment_pk, json.dumps(stream), source if source in ("long", "short", "whole") else None,
          json.dumps(fx, ensure_ascii=False)))
     if kind == "short" and (layout is not None or existing is None or not existing["layout_json"]):
         first = current_layout(conn, moment_pk, clip, existing)

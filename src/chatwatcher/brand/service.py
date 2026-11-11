@@ -37,8 +37,7 @@ def _context(cfg: Config, conn: sqlite3.Connection, pk: int, clip: es.ClipRef) -
     a = es._latest_analysis(conn, pk)
     segs = es._to_clip(json.loads(row["segments_json"]), clip) if row else []
     if not segs:
-        props = es.proposals(a, clip, wf, cfg.edit.snap_s)
-        segs = props["long"] or props["whole"]
+        segs = es.whole(clip)
     cues, _src, style = es.current_subs(cfg, row, clip)
     shift = float((a.get("_meta") or {}).get("zero_s", clip.zero_s)) - clip.zero_s
     beats = [{"start": float(b.get("start", 0)) + shift, "end": float(b.get("end", 0)) + shift, "beat": b.get("beat", "")}

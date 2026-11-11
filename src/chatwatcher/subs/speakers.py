@@ -1,48 +1,21 @@
-"""Who is talking: speaker detection on a clip, so collab subtitles show each voice in its
-own colour, stacked when two talk at once.
+"""Who is talking in a clip, so collab subtitles show each voice in its own colour, stacked
+when two talk at once.
 
-sherpa-onnx (CPU, ONNX) runs pyannote's segmentation 3.0, which finds speech and where two
-voices overlap, and a WeSpeaker voice embedding that groups the stretches by voice. The
-voices are numbered by how much they talk (0 = the most, usually the streamer). Each word
-in words.json gets the voice that speaks over most of it as a fifth item, and words.json
-gets "voices": how many there are.
-
-Detection is off by default (transcribe.speakers): on real clips it split one person
-shouting from the same person talking calmly, and music into several voices. Instead you
-add the clip's people in the editor (the `voices` table: number → name and colour) and
-say who says each line; the cue then holds that number as "speaker". With detection on,
-detected voices start as those numbers. Two people with one name are one person.
+You add the clip's people in the editor (the `voices` table: number → name and colour)
+and say who says each line; the cue then holds that number as "speaker". Two people with
+one name are one person.
 
 Each VTuber's colour is master data (the `vtubers` table, the VTubers page): a named
 person always shows in her colour there, on every clip. Naming someone new in a clip adds
-her to the list; changing a named person's colour in a clip changes it in the list.
-
-The models (~33 MB) are downloaded into <data_dir>/models/speakers the first time."""
+her to the list; changing a named person's colour in a clip changes it in the list."""
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import sqlite3
-import tarfile
-import threading
-import urllib.request
-from collections import Counter
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-RATE = 16000
-MODEL_DIR = "speakers"
-SEG_DIR = "sherpa-onnx-pyannote-segmentation-3-0"
-SEG_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/"
-           "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2")
-EMB_FILE = "wespeaker_en_voxceleb_resnet34_LM.onnx"
-EMB_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/{EMB_FILE}"
-THRESHOLD = 0.6          # voice grouping: higher = fewer voices (0.7 merged a two-person collab into one)
-MIN_SHARE = 0.12         # a voice with fewer of the words than this (or under MIN_WORDS) joins its neighbours:
-MIN_WORDS = 4            # music, game voices and shouting make small extra "voices"
-NEAR_S = 1.0             # a word in no voice's stretch takes a voice this close
 MAX_VOICES = 8
 WHITE = "FFFFFF"
 # Readable over video with a black outline; lines with nobody picked stay white.
@@ -54,151 +27,6 @@ _HEX3 = re.compile(r"^[0-9A-Fa-f]{3}$")
 class SpeakerError(Exception):
     pass
 
-
-def available() -> bool:
-    return importlib.util.find_spec("sherpa_onnx") is not None
-
-
-# ── detecting voices ─────────────────────────────────────────────────────────
-
-def download(models_dir: Path, say: Callable[[str], None] | None = None) -> tuple[Path, Path]:
-    """(segmentation model, embedding model), downloaded first if missing."""
-    d = Path(models_dir) / MODEL_DIR
-    seg, emb = d / SEG_DIR / "model.onnx", d / EMB_FILE
-    if seg.is_file() and emb.is_file():
-        return seg, emb
-    (say or (lambda _m: None))("Downloading the speaker models (33 MB, only this once)…")
-    d.mkdir(parents=True, exist_ok=True)
-    try:
-        if not seg.is_file():
-            tar = d / "seg.tar.bz2"
-            urllib.request.urlretrieve(SEG_URL, tar)
-            with tarfile.open(tar) as t:
-                t.extractall(d, filter="data")
-            tar.unlink(missing_ok=True)
-        if not emb.is_file():
-            part = emb.with_suffix(".part")
-            urllib.request.urlretrieve(EMB_URL, part)
-            part.replace(emb)
-    except (OSError, tarfile.TarError) as e:
-        raise SpeakerError(f"couldn't download the speaker models: {e}") from e
-    return seg, emb
-
-
-_lock = threading.Lock()
-_engines: dict[tuple[str, float, int], Any] = {}
-
-
-def _engine(models_dir: Path, threshold: float, threads: int) -> Any:
-    import sherpa_onnx as so
-    seg, emb = download(models_dir)
-    key = (str(models_dir), threshold, threads)
-    with _lock:
-        if key not in _engines:
-            n = threads or 4
-            cfg = so.OfflineSpeakerDiarizationConfig(
-                segmentation=so.OfflineSpeakerSegmentationModelConfig(
-                    pyannote=so.OfflineSpeakerSegmentationPyannoteModelConfig(model=str(seg)), num_threads=n),
-                embedding=so.SpeakerEmbeddingExtractorConfig(model=str(emb), num_threads=n),
-                clustering=so.FastClusteringConfig(num_clusters=-1, threshold=threshold),
-                min_duration_on=0.2, min_duration_off=0.3)
-            if not cfg.validate():
-                raise SpeakerError("the speaker models don't load")
-            _engines[key] = so.OfflineSpeakerDiarization(cfg)
-        return _engines[key]
-
-
-def detect(audio: Any, models_dir: Path, threshold: float = THRESHOLD, threads: int = 0) -> list[tuple[float, float, int]]:
-    """[(start, end, voice)] in clip seconds; voices numbered by talking time, most first.
-    Stretches of two voices may overlap."""
-    import numpy as np
-    engine = _engine(models_dir, threshold, threads)
-    with _lock:                                   # one at a time: it uses every core
-        segs = engine.process(np.asarray(audio, dtype=np.float32)).sort_by_start_time()
-    raw = [(float(s.start), float(s.end), int(s.speaker)) for s in segs]
-    talk = Counter()
-    for a, b, k in raw:
-        talk[k] += b - a
-    order = {k: i for i, (k, _) in enumerate(talk.most_common(MAX_VOICES))}
-    last = len(order) - 1
-    return [(round(a, 3), round(b, 3), order.get(k, last)) for a, b, k in raw]
-
-
-def label(words: list[tuple[float, float]], turns: list[tuple[float, float, int]]) -> list[int | None]:
-    """The voice of each word: the one speaking over most of it (with two at once, the one
-    the word before had: a speaker usually goes on), else the nearest one. A lone word
-    between two of another voice's is taken to be theirs (a blip, not a reply)."""
-    out: list[int | None] = []
-    for s, e in words:
-        over: dict[int, float] = {}
-        for a, b, k in turns:
-            o = min(b, e) - max(a, s)
-            if o > 0:
-                over[k] = over.get(k, 0.0) + o
-        if over:
-            best = max(over.values())
-            tied = [k for k, o in over.items() if o >= best * 0.8]
-            prev = out[-1] if out else None
-            out.append(prev if prev in tied else max(tied, key=lambda k: over[k]))
-            continue
-        near = min(turns, key=lambda t: max(t[0] - e, s - t[1], 0.0), default=None)
-        if near is not None and max(near[0] - e, s - near[1], 0.0) <= NEAR_S:
-            out.append(near[2])
-        else:
-            out.append(out[-1] if out else None)
-    for i in range(1, len(out) - 1):
-        a, b = words[i]
-        if out[i - 1] == out[i + 1] != out[i] and b - a < 0.5:
-            out[i] = out[i - 1]
-    return out
-
-
-def fold(voices: list[int | None]) -> list[int | None]:
-    """Voices that say few of the words join the voice of the nearest word that isn't
-    theirs; the rest are renumbered by how many words they say (0 = the most)."""
-    said = Counter(v for v in voices if v is not None)
-    total = sum(said.values())
-    keep = {v for v, n in said.items() if n >= MIN_WORDS and n >= MIN_SHARE * total}
-    if not keep:
-        keep = {said.most_common(1)[0][0]} if said else set()
-    out = list(voices)
-    for i, v in enumerate(out):
-        if v is None or v in keep:
-            continue
-        near = next((out[j] for d in range(1, len(out)) for j in (i - d, i + d)
-                     if 0 <= j < len(out) and voices[j] in keep), None)
-        out[i] = near
-    order = {v: k for k, (v, _) in enumerate(Counter(v for v in out if v is not None).most_common())}
-    return [order.get(v) if v is not None else None for v in out]
-
-
-def assign(data: dict[str, Any], turns: list[tuple[float, float, int]]) -> dict[str, Any]:
-    """words.json's contents with each word's voice as its fifth item (None when nobody's
-    stretch is near it) and "voices": how many voices say the words (after fold)."""
-    flat = [(float(w[0]), float(w[1])) for line in data.get("lines") or [] for w in line.get("words") or []]
-    labels = fold(label(flat, turns))
-    voices = iter(labels)
-    lines = []
-    for line in data.get("lines") or []:
-        lines.append(line | {"words": [[*w[:4], next(voices)] for w in line.get("words") or []]})
-    count = len({v for v in labels if v is not None})
-    return data | {"lines": lines, "voices": count, "turns": [list(t) for t in turns]}
-
-
-def write(folder: Path, data: dict[str, Any], audio: Any, models_dir: Path, threshold: float = THRESHOLD,
-          threads: int = 0, say: Callable[[str], None] | None = None) -> dict[str, Any]:
-    """Detect the voices in `audio`, mark them in `data` and write words.json."""
-    from chatwatcher.subs.transcribe import WORDS_FILE
-    download(models_dir, say)
-    (say or (lambda _m: None))("Telling the voices apart…")
-    out = assign(data, detect(audio, models_dir, threshold, threads))
-    tmp = folder / (WORDS_FILE + ".tmp")
-    tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(folder / WORDS_FILE)
-    return out
-
-
-# ── names and colours (per clip; colours remembered per person per channel) ──
 
 def default_color(k: int) -> str:
     return PALETTE[k % len(PALETTE)]

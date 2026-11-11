@@ -96,9 +96,10 @@ def test_editor_save_render_and_media(site):  # noqa: F811
     cfg, conn, client, deps = site
     m = mid(conn)
     d = client.get(f"/api/moment/{m}/edit").json()
-    assert d["ok"] and not d["saved"] and d["source"] == "long"
-    assert d["segments"] == d["presets"]["long"] and d["presets"]["whole"][0][0] == 0
-    assert d["presets"]["short"] and d["peaks"] and d["rate"] == 50 and d["render"]["state"] == "none"
+    assert d["ok"] and not d["saved"] and d["source"] == "whole"             # ✨ AI edit makes the real cut
+    assert len(d["segments"]) == 1 and d["segments"][0][0] == 0 and d["segments"][0][1] == pytest.approx(d["duration"], abs=0.05)
+    assert "presets" not in d
+    assert d["peaks"] and d["rate"] == 50 and d["render"]["state"] == "none"
     assert d["beats"] and "lines" in d
 
     zero = conn.execute("SELECT zero_s FROM clips WHERE moment_id = ?", (m,)).fetchone()["zero_s"]
@@ -106,7 +107,6 @@ def test_editor_save_render_and_media(site):  # noqa: F811
     assert r["ok"] and r["segments"] == [[4.0, 8.0, -6.0], [1.0, 3.0, 0.0]]
     row = conn.execute("SELECT * FROM edits WHERE moment_id = ?", (m,)).fetchone()
     assert json.loads(row["segments_json"])[0][:2] == [round(4 + zero, 3), round(8 + zero, 3)]   # stream time
-    assert json.loads(row["proposed_json"])["snapped"]["long"]                                  # Claude's, kept
     d = client.get(f"/api/moment/{m}/edit").json()
     assert d["saved"] and d["segments"] == [[4.0, 8.0, -6.0], [1.0, 3.0, 0.0]]
 
@@ -168,7 +168,6 @@ def test_migration_keeps_jobs(tmp_path):
 
 # ── sound effects ────────────────────────────────────────────────────────────
 
-from chatwatcher.analyze.claude_runner import ClaudeResult  # noqa: E402
 from chatwatcher.edit import sounds as sfx  # noqa: E402
 from chatwatcher.edit.render import SoundCue, place  # noqa: E402
 from chatwatcher.edit.service import clean_effects  # noqa: E402
@@ -247,29 +246,12 @@ def test_render_mixes_sounds_where_placed(tmp_path):
     assert band(440, 2.2, 2.8) < band(440, 0.2, 0.8) - 8                 # her sound ducked under it
 
 
-class FakeSuggester:
-    def __init__(self, effects, visual=None):
-        self.effects, self.visual, self.calls = effects, visual or [], []
-
-    def run(self, prompt, schema, *, system, cwd, allow_read=False, model=None, effort=None):
-        self.calls.append({"prompt": prompt, "schema": schema, "system": system, "model": model, "effort": effort})
-        return ClaudeResult({"effects": self.effects, "visual": self.visual, "note": "kept it light"},
-                            "claude-test", 1, {})
-
-
 @needs_ffmpeg
-def test_sounds_page_and_suggestions(site, tmp_path):  # noqa: F811
+def test_sounds_page_and_effects(site, tmp_path):  # noqa: F811
     cfg, conn, client, deps = site
     m = mid(conn)
     seg = {"segments": [[2, 8, 0], [12, 16, 0]], "source": "long"}
-
-    # With an empty library Claude can still place camera effects.
-    deps.claude = FakeSuggester([])
-    d = client.post(f"/moment/{m}/effects/suggest", json=seg).json()
-    assert d["ok"] and d["added"] == 0
-    first = deps.claude.calls[0]
-    assert (first["model"], first["effort"]) == ("opus", "high")          # claude.edit_model / edit_effort
-    assert first["schema"]["properties"]["effects"]["maxItems"] == 0 and "camera effects only" in first["prompt"]
+    assert client.post(f"/moment/{m}/effects/suggest", json=seg).status_code in (404, 405)   # ✨ AI edit does effects
 
     # Upload two sounds on the Sounds page.
     files = [("files", ("Vine Boom.wav", tone(tmp_path / "a.wav", 0.6).read_bytes(), "audio/wav")),
@@ -284,24 +266,10 @@ def test_sounds_page_and_suggestions(site, tmp_path):  # noqa: F811
     client.post("/sounds/bonk/save", data={"name": "Bonk", "description": "someone says something dumb",
                                            "tags": "dumb", "source": "", "gain_db": "-3"})
 
-    # Your own sound, then Claude's: yours stays, Claude's land inside the cut only.
+    # Sounds you place are saved with the edit.
     mine = {"id": "u1", "t": 3.0, "sound": "vine_boom", "gain": 0, "duck": 0, "by": "you"}
-    fake = FakeSuggester([{"at": 5.0, "sound": "bonk", "gain_db": -3, "duck_db": -10, "why": "dumb line"},
-                          {"at": 10.0, "sound": "bonk", "gain_db": 0, "duck_db": 0, "why": "in the gap"}])
-    deps.claude = fake
-    d = client.post(f"/moment/{m}/effects/suggest", json=seg | {"effects": [mine], "intensity": "light"}).json()
-    assert d["ok"] and d["added"] == 1 and d["dropped"] == 1 and d["note"] == "kept it light"
-    assert [(f["sound"], f["by"]) for f in d["effects"]] == [("vine_boom", "you"), ("bonk", "claude")]
-    claude_fx = d["effects"][1]
-    assert claude_fx["t"] == 5.0 and claude_fx["duck"] == -10 and claude_fx["why"] == "dumb line"
-    call = fake.calls[0]
-    assert call["schema"]["properties"]["effects"]["items"]["properties"]["sound"]["enum"] == ["bonk", "vine_boom"]
-    assert "someone says something dumb" in call["prompt"] and "at most 1 sound" in call["prompt"]
-
-    # Asking again replaces Claude's earlier picks but never yours.
-    fake.effects = [{"at": 14.0, "sound": "vine_boom", "gain_db": 0, "duck_db": 0, "why": "again"}]
-    d = client.post(f"/moment/{m}/effects/suggest", json=seg | {"effects": d["effects"]}).json()
-    assert [(f["t"], f["by"]) for f in d["effects"]] == [(3.0, "you"), (14.0, "claude")]
+    later = {"id": "u2", "t": 14.0, "sound": "vine_boom", "gain": 0, "duck": -10, "by": "you"}
+    assert client.post(f"/moment/{m}/edit", json=seg | {"effects": [mine, later]}).json()["ok"]
 
     # The editor gets them back with the library; rendering mixes them in.
     e = client.get(f"/api/moment/{m}/edit").json()

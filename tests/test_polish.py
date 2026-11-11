@@ -66,7 +66,7 @@ def test_claude_cleans_up_the_lines_in_the_cut(site):  # noqa: F811
     assert [c["by"] for c in r["subs"]] == ["claude", "you", "auto"]
     assert r["names"] == ["holo1GP", "Cecilia Immergreen", "FL Studio"] and r["names_added"] == ["Cecilia Immergreen", "FL Studio"]
     call = deps.claude.calls[0]
-    assert (call["model"], call["effort"]) == ("opus", "high")            # claude.edit_model / edit_effort
+    assert (call["model"], call["effort"]) == (None, "high")              # claude.model (runner default), edit_effort
     assert call["schema"]["properties"]["lines"]["items"]["properties"]["id"]["enum"] == ids[:2]   # only the cut
     assert "(fixed) Are you deaf, Cecilia?" in call["prompt"] and "Names list for this channel: holo1GP" in call["prompt"]
     assert "Speech recognition heard mostly: English" in call["prompt"] and "audience that reads English" in call["system"]

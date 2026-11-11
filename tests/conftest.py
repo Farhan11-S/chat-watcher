@@ -18,9 +18,3 @@ def no_real_whisper(monkeypatch):
         raise align.AlignError("no word-timing model in tests")
 
     monkeypatch.setattr(align, "download", no_model)
-    from chatwatcher.subs import speakers
-
-    def no_speaker_model(*a, **k):
-        raise speakers.SpeakerError("no speaker models in tests")
-
-    monkeypatch.setattr(speakers, "download", no_speaker_model)

@@ -69,8 +69,6 @@ auto = true                    # after each clip downloads; false = only the edi
 model = "large-v3-turbo"       # or "small": about a third faster, more misheard words
 language = ""                  # "" = detect per line (mixed English/Indonesian is fine); or "en", "id", "ja"
 threads = 0                    # CPU threads; 0 = all
-speakers = false               # guess who says each line (pip install sherpa-onnx); off: you pick people in the editor
-speaker_threshold = 0.6        # higher = fewer voices; one person shouting may show up as a second voice
 
 [subtitles]                    # burned into the editor's render, from Whisper's word timings
 on = true                      # for new edits (karaoke clips start off); each edit has its own switch
@@ -81,16 +79,13 @@ font = "Noto Sans CJK JP"      # any installed font; this one also has Japanese
 [claude]
 enabled = true
 cli_path = "claude"            # uses your Claude subscription login (`claude auth login`); never --bare
-model = "opus"                 # default for every clip; the dashboard can redo one with "sonnet" etc.
+model = "opus"                 # every Claude call (analysis, AI edit, subtitle fixes)
 effort = "medium"              # low | medium | high | xhigh | max (more = deeper, uses more of your plan)
-redo_model = "opus"            # what "Analyse again" on one moment picks first
-redo_effort = "medium"
-edit_model = "opus"            # the editor's ✨ Suggest effects and subtitle ✨ Clean up
-edit_effort = "high"
+edit_effort = "high"           # ✨ AI edit and subtitle ✨ Fix the words
 moment_cap = 50                # max moment analyses in any 5 hours (0 = no cap); extra clips
 moment_cap_hours = 5           # wait until the oldest one in the window is older than this
 timeout_s = 600
-output_language = "English"    # summaries, storyboards, caption translations
+output_language = "English"    # summaries, caption translations
 title_languages = ["ja", "en"]
 allow_api_key = false          # keep false: ANTHROPIC_API_KEY would bill the API instead
 

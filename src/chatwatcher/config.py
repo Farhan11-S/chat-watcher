@@ -128,8 +128,13 @@ class TranscribeConfig(_Section):
     model: str = "large-v3-turbo"     # or "small": about a third faster, more misheard words
     language: str = ""                # "" = detect per line (handles mixed English/Indonesian); or "en", "id", "ja"
     threads: int = Field(0, ge=0)     # CPU threads; 0 = all
-    speakers: bool = False            # guess who says each line (pip install sherpa-onnx); off: you pick in the editor
-    speaker_threshold: float = Field(0.6, gt=0, lt=2)   # higher = fewer voices (one person may split into two)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _gone(cls, data):
+        if isinstance(data, dict):        # speaker detection was removed: you pick people in the editor
+            data = {k: v for k, v in data.items() if k not in ("speakers", "speaker_threshold")}
+        return data
 
 
 class SubtitlesConfig(_Section):
@@ -141,24 +146,20 @@ class SubtitlesConfig(_Section):
 
 
 class ClaudeConfig(_Section):
-    """Summaries and storyboards via the `claude` CLI, i.e. your Claude subscription."""
+    """Clip analysis, ✨ AI edit and subtitle clean-up via the `claude` CLI, i.e. your Claude subscription."""
     enabled: bool = True
     cli_path: str = "claude"
-    model: str = "opus"           # CLI alias for the latest model; pick another per clip on the dashboard
-    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
-    # What "Analyse again" on one moment offers first: a stronger model for the ones that matter.
-    redo_model: str = "opus"
-    redo_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
-    # The editor's Claude buttons (✨ Suggest effects, subtitle ✨ Clean up): few calls, and
-    # their taste shows in the finished video, so a stronger model by default.
-    edit_model: str = "opus"
+    model: str = "opus"           # CLI alias for the latest model; used for every Claude call
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"      # clip analysis
+    # The editor's Claude buttons (✨ AI edit, subtitle ✨ Fix the words): few calls, and
+    # their taste shows in the finished video, so more effort by default.
     edit_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     # At most moment_cap analyses in any moment_cap_hours (a rolling window, like Claude's 5-hour
     # limit). Extra clips wait until the oldest analysis in the window is older than that.
     moment_cap: int = Field(50, ge=0)                     # 0 = no cap
     moment_cap_hours: float = Field(5, gt=0, le=168)
     timeout_s: int = Field(600, ge=30)
-    output_language: str = "English"          # summaries, storyboard, translations
+    output_language: str = "English"          # summaries, translations
     title_languages: list[str] = Field(default_factory=lambda: ["ja", "en"])
     allow_api_key: bool = False   # False: ANTHROPIC_API_KEY is removed so the CLI uses the subscription
 
@@ -168,6 +169,8 @@ class ClaudeConfig(_Section):
         if isinstance(data, dict) and "daily_moment_cap" in data:
             raise ValueError("claude.daily_moment_cap was replaced by claude.moment_cap: analyses per "
                              "claude.moment_cap_hours (default 50 per 5 hours)")
+        if isinstance(data, dict):        # gone: one model for everything now
+            data = {k: v for k, v in data.items() if k not in ("redo_model", "redo_effort", "edit_model")}
         return data
 
 

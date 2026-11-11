@@ -3,7 +3,7 @@
 Never `--bare`: bare mode only accepts ANTHROPIC_API_KEY. Unless allowed in config, the
 API key variables are removed from the environment so the CLI can't bill the API.
 Clip analysis sends the frames inside the prompt (as images, through
---input-format stream-json), so it needs no tools and finishes in one round trip. Questions from the dashboard get no tools, or WebSearch only if the user ticks it.
+--input-format stream-json), so it needs no tools and finishes in one round trip.
 Never a shell, WebFetch, user settings, MCP servers or slash commands.
 """
 
@@ -163,17 +163,6 @@ class ClaudeRunner:
         if missing:
             raise ClaudeError(f"claude output is missing {missing}", kind="bad_output")
         return self._result(data, out, model)
-
-    def ask(self, prompt: str, *, system: str, cwd: Path, model: str | None = None,
-            effort: str | None = None, web_search: bool = False) -> ClaudeResult:
-        """A plain-text answer (data = {"text": ...}). No tools, unless web_search."""
-        cmd = self.command(None, system=system, model=model, effort=effort,
-                           tools=["WebSearch"] if web_search else None)
-        out = self._invoke(cmd, prompt, cwd)
-        text = str(out.get("result") or "").strip()
-        if not text:
-            raise ClaudeError("claude returned an empty answer", kind="bad_output")
-        return self._result({"text": text}, out, model)
 
 
 def image_message(prompt: str, images: list[bytes]) -> str:

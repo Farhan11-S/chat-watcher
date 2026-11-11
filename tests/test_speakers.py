@@ -9,22 +9,6 @@ def _words(*said):
                        "words": [[a, b, f" {t}", 0.9, v] for a, b, t, v in said]}]}
 
 
-def test_each_word_gets_the_voice_speaking_over_it():
-    turns = [(0.0, 3.0, 0), (2.0, 4.0, 1), (6.0, 7.0, 1)]
-    words = [(0.2, 0.6), (2.2, 2.6), (3.2, 3.6), (5.5, 5.8), (9.5, 9.8)]
-    # 2.2 is in both: the voice before goes on; 5.5 is near voice 1's next stretch; 9.5 is
-    # near nobody: the voice before.
-    assert speakers.label(words, turns) == [0, 0, 1, 1, 1]
-    # A lone word of another voice between two of one voice is a blip.
-    assert speakers.label([(0.0, 0.3), (0.4, 0.6), (0.7, 1.0)], [(0, 0.35, 0), (0.35, 0.65, 1), (0.65, 1, 0)]) == [0, 0, 0]
-    said = [[0.1 + 0.4 * i, 0.4 + 0.4 * i, " hi", 0.9] for i in range(4)] + [[6.2, 6.4, " yo", 0.9]] * 4
-    data = speakers.assign({"lines": [{"words": said}]}, turns)
-    assert data["voices"] == 2 and [w[4] for w in data["lines"][0]["words"]][::4] == [0, 1]
-    # A voice with a few words (music, a game voice) joins its neighbours; renumbered by words.
-    assert speakers.fold([3, 3, 3, 3, 5, 3, 3, 3, 3, 3, None]) == [0] * 10 + [None]
-    assert speakers.fold([2] * 5 + [7] * 6) == [1] * 5 + [0] * 6
-
-
 def test_two_voices_at_once_get_their_own_cues():
     one = _words((0.0, 0.4, "Hello", None), (0.5, 0.9, "there.", None))
     assert all("speaker" not in c for c in lines.build(one))

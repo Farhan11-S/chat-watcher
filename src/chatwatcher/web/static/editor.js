@@ -983,15 +983,13 @@
     s[2] = g;
     changed();
   }
-  function usePreset(name) {
-    const p = D.presets[name];
-    if (!p) return;
+  function startOver() {
+    const p = [[0, +D.duration.toFixed(3), 0]];
     const same = JSON.stringify(p) === JSON.stringify(segs);
-    const names = { long: "Claude's cut", short: "Claude's short", whole: "the whole clip" };
-    if (!same && D.saved && !confirm(`Replace your ${segs.length} segment(s) with ${names[name]}? (Undo brings them back.)`)) return;
+    if (!same && D.saved && !confirm(`Replace your ${segs.length} segment(s) with the whole clip? (Undo brings them back.)`)) return;
     pushUndo();
-    segs = clone(p);
-    source = name;
+    segs = p;
+    source = "whole";
     sel = 0;
     selFx = null;
     changed();
@@ -1103,35 +1101,6 @@
       b.disabled = false;
     }
   }
-  async function suggestFx() {
-    const b = $('[data-ed-act="suggest"]');
-    b.disabled = true;
-    clearTimeout(saveTimer);
-    fxStatus("Claude is picking effects for your cut… (usually 15–60 s)", "busy");
-    try {
-      const d = await post(`/moment/${pk}/effects/suggest`, { ...body(), intensity: $("[data-ed-intensity]").value });
-      pushUndo();
-      fx = d.effects;
-      selFx = null;
-      dirty = false;
-      D.saved = true;
-      setSaved("Saved");
-      paintAll();
-      showRender(d.render);
-      preload();
-      const skipped = d.dropped ? ` (${d.dropped} outside your cut skipped)` : "";
-      const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
-      const what = [d.added_sounds && n(d.added_sounds, "sound", "sounds"),
-                    d.added_visual && n(d.added_visual, "zoom, shake or flash", "zooms, shakes and flashes")].filter(Boolean);
-      fxStatus((what.length ? `Claude added ${what.join(" and ")}${skipped}. ` : `Claude added nothing${skipped}. `)
-               + (d.note || "") + " Ctrl+Z undoes.", d.added ? "ok" : "");
-    } catch (e) {
-      fxStatus(e.message, "err", /library is empty/.test(e.message));
-    } finally {
-      b.disabled = false;
-    }
-  }
-
   // subtitles
   const subIndex = id => subs.findIndex(c => c.id === id);
   function subsChanged() { subsMine = true; listFor = null; subKey = ""; changed(); }
@@ -1377,8 +1346,6 @@
     if (sounds) text += ` · ${sounds} sound${sounds === 1 ? "" : "s"}`;
     if (pics) text += ` · ${pics} zoom/shake/flash`;
     if (subs.length && subStyle.on) text += ` · ${subs.length} subtitle line${subs.length === 1 ? "" : "s"}`;
-    const p = D.presets.long;
-    if (p && source !== "long") text += ` · Claude's cut ${fmt(p[0][1] - p[0][0], 1)}`;
     $("[data-ed-total]").textContent = text;
   }
   function paintChips() {
@@ -1769,7 +1736,6 @@
     const hint = [];
     if (layout.type === "stack" && !Object.keys(D.regions).length)
       hint.push("Draw a face box (and a game box) with ⋯ More → ▢ Draw regions: until then each half shows the whole frame.");
-    if (layout.type !== "stack" && D.vertical_crop) hint.push("Claude: " + D.vertical_crop);
     $("[data-lay-hint]").textContent = hint.join(" ");
   }
   function setLayout(change) {
@@ -2002,12 +1968,6 @@
     rb.classList.toggle("on", regionMode);
     const b = $('[data-ed-act="play-edit"]');
     b.textContent = editPlay && !editPlay.only ? "⏹ Stop" : "▶ Play edit";
-    root.querySelectorAll("[data-ed-preset]").forEach(p => {
-      const has = !!D.presets[p.dataset.edPreset];
-      p.disabled = !has;
-      p.classList.toggle("on", has && source === p.dataset.edPreset);
-      if (!has) p.title = "Claude didn't suggest one for this clip";
-    });
     $('[data-ed-act="clear-claude"]').disabled = !fx.some(f => f.by === "claude");
   }
   // The list beside the player: your subtitle lines (click one to retype it) once there
@@ -2770,7 +2730,6 @@
     }
     else if (ds.regDel) deleteRegion(ds.regDel);
     else if (ds.visFit !== undefined) { const f = curFx(); if (f) editFx({ zoom: fitZoom(f.region) }); }
-    else if (ds.edPreset) usePreset(ds.edPreset);
     else if (ds.seg !== undefined) selectSeg(+ds.seg);
     else if (ds.nudge0 !== undefined || ds.nudge1 !== undefined) {
       const edge = ds.nudge0 !== undefined ? 0 : 1, v = nudgeVal(edge ? ds.nudge1 : ds.nudge0);
@@ -2794,7 +2753,7 @@
         toggle, add, split, undo: doUndo, render, watch: toggleWatch,
         "play-seg": () => playEdit(sel, true),
         up: () => move(-1), down: () => move(1), delete: del,
-        "add-fx": addFx, suggest: suggestFx, autoedit: autoEdit, "clear-claude": clearClaude,
+        "add-fx": addFx, autoedit: autoEdit, "clear-claude": clearClaude, whole: startOver,
         "fx-play": previewFx, regions: () => toggleRegions(), transcribe,
         "sub-add": addSub, "sub-rebuild": rebuildSubs, "lines-edit": linesToSubs, "sub-polish": polishSubs, "names-save": saveNames,
       })[ds.edAct]?.();
@@ -2894,8 +2853,6 @@
     apply(d);
     $("[data-ed-loading]").remove();
     paintLanes();
-    const notes = [d.hook && "Hook: " + d.hook, d.notes].filter(Boolean).join("\n\n");
-    if (notes) { $("[data-ed-notes]").hidden = false; $("[data-ed-notes-text]").textContent = notes; }
     paintTranscript();
     paintNames();
     if (d.transcript.state === "queued" || d.transcript.state === "running") pollTranscript();

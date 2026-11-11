@@ -54,13 +54,11 @@ def test_every_moment_is_previewed_and_analysed_before_review(reviewed):
         folder = Path(p["folder"])
         assert folder.is_relative_to(cfg.paths.data_dir)                            # not in the editing folder
         assert not list(folder.glob("preview.*"))                                   # video deleted, frames kept
-        assert list(folder.glob("frames/*.jpg")) and (folder / "storyboard.md").is_file()
+        assert list(folder.glob("frames/*.jpg")) and (folder / "analysis.json").is_file()
     analysed = conn.execute("SELECT analysis_json FROM analyses WHERE moment_id IS NOT NULL").fetchall()
     assert len(analysed) == n
     meta = json.loads(analysed[0]["analysis_json"])["_meta"]
     assert meta["source"] == "preview" and meta["range"] and "zero_s" in meta
-    v = store.get_video(conn, "streamone01")
-    assert (Path(v["output_dir"]) / "stream_digest.md").is_file()                  # digest covers every moment
     assert all(c["cwd"].is_relative_to(cfg.paths.data_dir) for c in fr.calls if c.get("allow_read"))
 
 
@@ -80,7 +78,7 @@ def test_clip_kept_downloads_full_quality_and_reuses_the_analysis(reviewed):
     assert [c["moment_id"] for c in clip] == [m1]
     folder = Path(clip[0]["folder"])
     assert folder.is_relative_to(cfg.paths.output_dir) and (folder / "clip.mp4").is_file()
-    assert (folder / "storyboard.md").is_file() and (folder / "analysis.json").is_file()
+    assert (folder / "analysis.json").is_file()
     a = json.loads(conn.execute("SELECT analysis_json FROM analyses WHERE moment_id = ?", (m1,)).fetchone()[0])
     assert a["_meta"]["source"] == "clip"
     assert conn.execute("SELECT id FROM analyses WHERE moment_id = ? ORDER BY id DESC", (m1,)).fetchone()["id"] == before
@@ -107,9 +105,7 @@ def test_carry_over_shifts_times_onto_the_new_file(reviewed):
     (hq / "moment.json").write_text(json.dumps(meta))
     assert carry_analysis(conn, m1, hq)
     b = json.loads((hq / "analysis.json").read_text())
-    assert b["cut"]["long_in"] == pytest.approx(a["cut"]["long_in"] + 2)
     assert b["storyboard"][0]["start"] == pytest.approx(a["storyboard"][0]["start"] + 2)
-    assert b["captions"][0]["at"] == pytest.approx(a["captions"][0]["at"] + 2)
 
 
 def test_review_pages_use_the_preview(reviewed):
@@ -117,10 +113,9 @@ def test_review_pages_use_the_preview(reviewed):
     client = TestClient(create_app(cfg, deps=Deps(claude=FakeRunner())))
     m1 = conn.execute("SELECT id FROM moments WHERE rank = 1").fetchone()["id"]
     page = client.get(f"/moment/{m1}").text
-    assert "Download full quality now" in page and f"/media/preview/{m1}/" in page and "Storyboard" in page
+    assert "Download full quality now" in page and f"/media/preview/{m1}/" in page and "What happens" in page
     frame = page.split(f"/media/preview/{m1}/")[1].split('"')[0]
     assert client.get(f"/media/preview/{m1}/{frame}").headers["content-type"] == "image/jpeg"
     assert client.get(f"/media/preview/{m1}/..%2Fmoment.json").status_code == 404
-    assert client.post(f"/moment/{m1}/ask", json={"question": "who?"}).json()["ok"]
     page = client.get("/video/streamone01").text
     assert 'class="w w9"' in page and "data-keep-picks" in page and "✓ preview" in page

@@ -4,8 +4,8 @@ Writes two files into the clip folder:
     words.json       every line with every word's start and end (clip seconds), aligned on
                      the audio (subs.align): the source for subtitles and the AI edit's cuts
     transcript.txt   the same lines as "[mm:ss.s] text", replacing the YouTube auto-caption
-                     excerpt (kept as transcript.youtube.txt), so the editor, "Analyse again"
-                     and "Ask Claude" read Whisper's text
+                     excerpt (kept as transcript.youtube.txt), so the editor and "Analyse again"
+                     read Whisper's text
 
 The audio is decoded with ffmpeg and handed to Whisper as samples. The model is loaded
 once per process and reused; it lives in <data_dir>/models."""
@@ -198,14 +198,6 @@ def transcribe_clip(cfg: Config, folder: Path, clip: Path, *, engine: Engine | N
         tmp = folder / (WORDS_FILE + ".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         tmp.replace(words)
-    if cfg.transcribe.speakers:                          # who says what (a colour per person in collabs)
-        from chatwatcher.subs import speakers
-        try:
-            if speakers.available():
-                data = speakers.write(folder, data, audio, Path(cfg.paths.data_dir) / "models",
-                                      cfg.transcribe.speaker_threshold, cfg.transcribe.threads, say)
-        except Exception:                                # noqa: BLE001 — no voices: one colour for all
-            pass
     transcript.write_text("".join(f"[{_ts(t)}] {text}\n" for ln in data["lines"] for t, text in sentences(ln)),
                           encoding="utf-8")
     return data

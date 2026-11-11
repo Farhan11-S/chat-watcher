@@ -5,7 +5,7 @@
   <div class="tile"><div class="n">{{ summary.done }}</div><div class="l">streams done</div></div>
   <div class="tile"><div class="n">{{ summary.processing + summary.new }}</div><div class="l">in progress</div></div>
   <div class="tile"><div class="n">{{ summary.clips }}</div><div class="l">clips</div></div>
-  <div class="tile"><div class="n">{{ summary.storyboards }}</div><div class="l">storyboards</div></div>
+  <div class="tile"><div class="n">{{ summary.analysed }}</div><div class="l">clips analysed</div></div>
   <div class="tile"><div class="n">{{ summary.get('jobs_error', 0) }}</div><div class="l">failed jobs</div></div>
   <div class="tile"><div class="n">{{ summary.channels }}</div><div class="l">watched channels</div></div>
 </div>
@@ -35,7 +35,7 @@
   </div>
   {% if videos %}
   <div class="table-wrap"><table>
-    <tr><th>Stream</th><th>Progress</th><th class="num">Moments</th><th class="num" title="Claude's highest rating (clip worthiness, 1-10) of a moment in this stream">Top rating</th><th class="num">Clips</th><th class="num">Storyboards</th><th>Status</th></tr>
+    <tr><th>Stream</th><th>Progress</th><th class="num">Moments</th><th class="num" title="Claude's highest rating (clip worthiness, 1-10) of a moment in this stream">Top rating</th><th class="num">Clips</th><th>Status</th></tr>
     {% for v in videos %}
     <tr>
       <td><a href="/video/{{ v.video_id }}">{{ v.title or v.video_id }}</a><br>
@@ -44,7 +44,6 @@
       <td class="num">{{ v.n_moments }}{% if v.n_moments %}<br><small class="muted" title="kept · skipped · still to review">{{ v.n_kept }} ✓ · {{ v.n_skipped }} ✗{% if v.n_moments - v.n_kept - v.n_skipped %} · <b>{{ v.n_moments - v.n_kept - v.n_skipped }} to review</b>{% endif %}</small>{% endif %}</td>
       <td class="num toprate">{% if v.top %}<a href="/moment/{{ v.top.id }}" title="Moment #{{ v.top.rank }}{% if v.top.category %} · {{ v.top.category }}{% endif %}"><b class="{{ 'hi' if v.top.worthiness >= 8 else 'mid' if v.top.worthiness >= 6 else '' }}">{{ v.top.worthiness }}</b><small>/10</small></a><br><small class="muted">#{{ v.top.rank }}{% if v.top.n_great > 1 %} · {{ v.top.n_great }} rated 8+{% endif %}</small>{% else %}<small class="faint">—</small>{% endif %}</td>
       <td class="num">{{ v.n_clips }}</td>
-      <td class="num">{{ v.n_analyses }}</td>
       <td>{{ status_pill(v.status) }}{% if v.error %}<br><small class="faint">{{ v.error[:90] }}</small>{% endif %}</td>
     </tr>
     {% endfor %}
@@ -56,17 +55,4 @@
   {% endif %}
 </div>
 
-{% if queue %}
-<div class="card">
-  <h2>Queue <small class="muted">· <a href="/jobs">all jobs</a></small></h2>
-  <table>
-    {% for j in queue %}
-    <tr><td>{{ status_pill(j.status) }}</td>
-      <td><a href="/video/{{ j.yt_id }}">{{ (j.title or j.yt_id)[:70] }}</a></td>
-      <td>{{ j.stage }}{% if j.moment_rank %} #{{ j.moment_rank }}{% endif %}</td>
-      <td><small class="muted">{% if j.status == 'pending' %}at {{ j.run_after | when }}{% endif %} {{ (j.error or '')[:100] }}</small></td></tr>
-    {% endfor %}
-  </table>
-</div>
-{% endif %}
 {% endblock %}

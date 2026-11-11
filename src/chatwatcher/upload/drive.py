@@ -140,8 +140,7 @@ class Rclone:
              only: list[str] | None = None, timeout: float = 4 * 3600) -> str:
         """rclone copy local_dir → remote:dest_path. Returns rclone's last stats line.
 
-        only: copy just these sub-folders of local_dir (plus the files directly in it,
-        e.g. the stream digest)."""
+        only: copy just these sub-folders of local_dir (plus the files directly in it)."""
         cmd = [self.exe, "copy", str(local_dir), f"{self.remote}:{dest_path}",
                "--transfers", str(self.cfg.transfers), "--stats", "15s", "--stats-one-line",
                "--stats-log-level", "NOTICE"]

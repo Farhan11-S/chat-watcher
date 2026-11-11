@@ -18,7 +18,6 @@
     <a href="/vtubers" class="{{ 'on' if here.startswith('/vtubers') else '' }}">VTubers</a>
     <a href="/brand" class="{{ 'on' if here.startswith('/brand') else '' }}">Brand</a>
     <a href="/storage" class="{{ 'on' if here.startswith('/storage') else '' }}">Storage</a>
-    <a href="/settings" class="{{ 'on' if here.startswith('/settings') else '' }}">Settings</a>
   </nav>
   <span class="spacer"></span>
   <span id="worker-pill" class="pill {{ 'ok' if worker != 'stopped' else 'warn' }}">worker: {{ worker }}</span>

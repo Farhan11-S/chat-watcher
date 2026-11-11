@@ -251,7 +251,7 @@ def test_worker_runs_whole_pipeline(env, tmp_path):
     assert all(r["status"] == "done" for r in jobs.list_jobs(conn, include_done=True))
     folders = [Path(r["folder"]) for r in conn.execute("SELECT folder FROM clips")]
     assert folders and all((f / "clip.mp4").is_file() for f in folders)
-    assert sum((f / "storyboard.md").is_file() for f in folders) == 2   # analyze_top
+    assert sum((f / "analysis.json").is_file() for f in folders) == 2   # analyze_top
 
     # Nothing left to do; a second pass is a no-op.
     assert Worker(cfg, deps=Deps(ytdlp=yt, claude=fr)).run(once=True) == 0

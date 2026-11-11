@@ -73,7 +73,7 @@ def preview_video(cfg: Config, conn: sqlite3.Connection, url_or_id: str, *,
         todo.append(dict(r) | json.loads(r["features_json"] or "{}"))
 
     info = json.loads(files.info.read_text(encoding="utf-8"))
-    # The stream digest goes in the stream's output folder; make sure it has one.
+    # The stream's output folder must exist (analysis and uploads use it).
     if not (row["output_dir"] and Path(row["output_dir"]).is_dir()):
         from chatwatcher.clock import zone
         out_dir = video_dir(cfg.paths.output_dir, info, video_id, zone(cfg))

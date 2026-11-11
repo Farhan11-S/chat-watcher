@@ -1,7 +1,6 @@
 import json
 import math
 import random
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,7 +15,6 @@ from chatwatcher.edit.render import render
 from chatwatcher.edit.service import EditError, clean_effects
 from chatwatcher.worker import Worker
 
-from test_edit import FakeSuggester
 from test_web import mid, site  # noqa: F401  (fixture)
 
 needs_ffmpeg = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
@@ -201,35 +199,3 @@ def test_regions_drive_zooms_and_renders(site):  # noqa: F811
     # Redrawing the face box changes where the punch-in lands, so the render is out of date.
     client.post(f"/moment/{m}/regions", json={"regions": [{"name": "face", "x": 0.1, "y": 0.1, "w": 0.3, "h": 0.5}]})
     assert client.get(f"/api/moment/{m}/render").json()["render"]["state"] == "stale"
-
-
-def test_claude_places_camera_effects(site, monkeypatch):  # noqa: F811
-    from chatwatcher.edit import suggest
-    monkeypatch.setitem(suggest.VISUAL_INTENSITY, "normal", 2.0)       # room for all of them in this short cut
-    cfg, conn, client, deps = site
-    m = mid(conn)
-    client.post(f"/moment/{m}/regions", json={"regions": [{"name": "face", "x": 0.6, "y": 0.1, "w": 0.25, "h": 0.5}]})
-    seg = {"segments": [[2, 8, 0], [12, 16, 0]]}
-    mine = {"type": "shake", "t": 3.0, "d": 0.5, "strength": 1, "by": "you"}
-    deps.claude = FakeSuggester([], visual=[
-        {"kind": "punch_in", "at": 5.0, "length_s": 1.2, "region": "face", "zoom": 1.05, "strength": "normal",
-         "color": "white", "why": "she realises"},
-        {"kind": "flash", "at": 13.0, "length_s": 0.3, "region": "centre", "zoom": 1.05, "strength": "normal",
-         "color": "red", "why": "the fail"},
-        {"kind": "shake", "at": 10.0, "length_s": 0.5, "region": "centre", "zoom": 1.05, "strength": "heavy",
-         "color": "white", "why": "in the gap, so dropped"},
-        {"kind": "punch_in", "at": 14.0, "length_s": 1, "region": "chat", "zoom": 2, "strength": "normal",
-         "color": "white", "why": "no such region: centre"},
-    ])
-    d = client.post(f"/moment/{m}/effects/suggest", json=seg | {"effects": [mine]}).json()
-    assert d["ok"] and d["added_visual"] == 3 and d["added_sounds"] == 0 and d["dropped"] == 1
-    by_t = {f["t"]: f for f in d["effects"]}
-    assert by_t[3.0]["by"] == "you"
-    assert by_t[5.0] | {"id": ""} == {"id": "", "type": "punch", "t": 5.0, "d": 1.2, "region": "face", "zoom": 2.0,
-                                      "by": "claude", "why": "she realises"}       # 1.05 = "fill the frame"
-    assert by_t[13.0]["color"] == "red" and by_t[14.0]["region"] == ""
-    call = deps.claude.calls[0]
-    regions_enum = call["schema"]["properties"]["visual"]["items"]["properties"]["region"]["enum"]
-    assert regions_enum == ["face", "centre"] and "- face: x 60-85%" in call["prompt"]
-    assert "punch_in" in call["system"] and re.search(r"at most \d+ camera effects", call["prompt"])
-    assert "- 3.00–3.50 s shake light" in call["prompt"]               # Claude builds around yours

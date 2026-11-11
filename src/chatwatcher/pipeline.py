@@ -233,7 +233,6 @@ def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
     try:
         run = analyze_video(cfg, conn, video_id, top=top, runner=deps.claude,
                             ranks=[rank] if rank else None, force=bool(rank) or redo,
-                            digest=not rank,   # one moment redone: keep the digest (and the plan) as is
                             model=model, effort=effort,
                             on_event=lambda r, m: say(f"analyze #{r}: {m}" if r else m))
     except AnalyzeError as e:
@@ -252,8 +251,6 @@ def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
         return StageOutcome("retry", f"{msg}; {reason[:200]}", wait)
     if errors and not done and attempt < 3:
         return StageOutcome("retry", msg, timedelta(minutes=30))
-    if run.digest_error:
-        msg += f"; digest failed: {run.digest_error[:150]}"
     return StageOutcome("done" if (done or not errors) else "error", msg)
 
 

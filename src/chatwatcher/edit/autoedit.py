@@ -22,7 +22,6 @@ The answer schema has no nested objects: models sometimes slip out of JSON insid
 
 from __future__ import annotations
 
-import json
 import re
 import secrets
 import sqlite3
@@ -38,7 +37,13 @@ from chatwatcher.edit import motion, pieces as pc, regions, service
 from chatwatcher.edit.audio import analyse, snap
 from chatwatcher.edit.render import lengths
 from chatwatcher.edit.sounds import list_sounds
-from chatwatcher.edit.suggest import CENTRE, HIT_SNAP_S, INTENSITY, VISUAL_INTENSITY, _visuals
+
+HIT_SNAP_S = 1.0
+INTENSITY = {"light": 30.0, "normal": 15.0, "heavy": 7.0}   # at most one sound per this many seconds
+VISUAL_INTENSITY = {"light": 30.0, "normal": 12.0, "heavy": 6.0}   # and one zoom/shake/flash per this many
+KINDS = {"punch_in": "punch", "push_in": "push", "shake": "shake", "flash": "flash"}
+STRENGTHS = {"light": 1, "normal": 2, "heavy": 3}
+CENTRE = "centre"
 
 PAD_IN = 0.08            # kept talk starts this long before its first word…
 PAD_OUT = 0.18           # …and ends this long after its last
@@ -458,8 +463,8 @@ def camera_track(items: list[str], ps: list[pc.Piece], segs: list[list[float]],
 
 # ── effects ──────────────────────────────────────────────────────────────────
 
-def _inside(t: float, segs: list[list[float]]) -> int | None:
-    return next((i for i, (s, e, *_) in enumerate(segs) if s <= t < e), None)
+def _inside(t: float, segs: list[list[float]], margin: float = 0.0) -> int | None:
+    return next((i for i, (s, e, *_) in enumerate(segs) if s - margin <= t < e + margin), None)
 
 
 def sound_effects(items: list[str], segs: list[list[float]], hits: list[tuple[float, float]],
@@ -555,13 +560,11 @@ def build_prompt(*, meta: dict[str, Any], analysis: dict[str, Any], ps: list[pc.
                             "other region switches the picture to show that region full-screen for the shot "
                             "(use it for the thing she talks about, or whoever is talking in a collab).")
     tiles = ", ".join(f"tile {i} = {f.get('clip_s', 0):.0f} s" for i, f in enumerate(frames, 1))
-    from chatwatcher.edit.suggest import _placed
     return f"""\
 <material>
 Stream: {meta.get('title', '?')} ({meta.get('stream_type', '?')})
 What happens: {analysis.get('summary', '(not analysed)')}
 Why it works: {analysis.get('why_it_works', '')}
-Hook idea: {analysis.get('hook', '')}
 
 The clip as pieces (clip seconds; talk is Whisper's text and may mishear; "loud hit" = \
 suddenly louder than her talking):
@@ -642,7 +645,7 @@ def auto_edit(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind: st
         runner = runner or ClaudeRunner(cfg.claude)
         res = runner.run(prompt, schema(max_sounds, max_hits, max_trans),
                          system=SYSTEM.format(language=cfg.claude.output_language, transitions=TRANSITION_LIST),
-                         cwd=clip.folder, model=model or cfg.claude.edit_model, effort=effort or cfg.claude.edit_effort,
+                         cwd=clip.folder, model=model, effort=effort or cfg.claude.edit_effort,
                          images=[sheet] if sheet else None)
     except ClaudeError as e:
         hint = {"usage_limit": "Claude's usage limit is reached; try again after it resets.",
@@ -686,3 +689,63 @@ def auto_edit(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind: st
     return Result(segs, saved, cues, plan, str(d.get("note") or ""), hook, res.model, res.usage,
                   {"camera": len(cam), "sounds": len(sfx), "hits": len(hits_fx), "volume": volumes,
                        "transitions": len(trans)})
+
+
+# ── effects: Claude's picks → editor effects ─────────────────────────────────
+
+def _placed(fx: dict[str, Any]) -> str:
+    t, kind = fx["t"], fx.get("type", "sfx")
+    if kind == "transition":
+        return f"- {t:.2f} s {fx.get('style')} transition into the cut there"
+    if kind == "frame":
+        return f"- {t:.2f}–{t + fx['d']:.2f} s showing {fx.get('region')} full-screen"
+    if kind == "sfx":
+        return f"- {t:.2f} s sound {fx.get('sound')}"
+    span = f"- {t:.2f}–{t + fx['d']:.2f} s"
+    if kind in motion.ZOOMS:
+        return f"{span} {'punch_in' if kind == 'punch' else 'push_in'} on {fx.get('region') or CENTRE} {fx.get('zoom', 1.5):g}x"
+    if kind == "shake":
+        return f"{span} shake {next((k for k, v in STRENGTHS.items() if v == fx.get('strength')), 'normal')}"
+    return f"{span} {fx.get('color', 'white')} flash"
+
+
+def _visuals(items: list[dict[str, Any]], segs: list[list[float]], hits: list[tuple[float, float]],
+             boxes: dict[str, dict[str, float]], duration: float) -> tuple[list[dict[str, Any]], int]:
+    """Claude's camera effects as editor effects: inside the cut, snapped to hits, aimed
+    only at regions that exist. Returns (effects, how many were dropped)."""
+    out, dropped = [], 0
+    for item in items:
+        kind = KINDS.get(str(item.get("kind")))
+        try:
+            t, d = float(item["at"]), float(item.get("length_s") or 0)
+        except (KeyError, TypeError, ValueError):
+            dropped += 1
+            continue
+        k = _inside(t, segs)
+        if kind is None or k is None:
+            dropped += 1
+            continue
+        if kind != "push":                       # these land on a moment; a push-in ends on one
+            snapped = snap(t, hits, HIT_SNAP_S)
+            if _inside(snapped, segs) == k:
+                t = snapped
+        default, shortest, longest = motion.TYPES[kind]
+        fx: dict[str, Any] = {"id": "c" + secrets.token_hex(3), "type": kind, "t": round(t, 3),
+                              "d": round(min(max(d or default, shortest), longest, max(duration - t, shortest)), 3),
+                              "by": "claude", "why": str(item.get("why") or "")}
+        if kind in motion.ZOOMS:
+            region = str(item.get("region") or "")
+            fx["region"] = region if region in boxes else ""
+            try:
+                zoom = float(item.get("zoom") or 0)
+            except (TypeError, ValueError):
+                zoom = 0
+            if kind == "punch" and zoom < 1.1:           # "fill the frame with the region"
+                zoom = motion.fit_zoom(boxes[fx["region"]]) if fx["region"] else 1.5
+            fx["zoom"] = round(min(max(zoom or 1.25, motion.ZOOM_RANGE[0]), motion.ZOOM_RANGE[1]), 2)
+        elif kind == "shake":
+            fx["strength"] = STRENGTHS.get(str(item.get("strength")), 2)
+        else:
+            fx["color"] = str(item.get("color")) if item.get("color") in motion.FLASH else "white"
+        out.append(fx)
+    return out, dropped

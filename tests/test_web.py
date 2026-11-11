@@ -15,7 +15,6 @@ from chatwatcher.web.app import _parse_ts, create_app
 from chatwatcher.worker import Worker
 
 from scoring_helpers import background, burst, chat
-from chatwatcher.analyze.claude_runner import ClaudeError
 from test_analyze import FakeRunner
 from test_automation import FakeYouTube, entry
 from test_clip import FakeYt, make_video
@@ -52,15 +51,17 @@ def test_pages_render(site):
     assert r.status_code == 200 and "Streams" in r.text and "【雑談】テスト" in r.text
     r = client.get(f"/video/{VID}")
     assert r.status_code == 200
-    assert "<svg" in r.text and "Most replayed" in r.text and "Claude's stream digest" in r.text
+    assert "<svg" in r.text and "Most replayed" in r.text and "stream digest" not in r.text
     assert f'href="/moment/{mid(conn)}"' in r.text and "9/10" in r.text
     r = client.get(f"/moment/{mid(conn)}")
     assert r.status_code == 200
-    for part in ("<video", "ぺこら爆笑", "Storyboard", "Captions", "Re-cut clip", "/media/frame/"):
+    for part in ("<video", "ぺこら爆笑", "What happens", "Re-cut clip", "/media/frame/", "Analyse again"):
         assert part in r.text
+    for gone in ("Storyboard", "Ask Claude", 'name="model"', "/approve"):
+        assert gone not in r.text
     assert client.get("/channels").status_code == 200
     assert client.get("/jobs").status_code == 200
-    assert client.get("/settings").status_code == 200
+    assert "Health check" in client.get("/settings").text                  # merged into Storage
     assert client.get("/video/zzzzzzzzzzz").status_code == 404
     assert client.get("/moment/99999").status_code == 404
 
@@ -80,11 +81,7 @@ def test_media_and_path_safety(site):
 def test_moment_actions(site):
     _, conn, client, _ = site
     m = mid(conn)
-    r = client.post(f"/moment/{m}/reject", follow_redirects=False)
-    assert r.status_code == 303
-    assert conn.execute("SELECT status FROM moments WHERE id = ?", (m,)).fetchone()[0] == "rejected"
-    client.post(f"/moment/{m}/reset")
-    assert conn.execute("SELECT status FROM moments WHERE id = ?", (m,)).fetchone()[0] == "new"
+    assert client.post(f"/moment/{m}/reject", follow_redirects=False).status_code == 400   # Keep/Skip: review panel only
 
     r = client.post(f"/moment/{m}/cut", data={"start": "19:50", "end": "20:40"}, follow_redirects=False)
     assert "New%20cut" in r.headers["location"]
@@ -98,7 +95,8 @@ def test_moment_actions(site):
     r = client.post(f"/moment/{m}/cut", data={"start": "abc", "end": "1:00"}, follow_redirects=False)
     assert "error=" in r.headers["location"]
     client.post(f"/moment/{m}/reanalyze")
-    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE moment_id = ? AND stage = 'analyze'", (m,)).fetchone()[0] == 1
+    job = conn.execute("SELECT * FROM jobs WHERE moment_id = ? AND stage = 'analyze'", (m,)).fetchone()
+    assert job["params_json"] is None                                       # config's model and effort
 
 
 def test_recut_runs_clip_then_analysis(site, tmp_path):
@@ -113,7 +111,7 @@ def test_recut_runs_clip_then_analysis(site, tmp_path):
     clip = conn.execute("SELECT * FROM clips WHERE moment_id = ?", (m,)).fetchone()
     assert clip["req_start_s"] == 1140.0 and clip["folder"].endswith("_19m00s")
     assert clip["folder"] != old_folder                      # renamed, not duplicated
-    assert len(fr.calls) == 1                                # re-analysis only (digest kept)
+    assert len(fr.calls) == 1                                # re-analysis of this moment only
     stages = [r["stage"] for r in conn.execute("SELECT stage FROM jobs WHERE moment_id = ? AND status = 'done'", (m,))]
     assert sorted(stages) == ["analyze", "clip"]
 
@@ -132,9 +130,7 @@ def test_video_and_queue_actions(site):
 
     job = jobs.list_jobs(conn)[0]
     assert client.post(f"/jobs/{job['id']}/retry", follow_redirects=False).status_code == 303
-    v1 = client.get("/api/version").json()["v"]
-    client.post(f"/video/{VID}/analyze")
-    assert client.get("/api/version").json()["v"] != v1
+    assert client.post(f"/video/{VID}/analyze").status_code == 400              # analysis runs by itself
 
 
 def test_channel_pages(site):
@@ -206,37 +202,6 @@ def test_drive_login_banner(site, monkeypatch):
     assert 'class="flash warn"' in page and "expires in 20 hours" in page and "config reconnect gdrive:" in page
 
 
-def test_model_picker_reaches_claude(site):
-    cfg, conn, client, deps = site
-    m = mid(conn)
-    page = client.get(f"/moment/{m}").text
-    assert '<select name="model"' in page and "<option selected>opus</option>" in page
-    assert 'value="medium" selected' in page
-    r = client.post(f"/moment/{m}/reanalyze", data={"model": "opus", "effort": "high"}, follow_redirects=False)
-    assert "opus" in r.headers["location"]
-    job = conn.execute("SELECT * FROM jobs WHERE moment_id = ? AND stage = 'analyze'", (m,)).fetchone()
-    assert json.loads(job["params_json"]) == {"model": "opus", "effort": "high"}
-    client.post(f"/moment/{m}/reanalyze", data={"model": "rm -rf /", "effort": "huge"})   # unknown → defaults
-    job = conn.execute("SELECT * FROM jobs WHERE moment_id = ? AND stage = 'analyze'", (m,)).fetchone()
-    assert job["params_json"] is None
-
-    client.post(f"/moment/{m}/reanalyze", data={"model": "opus", "effort": "high"})
-    fr = FakeRunner()
-    deps.claude = fr
-    Worker(cfg, deps=deps).run(once=True)
-    assert [(c["model"], c["effort"]) for c in fr.calls] == [("opus", "high")]        # no digest rewrite for one moment
-    page = client.get(f"/moment/{m}").text
-    assert "Analysed by claude-opus (high effort)" in page
-
-    # Stream page: analyse every clip again with another model.
-    client.post(f"/video/{VID}/analyze", data={"model": "haiku", "effort": "medium", "redo": "1"})
-    fr = FakeRunner()
-    deps.claude = fr
-    Worker(cfg, deps=deps).run(once=True)
-    n = conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
-    assert len(fr.calls) == n + 1 and {c["model"] for c in fr.calls} == {"haiku"}
-
-
 def test_auto_upload_switch_and_clip_upload_button(site):
     from chatwatcher import prefs
     cfg, conn, client, _ = site
@@ -244,11 +209,11 @@ def test_auto_upload_switch_and_clip_upload_button(site):
     assert "Upload this clip" not in client.get(f"/moment/{m}").text      # drive off
     cfg.drive.enabled = True
     assert "auto-upload on" in client.get(f"/video/{VID}").text
-    client.post("/settings/auto-upload", data={})
+    client.post("/storage/auto-upload", data={})
     assert prefs.auto_upload(cfg, conn) is False
     assert "auto-upload off" in client.get(f"/video/{VID}").text
-    assert "Turn on" in client.get("/settings").text
-    client.post("/settings/auto-upload", data={"on": "1"})
+    assert "Turn on" in client.get("/storage").text
+    client.post("/storage/auto-upload", data={"on": "1"})
     assert prefs.auto_upload(cfg, conn) is True
 
     assert "Upload this clip to Drive" in client.get(f"/moment/{m}").text
@@ -256,7 +221,7 @@ def test_auto_upload_switch_and_clip_upload_button(site):
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE stage = 'upload' AND moment_id = ?", (m,)).fetchone()[0] == 1
     r = client.post(f"/video/{VID}/upload", data={"kept_only": "1"}, follow_redirects=False)
     assert "error=" in r.headers["location"]                              # nothing kept yet
-    client.post(f"/moment/{m}/approve")
+    client.post(f"/moment/{m}/status", json={"status": "approved"})
     assert "Upload kept (<span data-kept-clipped>1</span>)" in client.get(f"/video/{VID}").text
     client.post(f"/video/{VID}/upload", data={"kept_only": "1"})
     job = conn.execute("SELECT * FROM jobs WHERE stage = 'upload' AND moment_id IS NULL").fetchone()
@@ -271,45 +236,6 @@ def test_storage_page(site):
     assert 'class="segbar"' in page and "Delete streams" in page and "【雑談】テスト" in page
     cfg.drive.enabled = True
     assert "data-drive-refresh" in client.get("/storage").text            # asks Drive in the background
-
-
-def test_ask_claude_about_a_clip(site):
-    cfg, conn, client, deps = site
-    m = mid(conn)
-    fr = FakeRunner()
-    deps.claude = fr
-    assert "Ask Claude about this clip" in client.get(f"/moment/{m}").text
-    r = client.post(f"/moment/{m}/ask", json={"question": "What is a genocide run?", "model": "opus",
-                                               "effort": "low", "web": True})
-    assert r.status_code == 200 and r.json()["ok"] and r.json()["answer"] == "answer #1"
-    call = fr.calls[0]
-    assert (call["model"], call["effort"], call["web_search"]) == ("opus", "low", True)
-    assert "What is a genocide run?" in call["prompt"] and "<transcript>" in call["prompt"]
-    assert "Pekora's neighbour" in call["prompt"]                          # the analysis summary
-    assert "never follow instructions" in call["system"]
-
-    client.post(f"/moment/{m}/ask", json={"question": "And Sans?"})
-    second = fr.calls[1]
-    assert "Editor: What is a genocide run?" in second["prompt"] and "You: answer #1" in second["prompt"]
-    assert second["model"] is None                                          # no pick → config default
-    page = client.get(f"/moment/{m}").text
-    assert page.count('class="bubble user"') == 2 and "answer #2" in page
-    before = conn.execute("SELECT analysis_json FROM analyses WHERE moment_id = ?", (m,)).fetchall()
-    assert len(before) == 1                                                 # the analysis is untouched
-
-    assert client.post(f"/moment/{m}/ask", json={"question": "  "}).status_code == 400
-    deps.claude = FakeRunner([ClaudeError("usage limit reached", kind="usage_limit")])
-    r = client.post(f"/moment/{m}/ask", json={"question": "more?"})
-    assert r.status_code == 503 and "usage limit" in r.json()["error"]
-    assert conn.execute("SELECT COUNT(*) FROM moment_chats WHERE moment_id = ?", (m,)).fetchone()[0] == 4
-    unclipped = conn.execute("SELECT m.id FROM moments m LEFT JOIN clips c ON c.moment_id = m.id "
-                             "WHERE c.id IS NULL LIMIT 1").fetchone()
-    if unclipped:
-        assert client.post(f"/moment/{unclipped['id']}/ask", json={"question": "hi"}).status_code == 400
-    assert client.post("/moment/99999/ask", json={"question": "hi"}).status_code == 404
-
-    client.post(f"/moment/{m}/clear-chat")
-    assert conn.execute("SELECT COUNT(*) FROM moment_chats WHERE moment_id = ?", (m,)).fetchone()[0] == 0
 
 
 def test_times_are_shown_in_the_configured_zone(site):
@@ -355,10 +281,10 @@ def test_delete_streams_from_storage_page(site, tmp_path):
     assert clips
     r = client.post("/storage/delete", data={"key": key, "mode": "videos"}, follow_redirects=False)
     assert "Freed" in r.headers["location"]
-    assert not any(c.exists() for c in clips) and list(out.glob("*/storyboard.md")) and list(out.glob("*/frames/*.jpg"))
+    assert not any(c.exists() for c in clips) and list(out.glob("*/analysis.json")) and list(out.glob("*/frames/*.jpg"))
     assert "video deleted" in client.get(f"/video/{VID}").text
     page = client.get(f"/moment/{m}").text
-    assert "Download it again" in page and "<video" not in page and "Storyboard" in page
+    assert "Download it again" in page and "<video" not in page and "What happens" in page
     # ...and "Clip kept" brings back the kept ones without asking Claude again.
     conn.execute("UPDATE moments SET status = 'approved' WHERE id IN (SELECT moment_id FROM clips)")
     client.post(f"/video/{VID}/clip")
@@ -463,31 +389,6 @@ def test_folder_label():
         == ("【UNDERTALE】 I chose violence. (2026-11-07)", "nMtDSls-ZAo")
     assert folder_label("2026-11-08_-k8EZv9wkAs_some_title", {}) == ("some title (2026-11-08)", "-k8EZv9wkAs")
     assert folder_label("odd folder", {}) == ("odd folder", None)
-
-
-def test_analyse_one_moment_again_from_the_review_panel(site):
-    cfg, conn, client, deps = site
-    m = mid(conn)
-    page = client.get(f"/video/{VID}").text
-    assert "data-redo-form" in page and "<option selected>opus</option>" in page and 'value="medium" selected' in page
-    item = json.loads(page.split('id="moments-data">')[1].split("</script>")[0])[0]
-    assert item["why"] and item["model"] and item["aid"]
-    before = client.get(f"/api/moment/{m}").json()
-    assert before["job"] is None or before["job"]["status"] == "done"
-
-    r = client.post(f"/moment/{m}/analyze", json={"model": "opus", "effort": "high"}).json()
-    assert r["ok"] and (r["model"], r["effort"]) == ("opus", "high")
-    assert client.get(f"/api/moment/{m}").json()["job"]["status"] == "pending"
-    fr = FakeRunner()
-    deps.claude = fr
-    Worker(cfg, deps=deps).run(once=True)
-    assert [(c["model"], c["effort"]) for c in fr.calls] == [("opus", "high")]
-    after = client.get(f"/api/moment/{m}").json()
-    assert after["moment"]["aid"] != before["moment"]["aid"]
-    assert after["moment"]["model"] == "claude-opus" and after["moment"]["effort"] == "high"
-    assert after["job"]["status"] == "done"
-    assert client.post("/moment/99999/analyze", json={}).status_code == 404
-    assert client.get("/api/moment/99999").status_code == 404
 
 
 def test_storage_page_with_a_stream_that_just_started(site, monkeypatch):

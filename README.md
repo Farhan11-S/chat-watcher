@@ -2,14 +2,14 @@
 
 Turns finished VTuber streams into **ready-to-edit clips**. It watches your channels and
 finds the moments chat reacted to: laughs, screams, hype, karaoke applause, "clip it".
-It downloads each moment at the best original quality and asks Claude for a summary,
-titles, cut points and a shot-by-shot storyboard. You open a folder and start editing.
+It downloads each moment at the best original quality and asks Claude for a rating, a
+summary and titles. Then ✨ AI edit cuts it, moves the camera and adds effects and captions.
 
 ```
 channel ─▶ ingest ─▶ score ─▶ clip ─▶ analyze ─▶ upload
            chat,      ranked   best-     Claude      Google
-           captions,  moments  quality   storyboard  Drive
-           heatmap             mp4       + digest    (optional)
+           captions,  moments  quality   rating,     Drive
+           heatmap             mp4       titles      (optional)
 ```
 
 - **Finds moments from chat, not guesswork.** It looks at reaction bursts compared with
@@ -20,8 +20,8 @@ channel ─▶ ingest ─▶ score ─▶ clip ─▶ analyze ─▶ upload
 - **Clips are never re-encoded.** You get YouTube's best video and audio, losslessly
   cut, as mp4.
 - **Claude runs on your Claude subscription** through the `claude` CLI. No API key needed.
-- **Dashboard:** timeline per stream, clip player, storyboard, keep/skip, re-cut, re-analyse
-  with any model, ask Claude follow-up questions about a clip, and see disk and Drive space.
+- **Dashboard:** timeline per stream, review player with keep/skip, re-cut, re-analyse, and
+  disk and Drive space.
 - **Editor, Shorts, intro and thumbnail:** cut, sounds, zooms and subtitles in the browser,
   a 9:16 Short of the same clip (crop, stack or fit), then a branded intro and a YouTube
   thumbnail for the clip in a few clicks.
@@ -45,7 +45,7 @@ Then install the helpers:
 | Tool | Why | How |
 |---|---|---|
 | **Deno** | yt-dlp needs it to get through YouTube's checks | `curl -fsSL https://deno.land/install.sh \| sh` (goes to `~/.deno`, found automatically) |
-| **Claude Code** | summaries and storyboards | install Claude Code, then `claude auth login` once. This login is separate from the desktop app's. |
+| **Claude Code** | ratings, summaries, ✨ AI edit | install Claude Code, then `claude auth login` once. This login is separate from the desktop app's. |
 | **rclone** *(optional)* | Google Drive upload | see [Google Drive](#google-drive-optional) |
 | **cookies.txt** *(optional)* | members-only streams; fewer bot checks | export from your browser, then set `youtube.cookies_file` |
 
@@ -77,10 +77,8 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
      through them, and clicking the chart jumps to any time
    - **✓ Keep / ✗ Skip** next to the player (keys **K** / **S**, **U** undo, **N** / **P**
      next / previous, **R** replay). After each choice it jumps to the next moment to review.
-     Every row of the moments table has ✓ / ✗ too.
    - **Clip kept** downloads the moments you kept; Claude analyses them after.
-   - a timeline of chat reactions, YouTube's "most replayed" curve, and Claude's digest
-     (highlights order, compilation titles, best Shorts)
+   - a timeline of chat reactions and YouTube's "most replayed" curve
 
    Claude has already analysed **every** moment by the time you open the stream: each
    one gets a small 360p, video-only preview whose still frames Claude reads (only the
@@ -93,10 +91,11 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
    **Clip kept**. With `true`, the best `clip_top` moments are downloaded automatically.
    `pipeline.preview_height = 0` turns previews off (Claude then only sees downloaded clips).
 4. **Open a moment:**
-   - **the editor** (once the clip is downloaded): Claude's cut on a waveform timeline,
-     with each edge already moved to the nearest pause so it doesn't start mid-word.
-     Claude's storyboard beats (hook, payoff, …) sit above the waveform and the transcript
-     sits beside the player.
+   - **the editor** (once the clip is downloaded): the whole clip on a waveform timeline.
+     **✨ AI edit** has Claude cut it (dead air out, a cold open on the payoff), plan the
+     camera, place sounds, zooms, shakes and flashes, and set word-by-word captions, in one
+     call. Claude's beats (hook, payoff, …) sit above the waveform and the transcript sits
+     beside the player.
      - drag an edge (it snaps to a pause; hold **Shift** to place it exactly), or nudge it
        by ½ s, 0.1 s or one frame
      - **✂ Split** (key **S**) at the playhead, **+ Segment**, **↑ Earlier / ↓ Later** to
@@ -104,8 +103,8 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
      - click a transcript line to jump there; **⇤ / ⇥** start or end the selected segment
        at that line
      - **▶ Play edit** (Enter) plays your cut as it will come out, skipping the gaps
-     - start over from **Claude's cut**, **Claude's short** or the **whole clip**;
-       **Ctrl+Z** undoes. Changes save by themselves.
+     - **⋯ More → ↺ Start over** goes back to the whole clip; **Ctrl+Z** undoes. Changes
+       save by themselves.
      - **sound effects** (from your library, see **Sounds** below) sit in a lane under the
        waveform. **+ Sound** (key **F**) adds one at the playhead; drag it to move it. Orange
        ticks mark sudden loud moments (a scream, a crash) and sounds snap to them. Per sound:
@@ -126,21 +125,18 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
        once per channel; every stream of that channel uses it. Zooms aim at the centre of
        their region, and **⤢ fill** zooms until the region fills the frame. Redraw a box
        and every zoom that uses it follows.
-     - **✨ Suggest effects** (light / normal / heavy): Claude places sounds from your
-       library and zooms, shakes and flashes aimed at your regions, with a reason for
-       each, e.g. a fail sound + shake + red flash on the screech, a punch-in on her face
-       for a line to camera. Your own effects stay and Claude builds around them; asking
-       again replaces only Claude's. **Clear Claude's** removes them. One suggestion is
-       one Claude call (about 10–20k tokens), with Opus at high effort (`claude.edit_model`,
-       `claude.edit_effort`).
+     - **✨ AI edit** (effects: few / some / many) places sounds from your library and
+       zooms, shakes and flashes aimed at your regions. Your own effects stay and Claude
+       builds around them; **Remove Claude's effects** removes its. One AI edit is one
+       Claude call, at `claude.edit_effort` (high by default).
      - **Render edit** makes `edit.mp4` next to `clip.mp4`: frame-exact cuts, a tiny
        fade at each cut so nothing clicks, smooth zooms, shakes and flashes, your sounds
        mixed in, loudness levelled to YouTube's −14 LUFS. It
        goes ahead of other queued work and takes roughly a fifth of the edit's length
        for 720p (more for 1080p60). Watch it on the page, download it, or copy its path.
      - **Short 9:16** (the switch next to *Edit*): a second, vertical edit of the same clip,
-       with its own cut, sounds, zooms and subtitles. A new Short starts from Claude's
-       short cut and brings along your long edit's effects and subtitle fixes; changing one
+       with its own cut, sounds, zooms and subtitles. A new Short starts from the
+       whole clip and brings along your long edit's effects and subtitle fixes; changing one
        never changes the other. The player turns into a 9:16 preview of the Short. Pick a
        **Layout**:
        - **Crop**: a tall window of the stream. Slide it left/right, zoom in, or press
@@ -160,7 +156,7 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
    - **the intro** (under the editor): a teaser montage from this clip, a glitch into your
      brand colours, then your logo pops in and your channel name drops in letter by letter
      (about 3.5 s), with whooshes, a boom and a chime. The teasers are picked from your edit:
-     the loudest lines (cut after about 3 s, at the end of a word), Claude's hook and payoff,
+     the loudest lines (cut after about 3 s, at the end of a word), Claude's hook and payoff beats,
      and a **💥 blast** (shake, colour split, red tint) on the biggest scream, with the line
      that leads into it. Play them, move a teaser's start or end to the playhead, change its
      style or volume, reorder, add one from the subtitle line at the playhead, or **↻ Pick
@@ -176,25 +172,16 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
      the text across the **top**, **middle** or **bottom** (stopping above the quarter YouTube
      covers), on a slanted brand band or a shade. **Save short_cover.jpg** writes 1080×1920;
      upload it as the Short's cover in the YouTube app.
-   - frames you click to jump to
-   - Claude's summary, **titles and thumbnail text with copy buttons**, storyboard and
-     captions
-   - **Keep / Skip** buttons (Skip also stops it from being downloaded or analysed)
+   - Claude's summary, why it ranked, and **titles, thumbnail text and tags with copy buttons**
    - **Download range**: type new stream start/end times when the moment needs more of
      the stream than was downloaded; it re-downloads that range and Claude re-analyses it
      automatically
-   - **Analyse again** with another model or effort (e.g. `opus`, `high effort`) when the
-     default Sonnet analysis misses something
-   - **Ask Claude about this clip**: follow-up questions such as "what is supposed to happen
-     in Undertale here?" or "explain the jargon". Answers stay in a thread on the page and
-     never change the analysis. Tick *search the web* for recent VTuber news Claude may not
-     know. Each question costs about 5–10k tokens.
+   - **Analyse again** when the analysis missed something (uses `claude.model`)
    - **☁ Upload this clip to Drive** (when Drive is set up)
 5. **Edit.** Everything for a moment is in one folder:
 
 ```
 output/<channel>/<date>_<video id>_<title>/
-  stream_digest.md            ← Claude's plan for the whole stream
   01_laugh_1h00m50s/
     clip.mp4                  ← best quality, ready for your editor
     edit.mp4                  ← your cut from the dashboard editor (after Render edit)
@@ -204,15 +191,14 @@ output/<channel>/<date>_<video id>_<title>/
     intro.mp4                 ← the brand intro (after Render intro)
     thumbnail.jpg             ← 1280×720 YouTube thumbnail (after Save thumbnail.jpg)
     short_cover.jpg           ← 1080×1920 cover for the Short (after Save short_cover.jpg)
-    storyboard.md             ← summary, cut points, titles, shot list, captions
-    analysis.json             ← the same, machine-readable
+    analysis.json             ← Claude's rating, summary, titles, thumbnail text, beats
     frames/                   ← stills; one is Claude's thumbnail pick
     chat_excerpt.txt          ← every chat message, in clip time
     transcript.txt            ← what was said, in clip time
     moment.json               ← why it ranked, stream times, file details
 ```
 
-All storyboard and caption times are **seconds from the start of `clip.mp4`**.
+All times in `analysis.json` are **seconds from the start of `clip.mp4`**.
 
 ### Without the dashboard
 
@@ -247,7 +233,7 @@ clip folder:
 
 ```
 words.json                ← every line and word with start and end (clip seconds)
-transcript.txt            ← Whisper's lines; the editor, "Analyse again" and "Ask Claude" use it
+transcript.txt            ← Whisper's lines; the editor and "Analyse again" use it
 transcript.youtube.txt    ← the YouTube auto-caption excerpt it replaced
 ```
 
@@ -281,10 +267,10 @@ the timeline, and replace the transcript in the list beside the player.
 - **Burn in**, **size** and **at the** bottom / top are per edit. Karaoke clips start with
   burn-in off.
 - **✨ Clean up** (or **✨ Fix & translate** when the clip isn't in English): one Claude call
-  (Opus at high effort, like ✨ Suggest effects)
+  (at `claude.edit_effort`, like ✨ AI edit)
   goes over the lines in your cut. It fixes misheard words and names (using chat, the
   stream title and the channel's names), punctuation and capitals, drops filler, translates
-  lines that aren't in `claude.output_language`, and stars a punch word now and then. Every
+  lines that aren't in `claude.output_language`, and keeps the punch words ✨ AI edit highlighted. Every
   line keeps its timing; Claude may only join a line with the next or drop a filler-only
   one. Lines you typed stay as they are. Ctrl+Z undoes it.
 - **Names Claude spells right**: one list per channel (the talent, friends, games,
@@ -362,13 +348,12 @@ Claude only sees what it needs:
 - ~9 still frames, which it can read but nothing else: no shell, no web, no
   plugins
 
-Every clip is analysed by **Sonnet at low effort** by default: about 10–15k tokens per clip,
-plus one digest call per stream. Every `cw analyze` prints its total. When a clip deserves a
-closer look, pick another model on its page (**Analyse again**) or redo a whole stream from
-the stream page.
+Every clip is analysed by **Opus at medium effort** by default: about 10–15k tokens per clip.
+Every `cw analyze` prints its total. When a clip deserves a closer look, press **Analyse
+again** on its page.
 
 - `pipeline.analyze_top = 5`: only analyse the 5 best clips per stream (default 0 = all).
-- `claude.model` / `claude.effort` set the default (`"sonnet"` / `"low"`); `"opus"` or a
+- `claude.model` / `claude.effort` set them (`"opus"` / `"medium"`); `"sonnet"` or `"low"` uses less of a plan; a
   higher effort uses much more of a Pro/Max plan's limits.
 - `claude.moment_cap = 50` allows at most 50 analyses in any 5 hours
   (`claude.moment_cap_hours`), like the plan's 5-hour limit. Extra clips wait for a slot
@@ -402,7 +387,7 @@ stream page, or **☁ Upload this clip** on a clip page. Clips on Drive show a �
 The **Storage** page shows how much space clips take on this computer and on Drive, per
 channel and per stream. Tick streams there to free space:
 - **Delete videos only** removes the clip videos (most of the space) and keeps summaries,
-  storyboards, frames and your questions. **Clip kept** on the stream page (or **Download it
+  frames and your edits. **Clip kept** on the stream page (or **Download it
   again** on a clip page) brings them back.
 - **Delete streams** removes everything about them from this computer, and the channel
   watcher won't fetch them again (add the URL by hand if you change your mind).
@@ -441,8 +426,7 @@ Everything is in `config.toml`. Look at `config.example.toml` for every option.
 
 - The dashboard has **no login**. It listens on `127.0.0.1` only, so don't expose it
   to a network you don't trust.
-- It only serves files recorded in its database. The YouTube PO token is hidden on the
-  Settings page.
+- It only serves files recorded in its database.
 - Chat and captions are treated as untrusted input in Claude prompts.
 - Clips are for editing. Respect each agency's clip guidelines, and check the music
   copyright flag before posting karaoke clips.

@@ -166,10 +166,10 @@ def test_short_edit_save_render_and_media(site):  # noqa: F811
     client.post(f"/moment/{m}/edit", json={
         "segments": [[1, 9]], "effects": [{"type": "shake", "t": 2.0, "d": 0.5}],
         "subs": [{"t0": 1.5, "t1": 3, "text": "fixed line", "by": "you"}]})
-    # …and a new Short starts from Claude's short cut with both.
+    # …and a new Short starts from the whole clip with both.
     d = client.get(f"/api/moment/{m}/edit?kind=short").json()
-    assert d["ok"] and d["kind"] == "short" and not d["saved"] and d["source"] == "short"
-    assert d["segments"] == d["presets"]["short"]
+    assert d["ok"] and d["kind"] == "short" and not d["saved"] and d["source"] == "whole"
+    assert len(d["segments"]) == 1 and d["segments"][0][1] == pytest.approx(d["duration"], abs=0.05)
     assert [f["type"] for f in d["effects"]] == ["shake"] and d["subs"][0]["text"] == "fixed line"
     assert d["layout"]["type"] == "crop" and d["layout_info"]["out"] == [1080, 1920]
     assert d["sub_layout"]["vertical"] and d["render"]["state"] == "none" and d["other"]["long"] == "none"

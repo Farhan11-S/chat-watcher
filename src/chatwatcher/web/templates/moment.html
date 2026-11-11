@@ -1,40 +1,6 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_pill, flag, claude_picker %}
+{% from "_macros.html" import status_pill, flag %}
 {% block title %}#{{ moment.rank }} · {{ video.title }}{% endblock %}
-{% macro ask_card() -%}
-<div class="card" id="ask">
-  <div class="actions" style="justify-content: space-between">
-    <h2 style="margin:0">Ask Claude about this clip</h2>
-    {% if chat %}<form method="post" action="/moment/{{ moment.id }}/clear-chat" class="inline"
-          onsubmit="return confirm('Delete this conversation?')"><button class="small">Clear</button></form>{% endif %}
-  </div>
-  <p class="faint" style="margin:.3rem 0 .6rem"><small>Jargon, game lore, memes, who's who. Claude reads the transcript, chat
-    and the analysis above; the analysis itself stays as it is.</small></p>
-  <div class="chat-log" data-chat-log aria-live="polite">
-    {%- for c in chat %}
-    <div class="bubble {{ c.role }}"><span class="bubble-text">{{ c.text }}</span>{% if c.role == 'assistant' and c.model %}<div class="bubble-meta">{{ c.model }}</div>{% endif %}</div>
-    {%- endfor %}
-  </div>
-  {% if not chat %}
-  <div class="actions chips" data-chips>
-    <button type="button" class="small" data-ask="Explain any jargon, slang or in-jokes in this clip.">Explain the jargon</button>
-    <button type="button" class="small" data-ask="What's the game or story context here? What normally happens at this point?">Game / story context</button>
-    <button type="button" class="small" data-ask="Who are the people or characters mentioned in this clip?">Who's who</button>
-  </div>
-  {% endif %}
-  <form class="ask-form" data-ask-form action="/moment/{{ moment.id }}/ask">
-    <textarea name="question" rows="2" maxlength="2000" required
-              placeholder="e.g. What is supposed to happen in Undertale at this point?"></textarea>
-    <div class="actions">
-      {{ claude_picker(cfg, claude_models, efforts) }}
-      <label class="muted" title="Lets Claude search the web (for recent VTuber news or lore it may not know)">
-        <input type="checkbox" name="web" value="1"> <small>search the web</small></label>
-      <span style="flex:1"></span>
-      <button class="primary small">Ask</button>
-    </div>
-  </form>
-</div>
-{%- endmacro %}
 {% block content %}
 {% set a = analysis %}
 <div class="actions" style="justify-content: space-between; margin-bottom: .75rem">
@@ -56,10 +22,6 @@
     {% if a and a.song %}<span class="pill">{{ a.song.title }} — {{ a.song.artist }}</span>{% endif %}
     {% if a and a.music_copyright and a.music_copyright.risk != 'none' %}<span class="pill {{ 'error' if a.music_copyright.risk == 'high' else 'pending' }}">music © {{ a.music_copyright.risk }}</span>{% endif %}
     {% for j in jobs %}<span class="pill {{ j.status }}">{{ j.stage }} {{ j.status }}</span>{% endfor %}
-    <span class="spacer" style="flex:1"></span>
-    <form method="post" action="/moment/{{ moment.id }}/approve" class="inline"><button class="small">✓ Keep</button></form>
-    <form method="post" action="/moment/{{ moment.id }}/reject" class="inline"><button class="small danger">✗ Skip</button></form>
-    {% if moment.status != 'new' %}<form method="post" action="/moment/{{ moment.id }}/reset" class="inline"><button class="small">Undo</button></form>{% endif %}
   </div>
 </div>
 
@@ -83,12 +45,7 @@
       <details class="ed-menu" data-ed-menu>
         <summary class="button small" title="Other ways to start, and tools">⋯ More</summary>
         <div class="ed-menu-list">
-          <small class="faint">Start over from</small>
-          <button type="button" class="small" data-ed-preset="long">Claude's suggested cut</button>
-          <button type="button" class="small" data-ed-preset="short">Claude's suggested Short</button>
-          <button type="button" class="small" data-ed-preset="whole">The whole clip</button>
-          <small class="faint">Claude</small>
-          <button type="button" class="small" data-ed-act="suggest" title="Claude places sounds and effects on your current cut, without changing it">✨ Effects only (keep my cut)</button>
+          <button type="button" class="small" data-ed-act="whole" title="Throw away the cut and start from the whole clip (Ctrl+Z undoes)">↺ Start over (whole clip)</button>
           <button type="button" class="small" data-ed-act="clear-claude" title="Remove Claude's effects; yours stay">Remove Claude's effects</button>
           <small class="faint">Picture</small>
           <button type="button" class="small" data-ed-act="regions" title="Draw the boxes the camera can show (her face, the game, each person…), once per channel">▢ Draw regions</button>
@@ -120,7 +77,6 @@
         <div class="ed-selected" data-ed-selected></div>
       </div>
       <div class="ed-pane" data-ed-pane="text" hidden>
-        <details class="ed-notes" data-ed-notes hidden><summary>Claude's editing notes</summary><p data-ed-notes-text></p></details>
         <div class="ed-tx" data-ed-tx></div>
         <div class="ed-lines" data-ed-lines><p class="faint"><small>Loading the transcript…</small></p></div>
         <small class="ed-list-msg" data-ed-list-msg role="status" hidden></small>
@@ -136,7 +92,7 @@
             <select data-sub-pos aria-label="Caption position"><option value="top">near the top</option><option value="bottom">at the bottom</option></select></label>
         </div>
         <div class="actions">
-          <button type="button" class="small" data-ed-act="sub-polish" title="Claude fixes misheard words and names, punctuation and filler, translates, and marks punch words. Your own lines stay. One Claude call.">✨ Fix the words</button>
+          <button type="button" class="small" data-ed-act="sub-polish" title="Claude fixes misheard words and names, punctuation and filler, translates (it keeps the highlighted words AI edit picked). Your own lines stay. One Claude call.">✨ Fix the words</button>
           <button type="button" class="small" data-ed-act="sub-rebuild" title="Start over from Whisper's words (Ctrl+Z undoes)">↻ Rebuild from transcript</button>
         </div>
         <small class="muted" data-ed-sub-status></small>
@@ -315,13 +271,38 @@
 
 <div class="grid-2">
   <div>
+    {% if a %}
+    <div class="card">
+      <h2>What happens</h2>
+      <p>{{ a.summary }}</p>
+      <p class="muted"><b>Context:</b> {{ a.context }}</p>
+      <p class="muted"><b>Why it works:</b> {{ a.why_it_works }}</p>
+      <p class="faint" style="margin:.6rem 0 0"><small>Chat score {{ '%.2f' | format(moment.score) }}:
+        {% for r in moment.reasons or [] %}{{ r.signal }} (z {{ r.z }}){{ ', ' if not loop.last }}{% endfor %}{% if moment.top_messages %}
+        · top chat {% for t, n in moment.top_messages[:5] %}{{ t }} ×{{ n }}{{ ', ' if not loop.last }}{% endfor %}{% endif %}.
+        Analysed by {{ a.model }}{% if a._meta and a._meta.effort %} ({{ a._meta.effort }} effort){% endif %} at {{ a.created_at | when }}.</small></p>
+    </div>
+    <div class="card">
+      <h2>Titles</h2>
+      <ul class="titles">{% for t in a.titles %}
+        <li>{{ flag(t.lang) }} {{ t.text }} <button class="small" data-copy="{{ t.text }}">copy</button></li>{% endfor %}</ul>
+      {% if a.thumbnail %}<h3>Thumbnail</h3>
+      <p><b>{{ a.thumbnail.text }}</b> <button class="small" data-copy="{{ a.thumbnail.text }}">copy</button><br><small class="muted">{{ a.thumbnail.notes }}</small></p>{% endif %}
+      {% if a.tags %}<h3>Tags</h3><p><small>{{ a.tags | join(', ') }}</small> <button class="small" data-copy="{{ a.tags | join(', ') }}">copy</button></p>{% endif %}
+    </div>
+    {% else %}
+    <div class="card"><p class="empty">No Claude analysis yet{% if not clip %} (clip it first){% endif %}.</p></div>
+    {% endif %}
+  </div>
+
+  <div>
     <div class="card">
       {% if clip %}
       {% if clip.exists %}
       <h2>Clip</h2>
       {% else %}
       <div class="deleted-video">
-        <p>The clip video was deleted to free space. Summary, storyboard, frames and questions are still here.</p>
+        <p>The clip video was deleted to free space. Summary, frames and your edits are still here.</p>
         <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small primary">Download it again</button></form>
       </div>
       {% endif %}
@@ -332,16 +313,6 @@
         {% if clip.uploaded_at %}· ☁ on Drive since {{ clip.uploaded_at | when }}{% if video.drive_url and video.drive_url.startswith('https://') %} (<a href="{{ video.drive_url }}" target="_blank" rel="noopener">open stream folder ↗</a>){% endif %}{% endif %}
         <br>📁 <span class="mono">{{ clip.path }}</span> <button class="small" data-copy="{{ clip.path }}">copy path</button>
       </small></p>
-      {% if frames %}
-      <div class="frames">
-        {% for f in frames %}{% set name = f.file.split('/')[-1] %}
-        <figure data-seek="{{ f.clip_s }}"><img src="/media/frame/{{ clip.id }}/{{ name }}" alt="frame at {{ f.clip_s }}s"
-          class="{{ 'thumb' if a and a.thumbnail and a.thumbnail.frame_file == f.file else ('peak' if f.is_peak else '') }}">
-          <figcaption>{{ f.clip_s | ts }}{% if f.is_peak %} · peak{% endif %}{% if a and a.thumbnail and a.thumbnail.frame_file == f.file %} · thumbnail{% endif %}</figcaption></figure>
-        {% endfor %}
-      </div>
-      <p class="faint" style="margin:.3rem 0 0"><small>Click a frame to jump there. Blue border: Claude's thumbnail pick; orange: chat peak.</small></p>
-      {% endif %}
       {% elif preview %}
       <div class="deleted-video">
         <p>Not downloaded at full quality yet. Claude worked from these {{ preview.height or 360 }}p preview frames.</p>
@@ -361,11 +332,8 @@
       {% else %}
       <p class="empty">Not clipped yet.</p>
       {% endif %}
-    </div>
 
-    <div class="card">
-      <h2>Download range</h2>
-      <form method="post" action="/moment/{{ moment.id }}/cut" class="actions">
+      <form method="post" action="/moment/{{ moment.id }}/cut" class="actions" style="margin-top:.8rem">
         <label>start <input type="text" name="start" value="{{ moment.start_s | ts }}" style="width:6.5rem"></label>
         <label>end <input type="text" name="end" value="{{ moment.end_s | ts }}" style="width:6.5rem"></label>
         <button>Re-cut clip</button>
@@ -376,86 +344,10 @@
         <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small">Re-download</button></form>
         {% if cfg.drive.enabled and clip %}<form method="post" action="/moment/{{ moment.id }}/upload" class="inline">
           <button class="small">☁ {{ 'Upload again' if clip.uploaded_at else 'Upload this clip to Drive' }}</button></form>{% endif %}
+        <form method="post" action="/moment/{{ moment.id }}/reanalyze" class="inline"><button class="small">Analyse again</button></form>
       </div>
-      <form method="post" action="/moment/{{ moment.id }}/reanalyze" class="actions" style="margin-top:.5rem">
-        {{ claude_picker(cfg, claude_models, efforts, cfg.claude.redo_model, cfg.claude.redo_effort) }}
-        <button class="small">Analyse again</button>
-      </form>
-      {% if a and a.cut and not (clip and clip.exists) %}
-      <h3>Claude's suggested cut <small class="muted">(clip time)</small></h3>
-      <ul>
-        <li>Long-form: {{ a.cut.long_in | ts }} → {{ a.cut.long_out | ts }}</li>
-        {% if a.cut.short_in is not none %}<li>Short: {{ a.cut.short_in | ts }} → {{ a.cut.short_out | ts }} · {{ a.vertical_crop }}</li>{% endif %}
-        {% if a.cut.notes %}<li class="muted">{{ a.cut.notes }}</li>{% endif %}
-        <li>Hook: {{ a.hook }}</li>
-      </ul>
-      {% endif %}
-    </div>
-
-    <div class="card">
-      <h2>Why it ranked</h2>
-      <dl class="kv">
-        <dt>score</dt><dd>{{ '%.2f' | format(moment.score) }}</dd>
-        <dt>signals</dt><dd>{% for r in moment.reasons or [] %}{{ r.signal }} (z {{ r.z }}){{ ', ' if not loop.last }}{% endfor %}</dd>
-        <dt>top chat</dt><dd>{% for t, n in (moment.top_messages or []) %}{{ t }} ×{{ n }}{{ ', ' if not loop.last }}{% endfor %}</dd>
-      </dl>
     </div>
   </div>
-
-  <div>
-    {% if a %}
-    <div class="card">
-      <h2>What happens</h2>
-      <p>{{ a.summary }}</p>
-      <p class="muted"><b>Context:</b> {{ a.context }}</p>
-      <p class="muted"><b>Why it works:</b> {{ a.why_it_works }}</p>
-    </div>
-    {{ ask_card() }}
-    <div class="card">
-      <h2>Titles</h2>
-      <ul class="titles">{% for t in a.titles %}
-        <li>{{ flag(t.lang) }} {{ t.text }} <button class="small" data-copy="{{ t.text }}">copy</button></li>{% endfor %}</ul>
-      {% if a.thumbnail %}<h3>Thumbnail</h3>
-      <p><b>{{ a.thumbnail.text }}</b> <button class="small" data-copy="{{ a.thumbnail.text }}">copy</button><br><small class="muted">{{ a.thumbnail.notes }}</small></p>{% endif %}
-      {% if a.tags %}<h3>Tags</h3><p><small>{{ a.tags | join(', ') }}</small> <button class="small" data-copy="{{ a.tags | join(', ') }}">copy</button></p>{% endif %}
-    </div>
-    {% else %}
-    <div class="card"><p class="empty">No Claude analysis yet{% if not clip %} (clip it first){% endif %}.</p></div>
-    {% if clip or preview %}{{ ask_card() }}{% endif %}
-    {% endif %}
-  </div>
-</div>
-
-{% if a and a.storyboard %}
-<div class="card">
-  <h2>Storyboard <small class="muted">· click a time to play</small></h2>
-  <div class="table-wrap"><table>
-    <tr><th>Time</th><th>Beat</th><th>On screen</th><th>Line</th><th>Text overlay</th><th>Edit</th></tr>
-    {% for b in a.storyboard %}
-    <tr><td><a href="#" data-seek="{{ b.start }}">{{ b.start | ts }}–{{ b.end | ts }}</a></td><td><span class="pill">{{ b.beat }}</span></td>
-      <td>{{ b.on_screen }}</td><td>{{ b.line }}</td><td>{{ b.text_overlay }}</td><td>{{ b.edit }}</td></tr>
-    {% endfor %}
-  </table></div>
-</div>
-{% endif %}
-
-{% if a and a.captions %}
-<div class="card">
-  <h2>Captions</h2>
-  <table>
-    <tr><th>Time</th><th>Original</th><th>Translation</th></tr>
-    {% for c in a.captions %}
-    <tr><td><a href="#" data-seek="{{ c.at }}">{{ c.at | ts }}</a></td><td>{{ c.original }}</td><td>{{ c.translation }}</td></tr>
-    {% endfor %}
-  </table>
-</div>
-{% endif %}
-
-<div class="card">
-  <h2>Source text</h2>
-  {% if files['transcript.txt'] %}<details><summary>Transcript (clip time)</summary><pre class="text">{{ files['transcript.txt'] }}</pre></details>{% endif %}
-  {% if files['chat_excerpt.txt'] %}<details><summary>Chat during the clip</summary><pre class="text">{{ files['chat_excerpt.txt'] }}</pre></details>{% endif %}
-  {% if a %}<p class="faint" style="margin:.6rem 0 0"><small>Analysed by {{ a.model }}{% if a._meta and a._meta.effort %} ({{ a._meta.effort }} effort){% endif %} at {{ a.created_at | when }}. Check it before publishing.</small></p>{% endif %}
 </div>
 {% endblock %}
 {% block scripts %}{% if clip and clip.exists %}<script src="{{ asset('editor.js') }}"></script><script src="{{ asset('maker.js') }}"></script>{% endif %}{% endblock %}

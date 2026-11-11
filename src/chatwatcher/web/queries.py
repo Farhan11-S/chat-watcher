@@ -36,7 +36,7 @@ def summary(conn: sqlite3.Connection) -> dict[str, int]:
         out[f"jobs_{r['status']}"] = r["n"]
     out["channels"] = conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]
     out["clips"] = conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
-    out["storyboards"] = conn.execute("SELECT COUNT(*) FROM analyses WHERE moment_id IS NOT NULL").fetchone()[0]
+    out["analysed"] = conn.execute("SELECT COUNT(*) FROM analyses WHERE moment_id IS NOT NULL").fetchone()[0]
     return out
 
 
@@ -95,7 +95,6 @@ def videos(conn: sqlite3.Connection, limit: int = 50, *, with_upload: bool = Fal
         SELECT v.*, c.title AS channel_title,
                (SELECT COUNT(*) FROM moments m WHERE m.video_id = v.id) AS n_moments,
                (SELECT COUNT(*) FROM clips cl JOIN moments m ON m.id = cl.moment_id WHERE m.video_id = v.id) AS n_clips,
-               (SELECT COUNT(DISTINCT a.moment_id) FROM analyses a WHERE a.video_id = v.id AND a.moment_id IS NOT NULL) AS n_analyses,
                (SELECT COUNT(*) FROM moments m WHERE m.video_id = v.id AND m.status = 'approved') AS n_kept,
                (SELECT COUNT(*) FROM moments m WHERE m.video_id = v.id AND m.status = 'rejected') AS n_skipped
         FROM videos v LEFT JOIN channels c ON c.id = v.channel_id
@@ -137,9 +136,6 @@ def video_detail(conn: sqlite3.Connection, video_id: str, *, with_upload: bool =
         d["analysis"] = latest_analysis(conn, m["id"])
         d["clip_exists"] = bool(m["clip_path"]) and Path(m["clip_path"]).is_file()
         moments.append(d)
-    digest = conn.execute(
-        "SELECT * FROM analyses WHERE video_id = ? AND moment_id IS NULL ORDER BY id DESC LIMIT 1",
-        (v["id"],)).fetchone()
     moment_jobs = conn.execute(
         "SELECT * FROM jobs WHERE video_id = ? AND moment_id IS NOT NULL AND status != 'done'",
         (v["id"],)).fetchall()
@@ -147,7 +143,6 @@ def video_detail(conn: sqlite3.Connection, video_id: str, *, with_upload: bool =
     video = dict(v)
     video["status"] = display_status(video["status"], stages)
     return {"video": video, "stages": stages, "moments": moments,
-            "digest": _j(digest["analysis_json"], None) if digest else None,
             "moment_jobs": {r["moment_id"]: dict(r) for r in moment_jobs}}
 
 
@@ -163,21 +158,12 @@ def moment_detail(conn: sqlite3.Connection, moment_pk: int) -> dict[str, Any] | 
         (m["video_id"], m["rank"] - 1, m["rank"] + 1)).fetchall()
     jobs = conn.execute("SELECT * FROM jobs WHERE moment_id = ? AND status != 'done'", (moment_pk,)).fetchall()
     d = dict(m) | _j(m["features_json"], {})
-    files: dict[str, str] = {}
-    from chatwatcher.analyze.service import material_folder
-    folder = material_folder(clip["folder"] if clip else None, preview["folder"] if preview else None)
-    if folder:
-        for name in ("transcript.txt", "chat_excerpt.txt"):
-            p = folder / name
-            if p.is_file():
-                text = p.read_text(encoding="utf-8", errors="replace")
-                files[name] = text if len(text) < 400_000 else text[:400_000] + "\n…(truncated)"
     return {
         "moment": d, "video": dict(v),
         "clip": dict(clip) | {"exists": Path(clip["path"]).is_file()} if clip else None,
         "frames": _j(clip["frames_json"], []) if clip else [],
         "preview": dict(preview) | {"frames": _j(preview["frames_json"], [])} if preview else None,
-        "analysis": latest_analysis(conn, moment_pk), "files": files,
+        "analysis": latest_analysis(conn, moment_pk),
         "prev": next((r["id"] for r in neighbours if r["rank"] == m["rank"] - 1), None),
         "next": next((r["id"] for r in neighbours if r["rank"] == m["rank"] + 1), None),
         "jobs": [dict(j) for j in jobs],

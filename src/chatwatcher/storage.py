@@ -16,7 +16,7 @@ from chatwatcher.config import Config
 
 
 # Video files in a clip folder: the download, your rendered edit, Short and intro. "Delete clip
-# videos" removes these; everything else (summaries, storyboards, frames, thumbnail) stays.
+# videos" removes these; everything else (summaries, frames, thumbnail) stays.
 CLIP_FILES = ("clip.mp4", "clip.mkv", "edit.mp4", "short.mp4", "intro.mp4")
 
 
@@ -244,7 +244,7 @@ def delete_streams(cfg: Config, conn: sqlite3.Connection, keys: list[str], *,
                    videos_only: bool) -> DeleteResult:
     """Free space on this computer. Google Drive is never touched.
 
-    videos_only: delete just the clip video files. Summaries, storyboards, frames, chat and
+    videos_only: delete just the clip video files. Summaries, frames, chat and
     Q&A stay, and the clips can be downloaded again ("Clip kept" / "Download it again").
     Otherwise: delete the stream's folder, its working data (chat, captions) and its
     dashboard entry, and remember it as seen so the channel watcher doesn't fetch it again.

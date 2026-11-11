@@ -218,7 +218,7 @@ def test_worker_uploads_after_analysis(drive, tmp_path):
     assert stages == ["ingest", "score", "clip", "frames", "analyze", "upload"]
     v = store.get_video(conn, "streamone01")
     assert v["status"] == "done" and v["drive_url"].endswith("FOLDER123")
-    assert list(remote.glob("chat-watcher/*/*/*/storyboard.md"))
+    assert list(remote.glob("chat-watcher/*/*/*/analysis.json"))
 
     assert conn.execute("SELECT COUNT(*) FROM clips WHERE uploaded_at IS NULL").fetchone()[0] == 0
 

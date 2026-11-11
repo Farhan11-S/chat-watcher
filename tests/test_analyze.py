@@ -8,9 +8,8 @@ from typer.testing import CliRunner
 
 from chatwatcher import db
 from chatwatcher.analyze.claude_runner import ClaudeError, ClaudeResult, ClaudeRunner, classify
-from chatwatcher.analyze.prompts import DIGEST_SCHEMA, MOMENT_SCHEMA, compress_chat, moment_prompt
+from chatwatcher.analyze.prompts import MOMENT_SCHEMA, compress_chat, moment_prompt
 from chatwatcher.analyze.service import AnalyzeError, analyze_video, sanitize
-from chatwatcher.analyze.storyboard import render_digest, render_moment
 from chatwatcher.cli import app
 from chatwatcher.clip.service import clip_video
 from chatwatcher.config import ClaudeConfig, Config, PathsConfig
@@ -27,26 +26,12 @@ def sample_analysis(title="ぺこら爆笑", frame="frames/01_00m02s.jpg"):
         "context": "She is playing a haunted apartment horror game.",
         "why_it_works": "Escalating panic, then a glitch punchline.",
         "category": "funny", "clip_worthiness": 9, "song": None, "format": "both",
-        "cut": {"long_in": 2, "long_out": 18, "short_in": 8, "short_out": 18, "notes": ""},
-        "hook": "Open on the scream.",
         "titles": [{"lang": "ja", "text": title}, {"lang": "en", "text": "Pekora breaks the game"}],
         "thumbnail": {"frame_file": frame, "text": "壊れた!?", "notes": "zoom on face"},
-        "storyboard": [
-            {"start": 2, "end": 8, "beat": "setup", "on_screen": "dark hallway", "line": "毎晩毎晩… / every night…",
-             "text_overlay": "", "edit": "slow push-in"},
-            {"start": 8, "end": 18, "beat": "payoff", "on_screen": "glitch", "line": "えええ / whaaat",
-             "text_overlay": "バグ!?", "edit": "shake + SFX"}],
-        "captions": [{"at": 9, "original": "えええ何", "translation": "Whaaat?"}],
-        "vertical_crop": "avatar bottom-right, game centre",
+        "storyboard": [{"start": 2, "end": 8, "beat": "setup"}, {"start": 8, "end": 18, "beat": "payoff"}],
         "music_copyright": {"risk": "none", "note": ""},
         "tags": ["pekora", "horror"],
     }
-
-
-def sample_digest(ranks):
-    return {"stream_summary": "A haunted apartment.", "highlights_order": list(reversed(ranks)) + [99],
-            "compilation_titles": [{"lang": "ja", "text": "まとめ"}], "best_shorts": ranks[:1],
-            "skip": [], "notes": "credit the game dev"}
 
 
 # ── runner (real subprocess against a fake claude executable) ───────────────
@@ -77,11 +62,11 @@ def test_command_is_locked_down(tmp_path):
     assert cmd[cmd.index("--output-format") + 1] == "json"
     assert cmd[cmd.index("--model") + 1] == "opus" and cmd[cmd.index("--effort") + 1] == "medium"
     assert cmd[cmd.index("--tools") + 1] == "Read" and cmd[cmd.index("--add-dir") + 1] == str(tmp_path)
-    no_read = r.command(DIGEST_SCHEMA, system="s", allow_read=False, read_dir=None)
+    no_read = r.command(MOMENT_SCHEMA, system="s", allow_read=False, read_dir=None)
     assert no_read[no_read.index("--tools") + 1] == "" and "--allowedTools" not in no_read
     picked = r.command(MOMENT_SCHEMA, system="s", model="opus", effort="high")
     assert picked[picked.index("--model") + 1] == "opus" and picked[picked.index("--effort") + 1] == "high"
-    # Questions: plain text (no schema), no tools unless web search is ticked; never a shell or WebFetch.
+    # Plain text (no schema): no tools; never a shell or WebFetch.
     q = r.command(None, system="s")
     assert "--json-schema" not in q and q[q.index("--tools") + 1] == "" and "--restricted" in q
     img = r.command(MOMENT_SCHEMA, system="s", images=True)
@@ -89,19 +74,6 @@ def test_command_is_locked_down(tmp_path):
     assert img[img.index("--output-format") + 1] == "stream-json" and "--verbose" in img
     web = r.command(None, system="s", tools=["WebSearch"])
     assert web[web.index("--tools") + 1] == "WebSearch" and web[web.index("--allowedTools") + 1] == "WebSearch"
-
-
-def test_ask_returns_text(tmp_path):
-    body = ("assert '--json-schema' not in args\n"
-            "print(json.dumps({'is_error': False, 'result': '  Undertale lore: ' + stdin + '  ', "
-            "'modelUsage': {'claude-sonnet-5-5': {}}, 'usage': {'input_tokens': 7, 'output_tokens': 3}}))")
-    p = tmp_path / "claude"
-    p.write_text(f"#!{sys.executable}\nimport json, sys\nargs = sys.argv[1:]\nstdin = sys.stdin.read()\n" + body)
-    p.chmod(p.stat().st_mode | stat.S_IEXEC)
-    r = ClaudeRunner(ClaudeConfig(cli_path=str(p)))
-    res = r.ask("who is Sans?", system="s", cwd=tmp_path)
-    assert res.data == {"text": "Undertale lore: who is Sans?"} and res.model == "claude-sonnet-5-5"
-    assert res.usage["input"] == 7 and res.usage["output"] == 3
 
 
 def test_run_success_strips_api_key(tmp_path, monkeypatch):
@@ -205,23 +177,10 @@ def test_moment_prompt(tmp_path):
 def test_sanitize(tmp_path):
     _, meta = _folder(tmp_path)
     a = sample_analysis(frame="frames/made_up.jpg")
-    a["cut"] = {"long_in": -5, "long_out": 99, "short_in": 3, "short_out": None, "notes": ""}
     a["storyboard"][1]["end"] = 400
     out = sanitize(a, meta)
-    assert (out["cut"]["long_in"], out["cut"]["long_out"]) == (0.0, 20.0)
-    assert out["cut"]["short_in"] is None and out["storyboard"][1]["end"] == 20.0
+    assert out["storyboard"][1]["end"] == 20.0
     assert out["thumbnail"]["frame_file"] == "frames/02_00m12s.jpg"   # falls back to the peak frame
-
-
-def test_render(tmp_path):
-    _, meta = _folder(tmp_path)
-    md = render_moment(sample_analysis(), meta | {"model": "claude-opus-5-5"})
-    for part in ("# #1 · ぺこら爆笑", "## Storyboard", "| 00:08–00:18 | payoff |", "## Captions",
-                 "🇯🇵 ぺこら爆笑", "**Short (9:16):** 00:08 → 00:18", "claude-opus-5-5"):
-        assert part in md
-    moments = {1: {"analysis": sample_analysis(), "stream_range": "1:00:50–1:03:40", "folder": "01_laugh"}}
-    dmd = render_digest(sample_digest([1]), {"title": "T", "video_id": VID}, moments)
-    assert "## Highlights video order" in dmd and "`01_laugh`" in dmd
 
 
 # ── service ──────────────────────────────────────────────────────────────────
@@ -242,19 +201,7 @@ class FakeRunner:
         if isinstance(step, ClaudeError):
             raise step
         name = f"claude-{model}" if model else "claude-sonnet-5-5"
-        if schema is DIGEST_SCHEMA:
-            ranks = sorted(int(x.split()[0][1:]) for x in prompt.splitlines() if x.startswith("#"))
-            return ClaudeResult(sample_digest(ranks), name, 1, {})
         return ClaudeResult(sample_analysis(), name, 1, {})
-
-    def ask(self, prompt, *, system, cwd, model=None, effort=None, web_search=False):
-        self.calls.append({"prompt": prompt, "system": system, "cwd": cwd, "model": model,
-                           "effort": effort, "web_search": web_search})
-        step = self.script.pop(0) if self.script else "ok"
-        if isinstance(step, ClaudeError):
-            raise step
-        return ClaudeResult({"text": f"answer #{len(self.calls)}"}, f"claude-{model or 'sonnet'}", 1,
-                            {"usage": {"input_tokens": 10, "output_tokens": 5}})
 
 
 @pytest.fixture
@@ -281,16 +228,13 @@ def test_analyze_end_to_end(clipped):
     assert len(done) == 3 and all(o.worthiness == 9 for o in done)
     assert [o.status for o in run.outcomes if o.rank > 3] == ["skipped"] * (len(run.outcomes) - 3)
     for o in done:
-        assert (o.folder / "storyboard.md").is_file() and (o.folder / "analysis.json").is_file()
+        assert (o.folder / "analysis.json").is_file()
     # Frames go in as one contact sheet inside the prompt; no Read tool, no extra round trips.
     assert all(not c["allow_read"] and (c["cwd"] / "moment.json").is_file() for c in fr.calls[:3])
     assert all(len(c["images"]) == 1 and c["images"][0][:2] == b"\xff\xd8" for c in fr.calls[:3])
     assert "tile 1:" in fr.calls[0]["prompt"] and "Read tool" not in fr.calls[0]["prompt"]
-    assert run.digest_path and run.digest_path.name == "stream_digest.md"
-    digest = json.loads((run.digest_path.parent / "stream_digest.json").read_text())
-    assert 99 not in digest["highlights_order"]          # unknown ranks dropped
-    assert conn.execute("SELECT COUNT(*) FROM analyses WHERE moment_id IS NOT NULL").fetchone()[0] == 3
-    assert conn.execute("SELECT COUNT(*) FROM analyses WHERE moment_id IS NULL").fetchone()[0] == 1
+    assert len(fr.calls) == 3                            # one call per clip, no stream digest
+    assert conn.execute("SELECT COUNT(*) FROM analyses").fetchone()[0] == 3
 
     again = analyze_video(cfg, conn, VID, runner=FakeRunner())
     assert again.count("done") == 0 and again.count("skipped") == len(again.outcomes)
@@ -303,14 +247,14 @@ def test_usage_limit_defers_the_rest(clipped):
     fr = FakeRunner(["ok", ClaudeError("usage limit reached", kind="usage_limit")])
     run = analyze_video(cfg, conn, VID, top=3, runner=fr)
     assert [o.status for o in run.outcomes] == ["done", "deferred", "deferred"]
-    assert run.digest_path is None and len(fr.calls) == 2
+    assert len(fr.calls) == 2
 
 
 def test_flaky_output_is_retried_once(clipped):
     cfg, conn = clipped
     fr = FakeRunner([ClaudeError("no structured output", kind="bad_output"), "ok",
                      ClaudeError("x", kind="bad_output"), ClaudeError("x", kind="bad_output")])
-    run = analyze_video(cfg, conn, VID, top=2, digest=False, runner=fr)
+    run = analyze_video(cfg, conn, VID, top=2, runner=fr)
     assert [o.status for o in run.outcomes] == ["done", "error"]
 
 
@@ -336,19 +280,16 @@ def test_auth_problems_stop_the_run(clipped):
 def test_cli_analyze_with_fake_claude(clipped, tmp_path):
     cfg, conn = clipped
     a = sample_analysis()                       # answered flat, as the schema asks
-    flat = {k: v for k, v in a.items() if k not in ("cut", "thumbnail", "music_copyright", "song", "captions")}
-    flat |= {f"cut_{k}": v for k, v in a["cut"].items()}
+    flat = {k: v for k, v in a.items() if k not in ("thumbnail", "music_copyright", "song")}
     flat["titles"] = [f"{t['lang']}: {t['text']}" for t in a["titles"]]
-    flat["storyboard"] = [f"{b['start']}-{b['end']} | {b['beat']} | {b['on_screen']} | {b['line']} | "
-                          f"{b['text_overlay'] or '-'} | {b['edit']}" for b in a["storyboard"]]
+    flat["storyboard"] = [f"{b['start']}-{b['end']} | {b['beat']}" for b in a["storyboard"]]
     flat |= {"thumbnail_frame": a["thumbnail"]["frame_file"], "thumbnail_text": a["thumbnail"]["text"],
              "thumbnail_notes": a["thumbnail"]["notes"], "music_risk": a["music_copyright"]["risk"],
              "music_note": a["music_copyright"]["note"], "song_title": None, "song_artist": None}
-    assert set(MOMENT_SCHEMA["required"]) <= set(flat)
+    assert set(MOMENT_SCHEMA["required"]) == set(flat)
     analysis = json.dumps(flat, ensure_ascii=False)
-    digest = json.dumps(sample_digest([1, 2]), ensure_ascii=False)
     exe = fake_claude(tmp_path, f"""
-data = {digest!r} if 'stream_summary' in schema['properties'] else {analysis!r}
+data = {analysis!r}
 print(json.dumps({{'is_error': False, 'structured_output': json.loads(data), 'modelUsage': {{'claude-opus-5-5': {{}}}}}}))
 """)
     f = tmp_path / "config.toml"
@@ -356,7 +297,7 @@ print(json.dumps({{'is_error': False, 'structured_output': json.loads(data), 'mo
                  f'[claude]\ncli_path = "{exe}"\n')
     r = CliRunner().invoke(app, ["analyze", VID, "-c", str(f), "--top", "2"])
     assert r.exit_code == 0, r.output
-    assert "9/10" in r.output and "storyboard.md" in r.output and "stream_digest.md" in r.output
+    assert "9/10" in r.output and "digest" not in r.output
 
 
 def test_images_go_in_as_one_stream_json_message(tmp_path):
@@ -392,17 +333,14 @@ def test_flat_answer_is_nested_for_storage():
     # No nested objects at the top level of the schema (models slip out of JSON inside them).
     assert all(v.get("type") != "object" and "object" not in (v.get("type") or [])
                for v in MOMENT_SCHEMA["properties"].values())
-    flat = {"summary": "s", "cut_long_in": 2, "cut_long_out": 30, "cut_short_in": None, "cut_short_out": None,
-            "cut_notes": "", "thumbnail_frame": "frames/01.jpg", "thumbnail_text": "T", "thumbnail_notes": "",
+    flat = {"summary": "s", "thumbnail_frame": "frames/01.jpg", "thumbnail_text": "T", "thumbnail_notes": "",
             "music_risk": "high", "music_note": "song", "song_title": "Idol", "song_artist": "YOASOBI"}
     a = nest(flat)
-    assert a["cut"] == {"long_in": 2, "long_out": 30, "short_in": None, "short_out": None, "notes": ""}
+    assert "cut" not in a and "hook" not in a
     assert a["thumbnail"]["frame_file"] == "frames/01.jpg" and a["music_copyright"]["risk"] == "high"
-    assert a["song"] == {"title": "Idol", "artist": "YOASOBI"} and "cut_long_in" not in a
+    assert a["song"] == {"title": "Idol", "artist": "YOASOBI"} and "song_title" not in a
     assert nest(sample_analysis()) == sample_analysis()
     b = nest({"titles": ["en: She Lost It", "ja: 発狂"], "storyboard": [
-        "12-18.5 | payoff | her face | 'NO WAY' | NO WAY?! | punch-in | shock SFX", "20–24 | wat | - | - | - | -", "junk"]})
+        "12-18.5 | payoff", "20–24 | wat | extra parts are ignored", "junk"]})
     assert b["titles"] == [{"lang": "en", "text": "She Lost It"}, {"lang": "ja", "text": "発狂"}]
-    assert b["storyboard"][0] == {"start": 12.0, "end": 18.5, "beat": "payoff", "on_screen": "her face",
-                                  "line": "'NO WAY'", "text_overlay": "NO WAY?!", "edit": "punch-in | shock SFX"}
-    assert b["storyboard"][1]["beat"] == "build" and b["storyboard"][1]["edit"] == "" and len(b["storyboard"]) == 2
+    assert b["storyboard"] == [{"start": 12.0, "end": 18.5, "beat": "payoff"}, {"start": 20.0, "end": 24.0, "beat": "build"}]
