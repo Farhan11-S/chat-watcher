@@ -8,6 +8,11 @@ Three layouts:
     fit    the whole frame across the middle, over a blurred, darker copy that fills the screen
 Any layout can have a title in the top band (burned in with the subtitles).
 
+A "frame" effect (FRAME) overrides the layout for a while: the Short then shows one region
+full-screen (frame_panels): a narrow one (her face, a plugin window) as a tight crop, a wide
+one (the game) across the middle over a blurred copy. That's how the camera moves to
+something the layout doesn't show.
+
 panels() turns a layout into rectangles of the clip and where each goes on the Short's
 1080×1920 frame. The renderer makes an ffmpeg graph from them (graph()), and editor.js
 draws the same panels for its preview: change both together.
@@ -127,6 +132,33 @@ def panels(layout: dict[str, Any], boxes: dict[str, dict[str, float]], sw: int, 
     cx, cy = layout.get("x", 0.5) * sw, layout.get("y", 0.5) * sh
     x0, y0 = min(max(cx - pw / 2, 0.0), sw - pw), min(max(cy - ph / 2, 0.0), sh - ph)
     return [Panel((x0 / sw, y0 / sh, pw / sw, ph / sh), (0.0, 0.0, 1.0, 1.0))]
+
+
+FRAME = "frame"
+FRAME_LIMITS = (2.0, 0.3, 15.0)     # default, shortest and longest frame shot, seconds
+FRAME_MARGIN = 1.25                 # room around the region
+FRAME_WIDE = 1.6                    # wider than this × the Short's shape: across the middle instead
+
+
+def frame_panels(box: dict[str, float], sw: int, sh: int) -> list[Panel]:
+    """The Short showing just this region (fractions of the clip's frame)."""
+    sw, sh = sw or 1920, sh or 1080
+    w, h = min(box["w"] * FRAME_MARGIN, 1.0), min(box["h"] * FRAME_MARGIN, 1.0)
+    cx, cy = box["x"] + box["w"] / 2, box["y"] + box["h"] / 2
+    grown = (min(max(cx - w / 2, 0.0), 1 - w), min(max(cy - h / 2, 0.0), 1 - h), w, h)
+    aspect = OUT_W / OUT_H
+    if (w * sw) / (h * sh) <= aspect * FRAME_WIDE:
+        return [Panel(_fit(grown, aspect, sw, sh), (0.0, 0.0, 1.0, 1.0))]
+    src = _fit(grown, OUT_W / (OUT_H * 0.6), sw, sh)           # wide: as big as fits across
+    dh = min(0.6, OUT_W / (src[2] * sw) * (src[3] * sh) / OUT_H)
+    return [Panel(_fit(grown, aspect, sw, sh), (0.0, 0.0, 1.0, 1.0), blur=True),
+            Panel(src, (0.0, (1 - dh) / 2, 1.0, dh))]
+
+
+def frame_at(t: float, frames: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The frame shot showing at t (the latest one to start wins)."""
+    on = [f for f in frames if f["t"] <= t < f["t"] + f["d"]]
+    return max(on, key=lambda f: f["t"]) if on else None
 
 
 def map_point(x: float, y: float, ps: list[Panel]) -> tuple[float, float] | None:

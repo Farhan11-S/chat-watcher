@@ -142,8 +142,8 @@ class ClaudeConfig(_Section):
     """Summaries and storyboards via the `claude` CLI, i.e. your Claude subscription."""
     enabled: bool = True
     cli_path: str = "claude"
-    model: str = "sonnet"         # CLI alias for the latest model; pick another per clip on the dashboard
-    effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    model: str = "opus"           # CLI alias for the latest model; pick another per clip on the dashboard
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     # What "Analyse again" on one moment offers first: a stronger model for the ones that matter.
     redo_model: str = "opus"
     redo_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"

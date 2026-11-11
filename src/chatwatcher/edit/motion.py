@@ -21,7 +21,7 @@ TYPES: dict[str, tuple[float, float, float]] = {
     "shake": (0.6, 0.1, 3.0),      # camera shake, strongest at the start
     "flash": (0.3, 0.05, 1.5),     # a colour over the picture, fading out
 }
-ZOOMS = ("punch", "push")
+ZOOMS = ("punch", "push", "pull")     # pull: starts at zoom / (cx, cy) and eases back (transitions only)
 ZOOM_RANGE = (1.05, 4.0)
 SHAKE_AMP = {1: 0.007, 2: 0.014, 3: 0.028}       # light, normal, heavy: fraction of the frame
 FLASH = {"white": ((255, 255, 255), 0.85), "red": ((255, 30, 30), 0.5), "black": ((0, 0, 0), 0.85)}
@@ -68,7 +68,8 @@ def camera(t: float, visuals: list[Visual]) -> tuple[float, float, float]:
         if v.active(t):
             zoom = v                                   # the latest one to start wins
     if zoom:
-        p = 1.0 if zoom.type == "punch" else _smooth(min(max((t - zoom.t) / zoom.d, 0.0), 1.0))
+        q = _smooth(min(max((t - zoom.t) / zoom.d, 0.0), 1.0))
+        p = 1.0 if zoom.type == "punch" else 1 - q if zoom.type == "pull" else q
         z, cx, cy = 1 + (zoom.zoom - 1) * p, 0.5 + (zoom.cx - 0.5) * p, 0.5 + (zoom.cy - 0.5) * p
     a = dx = dy = 0.0
     for v in visuals:
@@ -90,9 +91,52 @@ def flashes(t: float, visuals: list[Visual]) -> list[tuple[tuple[int, int, int],
     """(colour, opacity) of each flash showing at time t."""
     out = []
     for v in visuals:
-        if v.type == "flash" and v.active(t):
+        if v.type in ("flash", "fadeout") and v.active(t):
             rgb, peak = FLASH.get(v.color, FLASH["white"])
-            out.append((rgb, peak * (1 - (t - v.t) / v.d)))
+            q = (t - v.t) / v.d
+            out.append((rgb, peak * (q if v.type == "fadeout" else 1 - q)))
+    return out
+
+
+# ── transitions: how one cut goes into the next segment ─────────────────────
+# A transition is an effect {"type": "transition", "t": the incoming segment's start (clip
+# time), "style", "d"}. The renderer encodes every segment on its own, so a transition is
+# an "out" half at the end of the segment before and an "in" half at the start of the next,
+# both made of the pieces above. editor.js (transVis) builds the same list for its preview.
+TRANSITIONS = {            # style: (default length, what it is)
+    "flash": (0.3, "a white flash into the next shot (a reveal, the cold open into the story)"),
+    "fade": (0.5, "a dip through black (time passes, \"later…\", the ending)"),
+    "zoom": (0.35, "zoom hard into the cut and out of the next shot (into the punchline)"),
+    "whip": (0.3, "a fast blurred pan (a jump in time or topic)"),
+}
+TRANSITION_D = (0.15, 1.2)
+
+
+def transitions(segments: list[list[float]], effects: list[dict], ends: dict[int, float] | None = None) -> list[tuple[int, Visual]]:
+    """(segment index, Visual in clip time) for every transition on a real cut (not a
+    split that plays on). ends: each segment's true end, when it isn't segments[i][1]."""
+    out: list[tuple[int, Visual]] = []
+    marks = [f for f in effects if f.get("type") == "transition" and f.get("style") in TRANSITIONS]
+    for i in range(1, len(segments)):
+        s, prev = segments[i][0], segments[i - 1]
+        e = (ends or {}).get(i - 1, prev[1])
+        if abs(s - e) < 0.002:
+            continue
+        tr = next((f for f in marks if abs(f["t"] - s) < 0.05), None)
+        if tr is None:
+            continue
+        d = min(max(float(tr.get("d") or TRANSITIONS[tr["style"]][0]), TRANSITION_D[0]), TRANSITION_D[1])
+        h = min(d / 2, (e - prev[0]) / 3, (segments[i][1] - s) / 3)
+        st = tr["style"]
+        if st == "flash":
+            out.append((i, Visual("flash", s, max(h * 2, 0.1), color="white")))
+        elif st == "fade":
+            out += [(i - 1, Visual("fadeout", e - h, h, color="black")), (i, Visual("flash", s, h, color="black"))]
+        elif st == "zoom":
+            out += [(i - 1, Visual("push", e - h, h, zoom=1.8)), (i, Visual("pull", s, h, zoom=1.8))]
+        elif st == "whip":
+            out += [(i - 1, Visual("push", e - h, h, zoom=1.35, cx=1.0)), (i - 1, Visual("blur", e - h, h)),
+                    (i, Visual("pull", s, h, zoom=1.35, cx=0.0)), (i, Visual("blur", s, h))]
     return out
 
 
@@ -113,6 +157,8 @@ def view_exprs(visuals: list[Visual], tv: str) -> tuple[str, str, str]:
         else:
             q = f"clip(({T}-{_n(v.t)})/{_n(v.d)},0,1)"
             p = f"({q}*{q}*(3-2*{q}))"
+            if v.type == "pull":
+                p = f"(1-{p})"
         Z = f"if({gate},(1+{_n(v.zoom - 1)}*{p}),{Z})"
         CX = f"if({gate},(0.5+{_n(v.cx - 0.5)}*{p}),{CX})"
         CY = f"if({gate},(0.5+{_n(v.cy - 0.5)}*{p}),{CY})"
@@ -153,8 +199,12 @@ def video_filter(visuals: list[Visual], fps: float, length: float) -> str | None
         parts.append("perspective=interpolation=linear:eval=frame:"
                      + ":".join(f"{k}='{v}'" for k, v in corners.items()))
     frames = max(1, round(length * fps))
+    for v in visuals:                          # a whip's motion blur
+        if v.type == "blur":
+            parts.append(f"boxblur=luma_radius=24:luma_power=1:chroma_radius=12:chroma_power=1"
+                         f":enable='between(t,{v.t:.4f},{v.t + v.d:.4f})'")
     for v in visuals:
-        if v.type != "flash":
+        if v.type not in ("flash", "fadeout"):
             continue
         rgb, _peak = FLASH.get(v.color, FLASH["white"])
         first, last = max(0, math.ceil(v.t * fps - 1e-6)), min(frames - 1, math.ceil((v.t + v.d) * fps - 1e-6) - 1)

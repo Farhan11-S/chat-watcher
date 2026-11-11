@@ -30,6 +30,8 @@ HIGHLIGHT = "FFD600"   # *highlighted* words (RGB)
 SHORT_LINE = 22
 SHORT_LINES = 4
 SHORT_CUE = 44
+WORD_CUE = 14         # "words" mode: one to three words at a time, like clip channels
+MODES = ("lines", "words")
 TITLE_SIZE = 0.075     # the Short's title, as a fraction of the width
 TITLE_LINE = 20
 FONT = "Noto Sans CJK JP"
@@ -58,7 +60,8 @@ def words_of(data: dict[str, Any]) -> list[tuple[float, float, str]]:
 
 def build(data: dict[str, Any], max_cue: int = MAX_CUE) -> list[dict[str, Any]]:
     """Cues from Whisper's words: a new one at a pause, after a sentence, or before it gets
-    too long (max_cue wide) or too slow to read (then preferably after a comma)."""
+    too long (max_cue wide) or too slow to read (then preferably after a comma).
+    max_cue=WORD_CUE gives word-by-word captions."""
     groups: list[list[tuple[float, float, str]]] = []
     cur: list[tuple[float, float, str]] = []
     text = lambda ws: "".join(w[2] for w in ws).strip()        # noqa: E731
@@ -127,7 +130,8 @@ def clean_style(raw: Any, default: dict[str, Any]) -> dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     return {"on": bool(raw.get("on", default["on"])),
             "size": raw.get("size") if raw.get("size") in SIZES else default["size"],
-            "position": raw.get("position") if raw.get("position") in POSITIONS else default["position"]}
+            "position": raw.get("position") if raw.get("position") in POSITIONS else default["position"],
+            "mode": raw.get("mode") if raw.get("mode") in MODES else default.get("mode", "lines")}
 
 
 # ── layout: the same in the preview (editor.js) ──────────────────────────────

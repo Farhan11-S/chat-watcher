@@ -10,6 +10,9 @@ reorder. Every effect has {"id", "type", "t", "by": "claude" | "you", "why"}, pl
     push   "d", "region", "zoom"             slow zoom towards a region
     shake  "d", "strength" (1-3)             camera shake
     flash  "d", "color"                      white / red / black flash
+    frame  "d", "region"                     a Short shows the region full-screen
+    transition "style", "d"                  how the cut into the segment starting at t looks
+                                             (motion.TRANSITIONS: flash, fade, zoom, whip)
 
 A clip can have two edits: the long one (16:9, table `edits`, edit.mp4) and a Short (9:16,
 table `shorts`, short.mp4) with its own cut, effects and subtitles plus a layout (see
@@ -40,7 +43,7 @@ KINDS = ("long", "short")
 _TABLE = {"long": "edits", "short": "shorts"}
 STAGE = {"long": "render", "short": "short"}           # the job that renders each kind
 WAVEFORM_FILE = "waveform.json"
-MAX_SEGMENTS = 40
+MAX_SEGMENTS = 80           # the AI edit cuts every pause, so a clip can have many
 MAX_EFFECTS = 120
 MIN_SEGMENT_S = 0.2
 GAIN_RANGE = (-30.0, 10.0)
@@ -182,7 +185,7 @@ def _short_regions(conn: sqlite3.Connection, moment_pk: int, effects: list[dict[
                    layout: dict[str, Any]) -> dict[str, dict[str, float]]:
     """The boxes a Short depends on: those its zooms aim at, and its stack panels."""
     have = regions.get(conn, regions.scope_for(conn, moment_pk)[0])
-    names = {fx.get("region") for fx in effects if fx.get("type") in motion.ZOOMS and fx.get("region")}
+    names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lay.FRAME) and fx.get("region")}
     names |= lay.used_regions(layout)
     return {n: have[n] for n in sorted(names) if n in have}
 
@@ -238,7 +241,8 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
         "segments": segments, "source": source, "saved": bool(row),
         "effects": _effects_to_clip(_effects(base), clip), "sounds": sounds,
         "regions": regions.get(conn, scope), "region_scope": scope_label,
-        "visual": {"types": motion.TYPES, "zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP,
+        "visual": {"types": motion.TYPES | {lay.FRAME: lay.FRAME_LIMITS}, "transitions": motion.TRANSITIONS,
+                   "transition_d": motion.TRANSITION_D, "zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP,
                    "flash": motion.FLASH, "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]},
         "presets": props, "beats": beats, "lines": transcript_lines(clip.folder),
         "notes": (a.get("cut") or {}).get("notes", ""), "hook": a.get("hook", ""),
@@ -252,19 +256,25 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
         out |= {"layout": current_layout(conn, moment_pk, clip, row),
                 "layout_info": {"types": lay.TYPES, "out": [lay.OUT_W, lay.OUT_H], "scale": lay.SCALE_RANGE,
                                 "split": lay.SPLIT_RANGE, "max_title": lay.MAX_TITLE, "dark": lay.BG_DARK,
-                                "blur_down": lay.BLUR_DOWN, "src": [sw, sh]},
+                                "blur_down": lay.BLUR_DOWN, "src": [sw, sh],
+                                "frame": {"margin": lay.FRAME_MARGIN, "wide": lay.FRAME_WIDE,
+                                          "limits": lay.FRAME_LIMITS}},
                 "titles": [t for t in (a.get("titles") or []) if isinstance(t, str)][:3],
                 "vertical_crop": a.get("vertical_crop", "")}
     return out
 
 
 def _words(clip: ClipRef) -> dict[str, Any] | None:
+    """words.json, its word times lined up with the real speech (subs.align; done once for
+    clips transcribed before that existed)."""
+    from chatwatcher.subs import align
     from chatwatcher.subs.transcribe import WORDS_FILE
     p = clip.folder / WORDS_FILE
     try:
-        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+        data = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
     except (OSError, json.JSONDecodeError):
         return None
+    return align.ensure(clip.folder, clip.path, data) if data else None
 
 
 def _sub_default(cfg: Config | None, clip: ClipRef) -> dict[str, Any]:
@@ -275,7 +285,7 @@ def _sub_default(cfg: Config | None, clip: ClipRef) -> dict[str, Any]:
         karaoke = json.loads(meta.read_text(encoding="utf-8")).get("stream_type") == "karaoke" if meta.is_file() else False
     except (OSError, json.JSONDecodeError):
         karaoke = False
-    return {"on": sc.on and not karaoke, "size": sc.size, "position": sc.position}
+    return {"on": sc.on and not karaoke, "size": sc.size, "position": sc.position, "mode": "lines"}
 
 
 def current_subs(cfg: Config | None, row: sqlite3.Row | None, clip: ClipRef,
@@ -291,11 +301,13 @@ def current_subs(cfg: Config | None, row: sqlite3.Row | None, clip: ClipRef,
                 for c in json.loads(row["subs_json"])]
         return [c for c in cues if c["t1"] > 0 and c["t0"] < clip.duration_s], "saved", style
     words = _words(clip)
-    return (lines.build(words, _max_cue(kind)), "auto", style) if words else ([], "none", style)
+    return (lines.build(words, _max_cue(kind, style)), "auto", style) if words else ([], "none", style)
 
 
-def _max_cue(kind: str) -> int:
+def _max_cue(kind: str, style: dict[str, Any] | None = None) -> int:
     from chatwatcher.subs import lines
+    if (style or {}).get("mode") == "words":
+        return lines.WORD_CUE
     return lines.SHORT_CUE if kind == "short" else lines.MAX_CUE
 
 
@@ -311,7 +323,8 @@ def subtitles(cfg: Config, conn: sqlite3.Connection, moment_pk: int, clip: ClipR
     from chatwatcher.subs import names
     return {"subs": cues, "subs_source": source, "subs_style": style,
             "names": names.get(conn, regions.scope_for(conn, moment_pk)[0]), "output_language": cfg.claude.output_language,
-            "subs_auto": lines.build(words, _max_cue(kind)) if words else [],
+            "subs_auto": lines.build(words, _max_cue(kind, style)) if words else [],
+            "subs_auto_by_mode": {m: lines.build(words, _max_cue(kind, {"mode": m})) for m in lines.MODES} if words else {},
             "sub_words": [[round(a, 3), round(b, 3)] for a, b, _ in lines.words_of(words)] if words else [],
             "sub_language": (words or {}).get("language"),
             "sub_layout": {**lines.frame_rules(w, h), "sizes": lines.SIZES, "highlight": lines.HIGHLIGHT,
@@ -423,7 +436,7 @@ def clean_effects(raw: Any, duration: float, sounds: set[str]) -> list[dict[str,
     out, ids = [], set()
     for i, fx in enumerate(raw, 1):
         kind = fx.get("type", "sfx") if isinstance(fx, dict) else None
-        if kind != "sfx" and kind not in motion.TYPES:
+        if kind != "sfx" and kind not in motion.TYPES and kind not in (lay.FRAME, "transition"):
             raise EditError(f"Effect {i} isn't a sound, zoom, shake or flash.", "invalid")
         try:
             t = float(fx["t"])
@@ -448,6 +461,26 @@ def clean_effects(raw: Any, duration: float, sounds: set[str]) -> list[dict[str,
                 raise EditError(f"Effect {i} uses a sound that isn't in your library ({sound or 'none'}).", "invalid")
             e |= {"sound": sound, "gain": round(min(max(gain, GAIN_RANGE[0]), GAIN_RANGE[1]), 1),
                   "duck": round(min(max(duck, DUCK_RANGE[0]), DUCK_RANGE[1]), 1)}
+        elif kind == "transition":               # how the cut into the segment starting at t looks
+            style = str(fx.get("style") or "")
+            if style not in motion.TRANSITIONS:
+                raise EditError(f"Effect {i} is an unknown transition ({style or 'none'}).", "invalid")
+            try:
+                d = float(fx.get("d") or motion.TRANSITIONS[style][0])
+            except (TypeError, ValueError):
+                raise EditError(f"Effect {i} has a bad length.", "invalid")
+            if not math.isfinite(d):
+                raise EditError(f"Effect {i} has a bad length.", "invalid")
+            e |= {"style": style, "d": round(min(max(d, motion.TRANSITION_D[0]), motion.TRANSITION_D[1]), 3)}
+        elif kind == lay.FRAME:                  # a Short shows this region full-screen for d seconds
+            default, shortest, longest = lay.FRAME_LIMITS
+            try:
+                d = float(fx.get("d", default))
+            except (TypeError, ValueError):
+                raise EditError(f"Effect {i} has a bad length.", "invalid")
+            if not math.isfinite(d):
+                raise EditError(f"Effect {i} has a bad length.", "invalid")
+            e |= {"d": round(min(max(d, shortest), longest), 3), "region": regions.normal_name(fx.get("region"))}
         else:
             default, shortest, longest = motion.TYPES[kind]
             try:
@@ -581,6 +614,18 @@ def short_visuals(effects: list[dict[str, Any]], boxes: dict[str, dict[str, floa
     return out, missing
 
 
+def split_at(segs: list[Segment], times: list[float], fps: float) -> list[Segment]:
+    """Segments cut (on whole frames, and not into slivers) at these clip times; the parts
+    still play back to back."""
+    out: list[Segment] = []
+    for s, e, g in segs:
+        cuts = sorted({round(s + round((t - s) * fps) / fps, 3) for t in times
+                       if s + MIN_SEGMENT_S < t < e - MIN_SEGMENT_S})
+        edges = [s, *cuts, e]
+        out += [[a, b, g] for a, b in zip(edges, edges[1:])]
+    return out
+
+
 def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind: str = "long",
                   on_progress: Callable[[float], None] | None = None) -> dict[str, Any]:
     """Render the saved edit to <clip folder>/edit.mp4 (a Short: short.mp4).
@@ -608,13 +653,27 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         boxes = _short_regions(conn, moment_pk, stream_fx, layout)
         sw, sh = _size(clip)
         ps = lay.panels(layout, boxes, sw, sh)
-        graph, title = lay.graph(ps, sw, sh), layout["title"]
-        pictures, no_region = short_visuals(clip_fx, boxes, ps)
+        title = layout["title"]
+        # Frame shots: the picture moves to another region for a while, so the cut is split
+        # where they start and end, and each part gets its own picture and zoom targets.
+        frames = [f for f in clip_fx if f.get("type") == lay.FRAME and boxes.get(f.get("region") or "")]
+        segs = split_at(segs, [t for f in frames for t in (f["t"], f["t"] + f["d"])], clip.fps)
+        graph, pictures, no_region = [], [], set()
+        for s, e, _g in segs:
+            fr = lay.frame_at((s + e) / 2, frames)
+            pk = lay.frame_panels(boxes[fr["region"]], sw, sh) if fr else ps
+            graph.append(lay.graph(pk, sw, sh))
+            pics, missing = short_visuals(clip_fx, boxes, pk)
+            pictures.append(pics)
+            no_region |= missing
         size = (lay.OUT_W, lay.OUT_H)
     else:
         boxes = _used_regions(conn, moment_pk, stream_fx)
         pictures, no_region = visuals(clip_fx, boxes)
+        pictures = [list(pictures) for _ in segs]          # one list per segment, for the transitions
         size = (clip.width, clip.height)
+    for k, v in motion.transitions(segs, clip_fx):
+        pictures[k].append(v)
     from chatwatcher.clip.media import probe as probe_media
     made_intro = []
 
@@ -672,7 +731,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
     stream_subs, _ = _subs_rendered(cfg, row, clip, kind)
     info = {"segments": stream, "effects": stream_fx, "regions": boxes, "subs": stream_subs, "subs_style": sub_style,
             "duration_s": round(r.duration_s, 2), "size_bytes": r.size_bytes, "sounds": len(sound_cues),
-            "visuals": len(pictures), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
+            "visuals": sum(f.get("type") in (*motion.TYPES, lay.FRAME, "transition") for f in clip_fx if any(s <= f["t"] < e for s, e, _ in segs)), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
             "missing": sorted(missing), "missing_regions": sorted(no_region),
             "intro": intro_key, "intro_s": round(intro_s, 3)}
     if short:

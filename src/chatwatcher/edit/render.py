@@ -43,6 +43,7 @@ class SoundCue:
 
 SOUND_LEVEL = -14.0            # sounds in the library are levelled to this (see edit.sounds)
 _DUCK_RAMP = 0.06
+JOIN_FADE = 0.008         # fade at a split that isn't a cut (no click, no dip)
 
 
 def lengths(segments: list[list[float]], fps: float) -> list[float]:
@@ -134,7 +135,7 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
            has_audio: bool = True, sounds: list[SoundCue] | None = None,
            visuals: list[Visual] | None = None, subs: list[dict] | None = None,
            sub_style: dict | None = None, size: tuple[int, int] = (0, 0), font: str | None = None,
-           intro: Path | None = None, intro_s: float = 0.0, layout: str | None = None, title: str = "",
+           intro: Path | None = None, intro_s: float = 0.0, layout: str | list[str] | None = None, title: str = "",
            on_progress: Callable[[float], None] | None = None) -> Rendered:
     """segments: [[start, end, gain_db], …] in src time, in play order. sounds: effects
     placed on the edit's timeline (ignored if the clip has no audio). visuals: zooms,
@@ -144,7 +145,8 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
     played first (scaled to size, re-encoded like the segments), intro_s of it; sounds
     must already be placed after it. layout: an ffmpeg graph from [0:v] to [base] that
     builds a Short's picture (edit.layout.graph); size is then the Short's, the visuals are
-    in its frame, and title shows in its top band."""
+    in its frame, and title shows in its top band. layout and visuals may instead be lists
+    with one entry per segment (a Short whose picture changes between parts)."""
     from chatwatcher.subs import lines
     if not segments:
         raise MediaError("nothing to render")
@@ -176,12 +178,19 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             parts.append(part)
             done = intro_s
             report(done / total * encode_share)
+        per_layout = isinstance(layout, list)
+        per_visual = bool(visuals) and isinstance(visuals[0], list)
         for i, ((s, _e, gain), length) in enumerate(zip(segments, seg_lengths)):
             part = tmp / f"part{i:03d}.mkv"
+            seg_layout = layout[i] if per_layout else layout
+            seg_visuals = (visuals[i] if per_visual else visuals) or []
+            # Parts that play on from the one before (a split, not a cut) only get a tiny fade.
+            joined_before = i > 0 and abs(segments[i - 1][1] - s) < 0.002
+            joined_after = i + 1 < len(segments) and abs(segments[i + 1][0] - _e) < 0.002
             args = ["-v", "error", "-ss", f"{s:.3f}", "-i", str(src), "-t", f"{length:.6f}",
                     "-map", "0:v:0", "-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf),
                     "-pix_fmt", "yuv420p"]
-            vf = video_filter(local(visuals or [], s, length), fps, length)
+            vf = video_filter(local(seg_visuals, s, length), fps, length)
             shown = lines.local(subs or [], s, length)
             if shown or title:       # relative name: ffmpeg runs in tmp, so no path escaping in the filter
                 (tmp / f"part{i:03d}.ass").write_text(
@@ -189,8 +198,8 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                     encoding="utf-8")
                 vf = (vf + "," if vf else "") + f"ass=part{i:03d}.ass"
             script = tmp / f"part{i:03d}.vf"      # in a file: the expressions can be longer than a command line allows
-            if layout:
-                script.write_text(f"{layout};[base]{vf or 'null'}[v]", encoding="utf-8")
+            if seg_layout:
+                script.write_text(f"{seg_layout};[base]{vf or 'null'}[v]", encoding="utf-8")
                 args[args.index("0:v:0")] = "[v]"
                 args += ["-/filter_complex", str(script)]
             elif vf:
@@ -198,9 +207,12 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                 args += ["-/vf", str(script)]
             if has_audio:
                 f = min(fade, length / 3)
+                fi, fo = (min(f, JOIN_FADE) if joined_before else f), (min(f, JOIN_FADE) if joined_after else f)
                 chain = [f"volume={gain}dB"] if gain else []
-                if f > 0:
-                    chain += [f"afade=t=in:d={f:.3f}", f"afade=t=out:st={length - f:.6f}:d={f:.3f}"]
+                if fi > 0:
+                    chain.append(f"afade=t=in:d={fi:.3f}")
+                if fo > 0:
+                    chain.append(f"afade=t=out:st={length - fo:.6f}:d={fo:.3f}")
                 args += ["-map", "0:a:0", "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2"]
                 if chain:
                     args += ["-af", ",".join(chain)]
@@ -218,7 +230,9 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
         listing = tmp / "parts.txt"
         listing.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
         joined = tmp / "joined.mkv"
-        _ffmpeg(["-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(joined)],
+        # Relative names, run inside tmp: the concat demuxer resolves the parts against the
+        # list's path as if it were a URL, so a "#" (or "?") in a folder name breaks it.
+        _ffmpeg(["-v", "error", "-f", "concat", "-safe", "0", "-i", listing.name, "-c", "copy", joined.name], cwd=tmp,
                 timeout=600)
 
         out = tmp / "out.mp4"

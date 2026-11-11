@@ -103,12 +103,17 @@ def test_preview_maths_matches_the_render(layout):
           {"type": "punch", "t": 2.5, "d": 1.0, "zoom": 2.2, "region": "face"},
           {"type": "punch", "t": 5.0, "d": 1.0, "zoom": 1.5, "region": "nowhere"},
           {"type": "shake", "t": 2.7, "d": 0.8, "strength": 3}, {"type": "shake", "t": 6.0, "d": 0.5, "strength": 1},
-          {"type": "flash", "t": 2.7, "d": 0.3, "color": "red"}]
+          {"type": "flash", "t": 2.7, "d": 0.3, "color": "red"},
+          {"type": "transition", "t": 4.5, "style": "whip"}, {"type": "transition", "t": 6.3, "style": "fade"},
+          {"type": "transition", "t": 7.2, "style": "zoom"}]
+    segs = [[0.0, 2.2, 0.0], [4.5, 6.0, 0.0], [6.3, 7.0, 0.0], [7.2, 8.0, 0.0]]
     D = {"regions": regions, "visual": {"zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP, "flash": motion.FLASH,
-                                        "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]},
+                                        "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y],
+                                        "transitions": motion.TRANSITIONS, "transition_d": motion.TRANSITION_D},
          "layout_info": {"out": [lay.OUT_W, lay.OUT_H], "src": [1920, 1080]}}
     times = [i / 50 for i in range(400)]
-    script = (f"const ZOOMS = {json.dumps(motion.ZOOMS)};\nconst D = {json.dumps(D)};\nlet fx = {json.dumps(fx)};\n"
+    script = (f"const ZOOMS = {json.dumps(['punch', 'push'])};\nconst D = {json.dumps(D)};\nlet fx = {json.dumps(fx)};\n"
+              f"let segs = {json.dumps(segs)};\n"
               f"let kind = {json.dumps('short' if layout else 'long')}, layout = {json.dumps(layout)}, regionMode = false;\n"
               "const video = { videoWidth: 1920, videoHeight: 1080 };\n"
               f"{js[start:end]}\nconsole.log(JSON.stringify({{cams: {json.dumps(times)}.map(t => [camera(t), flashesAt(t)]),"
@@ -126,6 +131,7 @@ def test_preview_maths_matches_the_render(layout):
     else:
         vis, missing = visuals(fx_full, regions)
     assert missing == {"nowhere"}
+    vis = list(vis) + [v for _k, v in motion.transitions(segs, fx_full)]      # the transitions' pieces too
     for t, (cam, fl) in zip(times, got["cams"]):
         assert cam == pytest.approx(list(camera(t, vis)), abs=1e-9), t
         want = [(list(rgb), a) for rgb, a in flashes(t, vis)]

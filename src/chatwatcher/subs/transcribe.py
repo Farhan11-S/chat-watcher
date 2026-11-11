@@ -171,9 +171,14 @@ def transcribe_clip(cfg: Config, folder: Path, clip: Path, *, engine: Engine | N
     words, transcript = folder / WORDS_FILE, folder / TRANSCRIPT_FILE
     if transcript.is_file() and not words.is_file():
         transcript.replace(folder / YOUTUBE_FILE)        # the auto-caption excerpt, kept for reference
-    tmp = folder / (WORDS_FILE + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(words)
+    try:                                                 # Whisper's word times are loose: pull them onto the speech
+        from chatwatcher.subs import align
+        say("Lining the words up with the speech…")
+        data = align.write(folder, data, audio)
+    except Exception:                                    # noqa: BLE001 — no VAD: keep Whisper's times
+        tmp = folder / (WORDS_FILE + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(words)
     transcript.write_text("".join(f"[{_ts(t)}] {text}\n" for ln in data["lines"] for t, text in sentences(ln)),
                           encoding="utf-8")
     return data
@@ -194,5 +199,5 @@ def info(folder: Path) -> dict[str, Any] | None:
 
 def forget(folder: Path) -> None:
     """The clip was downloaded again: its old words no longer match."""
-    for name in (WORDS_FILE, YOUTUBE_FILE):
+    for name in (WORDS_FILE, YOUTUBE_FILE, "words.whisper.json"):
         (folder / name).unlink(missing_ok=True)

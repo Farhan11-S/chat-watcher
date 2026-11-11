@@ -79,8 +79,8 @@ font = "Noto Sans CJK JP"      # any installed font; this one also has Japanese
 [claude]
 enabled = true
 cli_path = "claude"            # uses your Claude subscription login (`claude auth login`); never --bare
-model = "sonnet"               # default for every clip; the dashboard can redo one with "opus" etc.
-effort = "low"                 # low | medium | high | xhigh | max (more = deeper, uses more of your plan)
+model = "opus"                 # default for every clip; the dashboard can redo one with "sonnet" etc.
+effort = "medium"              # low | medium | high | xhigh | max (more = deeper, uses more of your plan)
 redo_model = "opus"            # what "Analyse again" on one moment picks first
 redo_effort = "medium"
 edit_model = "opus"            # the editor's ✨ Suggest effects and subtitle ✨ Clean up

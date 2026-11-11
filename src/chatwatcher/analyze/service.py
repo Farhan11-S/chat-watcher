@@ -13,8 +13,9 @@ from typing import Any, Callable
 from chatwatcher import store
 from chatwatcher.analyze.claude_runner import ClaudeError, ClaudeResult, ClaudeRunner
 from chatwatcher.analyze.prompts import (
-    DIGEST_SCHEMA, MOMENT_SCHEMA, SYSTEM_PROMPT, digest_prompt, moment_prompt,
+    DIGEST_SCHEMA, MOMENT_SCHEMA, SYSTEM_PROMPT, digest_prompt, moment_prompt, nest,
 )
+from chatwatcher.analyze.sheet import contact_sheet
 from chatwatcher.analyze.storyboard import render_digest, render_moment
 from chatwatcher.config import Config
 from chatwatcher.ingest.ytdlp import extract_video_id
@@ -280,9 +281,10 @@ def analyze_video(
         meta = json.loads((folder / "moment.json").read_text(encoding="utf-8"))
         prompt = moment_prompt(folder, output_language=cfg.claude.output_language,
                                title_languages=cfg.claude.title_languages)
+        sheet = contact_sheet(folder, meta.get("frames", []))
         try:
             res = _call(runner, prompt, MOMENT_SCHEMA, system=SYSTEM_PROMPT, cwd=folder,
-                        allow_read=True, **choice)
+                        images=[sheet] if sheet else None, **choice)
         except ClaudeError as e:
             if e.kind in ("auth", "missing"):
                 raise AnalyzeError(str(e), kind=e.kind) from e
@@ -296,7 +298,7 @@ def analyze_video(
             continue
 
         run.add_usage(res)
-        a = sanitize(res.data, meta)
+        a = sanitize(nest(res.data), meta)
         a["_meta"] = {"model": res.model, "effort": effort or cfg.claude.effort,
                       "duration_ms": res.duration_ms, "usage": res.usage,
                       # what it was made from, so a later full-quality download can reuse it

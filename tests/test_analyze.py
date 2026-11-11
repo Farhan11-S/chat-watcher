@@ -75,7 +75,7 @@ def test_command_is_locked_down(tmp_path):
         assert flag in cmd
     assert "--bare" not in cmd
     assert cmd[cmd.index("--output-format") + 1] == "json"
-    assert cmd[cmd.index("--model") + 1] == "sonnet" and cmd[cmd.index("--effort") + 1] == "low"
+    assert cmd[cmd.index("--model") + 1] == "opus" and cmd[cmd.index("--effort") + 1] == "medium"
     assert cmd[cmd.index("--tools") + 1] == "Read" and cmd[cmd.index("--add-dir") + 1] == str(tmp_path)
     no_read = r.command(DIGEST_SCHEMA, system="s", allow_read=False, read_dir=None)
     assert no_read[no_read.index("--tools") + 1] == "" and "--allowedTools" not in no_read
@@ -84,6 +84,9 @@ def test_command_is_locked_down(tmp_path):
     # Questions: plain text (no schema), no tools unless web search is ticked; never a shell or WebFetch.
     q = r.command(None, system="s")
     assert "--json-schema" not in q and q[q.index("--tools") + 1] == "" and "--restricted" in q
+    img = r.command(MOMENT_SCHEMA, system="s", images=True)
+    assert img[img.index("--input-format") + 1] == "stream-json" and img[img.index("--tools") + 1] == ""
+    assert img[img.index("--output-format") + 1] == "stream-json" and "--verbose" in img
     web = r.command(None, system="s", tools=["WebSearch"])
     assert web[web.index("--tools") + 1] == "WebSearch" and web[web.index("--allowedTools") + 1] == "WebSearch"
 
@@ -232,9 +235,9 @@ class FakeRunner:
     def auth_status(self):
         return {"loggedIn": self.logged_in}
 
-    def run(self, prompt, schema, *, system, cwd, allow_read=False, model=None, effort=None):
+    def run(self, prompt, schema, *, system, cwd, allow_read=False, model=None, effort=None, images=None):
         self.calls.append({"prompt": prompt, "schema": schema, "cwd": cwd, "allow_read": allow_read,
-                           "model": model, "effort": effort})
+                           "model": model, "effort": effort, "images": images})
         step = self.script.pop(0) if self.script else "ok"
         if isinstance(step, ClaudeError):
             raise step
@@ -279,7 +282,10 @@ def test_analyze_end_to_end(clipped):
     assert [o.status for o in run.outcomes if o.rank > 3] == ["skipped"] * (len(run.outcomes) - 3)
     for o in done:
         assert (o.folder / "storyboard.md").is_file() and (o.folder / "analysis.json").is_file()
-    assert all(c["allow_read"] and (c["cwd"] / "moment.json").is_file() for c in fr.calls[:3])
+    # Frames go in as one contact sheet inside the prompt; no Read tool, no extra round trips.
+    assert all(not c["allow_read"] and (c["cwd"] / "moment.json").is_file() for c in fr.calls[:3])
+    assert all(len(c["images"]) == 1 and c["images"][0][:2] == b"\xff\xd8" for c in fr.calls[:3])
+    assert "tile 1:" in fr.calls[0]["prompt"] and "Read tool" not in fr.calls[0]["prompt"]
     assert run.digest_path and run.digest_path.name == "stream_digest.md"
     digest = json.loads((run.digest_path.parent / "stream_digest.json").read_text())
     assert 99 not in digest["highlights_order"]          # unknown ranks dropped
@@ -329,7 +335,17 @@ def test_auth_problems_stop_the_run(clipped):
 
 def test_cli_analyze_with_fake_claude(clipped, tmp_path):
     cfg, conn = clipped
-    analysis = json.dumps(sample_analysis(), ensure_ascii=False)
+    a = sample_analysis()                       # answered flat, as the schema asks
+    flat = {k: v for k, v in a.items() if k not in ("cut", "thumbnail", "music_copyright", "song", "captions")}
+    flat |= {f"cut_{k}": v for k, v in a["cut"].items()}
+    flat["titles"] = [f"{t['lang']}: {t['text']}" for t in a["titles"]]
+    flat["storyboard"] = [f"{b['start']}-{b['end']} | {b['beat']} | {b['on_screen']} | {b['line']} | "
+                          f"{b['text_overlay'] or '-'} | {b['edit']}" for b in a["storyboard"]]
+    flat |= {"thumbnail_frame": a["thumbnail"]["frame_file"], "thumbnail_text": a["thumbnail"]["text"],
+             "thumbnail_notes": a["thumbnail"]["notes"], "music_risk": a["music_copyright"]["risk"],
+             "music_note": a["music_copyright"]["note"], "song_title": None, "song_artist": None}
+    assert set(MOMENT_SCHEMA["required"]) <= set(flat)
+    analysis = json.dumps(flat, ensure_ascii=False)
     digest = json.dumps(sample_digest([1, 2]), ensure_ascii=False)
     exe = fake_claude(tmp_path, f"""
 data = {digest!r} if 'stream_summary' in schema['properties'] else {analysis!r}
@@ -341,3 +357,52 @@ print(json.dumps({{'is_error': False, 'structured_output': json.loads(data), 'mo
     r = CliRunner().invoke(app, ["analyze", VID, "-c", str(f), "--top", "2"])
     assert r.exit_code == 0, r.output
     assert "9/10" in r.output and "storyboard.md" in r.output and "stream_digest.md" in r.output
+
+
+def test_images_go_in_as_one_stream_json_message(tmp_path):
+    body = ("msg = json.loads(stdin)\n"
+            "c = msg['message']['content']\n"
+            "assert c[0]['type'] == 'image' and c[-1]['text'] == 'hi'\n"
+            "print(json.dumps({'type': 'system', 'subtype': 'init'}))\n"
+            "print(json.dumps({'type': 'result', 'is_error': False, 'structured_output': {'what': 'ok'},"
+            " 'usage': {'input_tokens': 3, 'output_tokens': 2}}))\n")
+    r = runner_for(tmp_path, body)
+    schema = {"type": "object", "required": ["what"], "properties": {"what": {"type": "string"}}}
+    res = r.run("hi", schema, system="s", cwd=tmp_path, images=[b"\xff\xd8jpeg"])
+    assert res.data == {"what": "ok"} and res.usage["input"] == 3
+
+
+def test_contact_sheet(tmp_path):
+    from PIL import Image
+    from chatwatcher.analyze.sheet import TILE_W, contact_sheet
+    (tmp_path / "frames").mkdir()
+    frames = []
+    for i in range(5):
+        Image.new("RGB", (640, 360), (i * 40, 0, 0)).save(tmp_path / f"frames/{i}.jpg")
+        frames.append({"file": f"frames/{i}.jpg", "clip_s": i * 10.0, "is_peak": i == 2})
+    frames.append({"file": "frames/missing.jpg", "clip_s": 99})
+    import io
+    im = Image.open(io.BytesIO(contact_sheet(tmp_path, frames)))
+    assert im.size == (3 * TILE_W, 2 * 252)
+    assert contact_sheet(tmp_path, [{"file": "nope.jpg"}]) is None
+
+
+def test_flat_answer_is_nested_for_storage():
+    from chatwatcher.analyze.prompts import MOMENT_SCHEMA, nest
+    # No nested objects at the top level of the schema (models slip out of JSON inside them).
+    assert all(v.get("type") != "object" and "object" not in (v.get("type") or [])
+               for v in MOMENT_SCHEMA["properties"].values())
+    flat = {"summary": "s", "cut_long_in": 2, "cut_long_out": 30, "cut_short_in": None, "cut_short_out": None,
+            "cut_notes": "", "thumbnail_frame": "frames/01.jpg", "thumbnail_text": "T", "thumbnail_notes": "",
+            "music_risk": "high", "music_note": "song", "song_title": "Idol", "song_artist": "YOASOBI"}
+    a = nest(flat)
+    assert a["cut"] == {"long_in": 2, "long_out": 30, "short_in": None, "short_out": None, "notes": ""}
+    assert a["thumbnail"]["frame_file"] == "frames/01.jpg" and a["music_copyright"]["risk"] == "high"
+    assert a["song"] == {"title": "Idol", "artist": "YOASOBI"} and "cut_long_in" not in a
+    assert nest(sample_analysis()) == sample_analysis()
+    b = nest({"titles": ["en: She Lost It", "ja: 発狂"], "storyboard": [
+        "12-18.5 | payoff | her face | 'NO WAY' | NO WAY?! | punch-in | shock SFX", "20–24 | wat | - | - | - | -", "junk"]})
+    assert b["titles"] == [{"lang": "en", "text": "She Lost It"}, {"lang": "ja", "text": "発狂"}]
+    assert b["storyboard"][0] == {"start": 12.0, "end": 18.5, "beat": "payoff", "on_screen": "her face",
+                                  "line": "'NO WAY'", "text_overlay": "NO WAY?!", "edit": "punch-in | shock SFX"}
+    assert b["storyboard"][1]["beat"] == "build" and b["storyboard"][1]["edit"] == "" and len(b["storyboard"]) == 2

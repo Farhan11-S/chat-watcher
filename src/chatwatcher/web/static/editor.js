@@ -18,14 +18,21 @@
   const SUB_MIN = 0.2, SUB_SNAP_S = 0.35;
   const ASS_TO_CSS = 0.69;     // libass's font size is the line's height, CSS's the em: measured on a render
   const MIN = 0.2, EDGE_PX = 7, FX_PX = 8, DRAG_SNAP_S = 0.35, LINE_SNAP_S = 0.8;
-  const ROW = { beats: 18, wave: 96, fx: 26, vfx: 24, subs: 22, ruler: 18 };
-  const Y_FX = ROW.beats + ROW.wave, Y_VFX = Y_FX + ROW.fx, Y_SUBS = Y_VFX + ROW.vfx, Y_RULER = Y_SUBS + ROW.subs;
+  const ROW = { beats: 18, wave: 96, fx: 26, cam: 26, vfx: 22, subs: 22, ruler: 18 };
+  const Y_FX = ROW.beats + ROW.wave, Y_CAM = Y_FX + ROW.fx, Y_VFX = Y_CAM + ROW.cam, Y_SUBS = Y_VFX + ROW.vfx,
+        Y_RULER = Y_SUBS + ROW.subs;
+  // The lanes, top to bottom, for the labels at the timeline's left edge.
+  const LANES = [["Beats", 0, ROW.beats], ["Cut", ROW.beats, ROW.wave], ["Sounds", Y_FX, ROW.fx], ["Camera", Y_CAM, ROW.cam],
+                 ["Effects", Y_VFX, ROW.vfx], ["Captions", Y_SUBS, ROW.subs]];
+  const CAM = ["punch", "push", "frame"];             // the Camera lane; shakes and flashes are on the Effects lane
+  const laneOf = f => (CAM.includes(f.type) ? "cam" : "vfx");
   const HEIGHT = Y_RULER + ROW.ruler;
-  const VIS = ["punch", "push", "shake", "flash"], ZOOMS = ["punch", "push"];
-  const VLABEL = { punch: "Punch-in", push: "Push-in", shake: "Shake", flash: "Flash" };
+  const VIS = ["punch", "push", "shake", "flash", "frame"], ZOOMS = ["punch", "push"];
+  const VLABEL = { punch: "Punch-in", push: "Push-in", shake: "Shake", flash: "Flash", frame: "Show a region" };
   const STRENGTH = { 1: "light", 2: "normal", 3: "heavy" };
   const LENGTHS = { punch: [0.5, 0.8, 1, 1.5, 2, 3, 5], push: [1, 2, 3, 4, 6, 8, 12],
-                    shake: [0.2, 0.4, 0.6, 1, 1.5, 2], flash: [0.1, 0.2, 0.3, 0.5, 0.8, 1.2] };
+                    shake: [0.2, 0.4, 0.6, 1, 1.5, 2], flash: [0.1, 0.2, 0.3, 0.5, 0.8, 1.2],
+                    frame: [0.5, 1, 1.5, 2, 3, 4, 6, 10] };
   const ZOOM_STEPS = { punch: [1.2, 1.4, 1.6, 2, 2.5, 3], push: [1.1, 1.2, 1.3, 1.5, 2] };
   const REGION_NAMES = ["face", "game", "chat"];
   const GAINS = [6, 3, 0, -3, -6, -10, -15, -20, -30];
@@ -41,7 +48,7 @@
   let snapOn = true, lastSound = null;
   let regionMode = false, regSel = null, regDrag = null, regTimer = null, previewUntil = null, stageOn = false;
   let txPoll = null;
-  let subs = [], subStyle = { on: true, size: "normal", position: "bottom" }, selSub = null;
+  let subs = [], subStyle = { on: true, size: "normal", position: "bottom", mode: "lines" }, selSub = null;
   let subsMine = false;        // false: the lines follow Whisper's words (saved as "auto"); true: you changed them
   let subKey = "", listFor = null;
   let kind = "long";           // which edit: long (edit.mp4) | short (short.mp4, 9:16)
@@ -128,7 +135,7 @@
     const b = D.regions[name];
     if (!b) return [0.5, 0.5];
     if (kind !== "short" || !layout) return [b.x + b.w / 2, b.y + b.h / 2];
-    return mapPoint(b.x + b.w / 2, b.y + b.h / 2, panels()) || [0.5, 0.5];     // where it lands on the Short
+    return mapPoint(b.x + b.w / 2, b.y + b.h / 2, shortPanels(video.currentTime)) || [0.5, 0.5];     // where it lands on the Short
   }
 
   // ── the Short's layout: the same maths as panels() in edit/layout.py ──────
@@ -162,6 +169,23 @@
     const x0 = Math.min(Math.max(L.x * sw - pw / 2, 0), sw - pw), y0 = Math.min(Math.max(L.y * sh - ph / 2, 0), sh - ph);
     return [{ src: [x0 / sw, y0 / sh, pw / sw, ph / sh], dst: [0, 0, 1, 1] }];
   }
+  // A frame shot: the Short shows one region full-screen (frame_panels in edit/layout.py).
+  function framePanels(name) {
+    const b = D.regions[name], [OW, OH] = D.layout_info.out, F = D.layout_info.frame;
+    const sw = video.videoWidth || D.layout_info.src[0], sh = video.videoHeight || D.layout_info.src[1];
+    const w = Math.min(b.w * F.margin, 1), h = Math.min(b.h * F.margin, 1), cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const grown = [Math.min(Math.max(cx - w / 2, 0), 1 - w), Math.min(Math.max(cy - h / 2, 0), 1 - h), w, h];
+    const aspect = OW / OH;
+    if ((w * sw) / (h * sh) <= aspect * F.wide) return [{ src: fitBox(grown, aspect, sw, sh), dst: [0, 0, 1, 1] }];
+    const src = fitBox(grown, OW / (OH * 0.6), sw, sh);
+    const dh = Math.min(0.6, OW / (src[2] * sw) * (src[3] * sh) / OH);
+    return [{ src: fitBox(grown, aspect, sw, sh), dst: [0, 0, 1, 1], blur: true }, { src, dst: [0, (1 - dh) / 2, 1, dh] }];
+  }
+  function shortPanels(t) {
+    let on = null;
+    for (const f of fx) if (f.type === "frame" && active(f, t) && D.regions[f.region] && (!on || f.t >= on.t)) on = f;
+    return on ? framePanels(on.region) : panels();
+  }
   function mapPoint(x, y, ps) {
     for (const p of [...ps].reverse()) {
       if (p.blur) continue;
@@ -176,14 +200,35 @@
     return Math.round(Math.min(Math.max(Math.min(1 / Math.max(b.w, 1e-3), 1 / Math.max(b.h, 1e-3)), lo), hi) * 100) / 100;
   }
   const active = (f, t) => f.t <= t && t < f.t + f.d;
+  // Transitions on real cuts → camera / flash / blur pieces in clip time (motion.transitions).
+  function transVis() {
+    const out = [], T = D.visual.transitions, [dlo, dhi] = D.visual.transition_d;
+    for (let i = 1; i < segs.length; i++) {
+      const s = segs[i][0], prev = segs[i - 1], e = prev[1];
+      if (Math.abs(s - e) < 0.002) continue;
+      const tr = fx.find(f => f.type === "transition" && T[f.style] && Math.abs(f.t - s) < 0.05);
+      if (!tr) continue;
+      const d = Math.min(Math.max(+tr.d || T[tr.style][0], dlo), dhi);
+      const h = Math.min(d / 2, (e - prev[0]) / 3, (segs[i][1] - s) / 3);
+      if (tr.style === "flash") out.push({ type: "flash", t: s, d: Math.max(h * 2, 0.1), color: "white" });
+      else if (tr.style === "fade") out.push({ type: "fadeout", t: e - h, d: h, color: "black" }, { type: "flash", t: s, d: h, color: "black" });
+      else if (tr.style === "zoom") out.push({ type: "push", t: e - h, d: h, zoom: 1.8, cx: 0.5, cy: 0.5 },
+                                             { type: "pull", t: s, d: h, zoom: 1.8, cx: 0.5, cy: 0.5 });
+      else if (tr.style === "whip") out.push({ type: "push", t: e - h, d: h, zoom: 1.35, cx: 1, cy: 0.5 }, { type: "blur", t: e - h, d: h },
+                                             { type: "pull", t: s, d: h, zoom: 1.35, cx: 0, cy: 0.5 }, { type: "blur", t: s, d: h });
+    }
+    return out;
+  }
+  const blurAt = t => transVis().some(v => v.type === "blur" && active(v, t));
   const wave = (tau, ws) => ws.reduce((n, [w, hz, ph]) => n + w * Math.sin(2 * Math.PI * hz * tau + ph), 0);
   function camera(t) {
     let z = 1, cx = 0.5, cy = 0.5, zf = null;
-    for (const f of fx.filter(f => ZOOMS.includes(f.type)).sort((a, b) => a.t - b.t)) if (active(f, t)) zf = f;
+    const zs = fx.filter(f => ZOOMS.includes(f.type)).concat(transVis().filter(v => v.type === "push" || v.type === "pull"));
+    for (const f of zs.sort((a, b) => a.t - b.t)) if (active(f, t)) zf = f;
     if (zf) {
-      const q = Math.min(Math.max((t - zf.t) / zf.d, 0), 1);
-      const p = zf.type === "punch" ? 1 : q * q * (3 - 2 * q);
-      const [rx, ry] = centre(zf.region);
+      const q = Math.min(Math.max((t - zf.t) / zf.d, 0), 1), sq = q * q * (3 - 2 * q);
+      const p = zf.type === "punch" ? 1 : zf.type === "pull" ? 1 - sq : sq;
+      const [rx, ry] = zf.cx !== undefined ? [zf.cx, zf.cy] : centre(zf.region);
       z = 1 + (zf.zoom - 1) * p; cx = 0.5 + (rx - 0.5) * p; cy = 0.5 + (ry - 0.5) * p;
     }
     let a = 0, dx = 0, dy = 0;
@@ -199,10 +244,12 @@
     return [cx + dx, cy + dy, h];
   }
   function flashesAt(t) {
-    return fx.filter(f => f.type === "flash" && active(f, t)).map(f => {
-      const [rgb, peak] = D.visual.flash[f.color] || D.visual.flash.white;
-      return [rgb, peak * (1 - (t - f.t) / f.d)];
-    });
+    return fx.filter(f => f.type === "flash").concat(transVis().filter(v => v.type === "flash" || v.type === "fadeout"))
+      .filter(f => active(f, t)).map(f => {
+        const [rgb, peak] = D.visual.flash[f.color] || D.visual.flash.white;
+        const q = (t - f.t) / f.d;
+        return [rgb, peak * (f.type === "fadeout" ? q : 1 - q)];
+      });
   }
   // The picture box inside the <video> element (it can be letterboxed), relative to the player.
   function pictureBox() {
@@ -234,7 +281,7 @@
     c.fillStyle = "#000";
     c.fillRect(0, 0, cw, ch);
     if (vw && video.readyState >= 2) {
-      for (const p of panels()) {
+      for (const p of shortPanels(video.currentTime)) {
         const [sx, sy, sw, sh] = p.src, [dx, dy, dw, dh] = p.dst;
         if (p.blur) {           // small, blurred, scaled up and darkened: like the render's background
           const bw = Math.max(2, Math.round(cw * dw / D.layout_info.blur_down)), bh = Math.max(2, Math.round(ch * dh / D.layout_info.blur_down));
@@ -249,7 +296,9 @@
       }
     }
     const [xc, yc, h] = camera(video.currentTime);
+    sctx.filter = blurAt(video.currentTime) ? `blur(${Math.round(cw / 60)}px)` : "none";
     sctx.drawImage(comp, (xc - h) * cw, (yc - h) * ch, 2 * h * cw, 2 * h * ch, 0, 0, cw, ch);
+    sctx.filter = "none";
     for (const [rgb, alpha] of flashesAt(video.currentTime)) {
       sctx.fillStyle = `rgba(${rgb.join(",")},${alpha})`;
       sctx.fillRect(0, 0, cw, ch);
@@ -288,7 +337,7 @@
     const t = video.currentTime;
     const [xc, yc, h] = camera(t), fl = flashesAt(t);
     const show = !regionMode && video.videoWidth > 0 && video.readyState >= 2
-      && (h < 0.4995 || Math.abs(xc - 0.5) > 1e-4 || Math.abs(yc - 0.5) > 1e-4 || fl.length > 0);
+      && (h < 0.4995 || Math.abs(xc - 0.5) > 1e-4 || Math.abs(yc - 0.5) > 1e-4 || fl.length > 0 || blurAt(t));
     if (show !== stageOn) { stage.hidden = !show; stageOn = show; }
     if (!show) return;
     const box = pictureBox(), dpr = window.devicePixelRatio || 1;
@@ -296,7 +345,9 @@
     const cw = Math.round(box.width * dpr), ch = Math.round(box.height * dpr);
     if (stage.width !== cw || stage.height !== ch) { stage.width = cw; stage.height = ch; }
     const vw = video.videoWidth, vh = video.videoHeight;
+    sctx.filter = blurAt(t) ? `blur(${Math.round(cw / 80)}px)` : "none";
     sctx.drawImage(video, (xc - h) * vw, (yc - h) * vh, 2 * h * vw, 2 * h * vh, 0, 0, cw, ch);
+    sctx.filter = "none";
     for (const [rgb, alpha] of fl) {
       sctx.fillStyle = `rgba(${rgb.join(",")},${alpha})`;
       sctx.fillRect(0, 0, cw, ch);
@@ -396,7 +447,20 @@
       ctx.fillText(label, a + 4, ROW.beats + 11);
     }
     drawFx(x, t0, t1, w);
-    drawVfx(x, t0, t1, w);
+    for (let i = 1; i < segs.length; i++) {          // transitions: a tag at the cut
+      const tr = cutInto(i) && transOf(segs[i]);
+      if (!tr) continue;
+      const a = x(segs[i][0]);
+      if (a < -40 || a > w + 40) continue;
+      ctx.font = "600 10px system-ui, sans-serif";
+      const lw = ctx.measureText(tr.style).width + 10;
+      ctx.fillStyle = C.hot;
+      ctx.fillRect(a - lw / 2, ROW.beats + ROW.wave - 15, lw, 14);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(tr.style, a - lw / 2 + 5, ROW.beats + ROW.wave - 4);
+    }
+    drawVfx(x, t0, t1, w, "cam");
+    drawVfx(x, t0, t1, w, "vfx");
     drawSubs(x, t0, t1, w);
     // ruler
     const pxPerS = W / dur;
@@ -472,17 +536,26 @@
   function visLabel(f) {
     if (ZOOMS.includes(f.type)) return `${f.type === "punch" ? "punch" : "push"} ${f.region || "centre"} ${nice(f.zoom)}×`;
     if (f.type === "shake") return "shake " + (STRENGTH[f.strength] || "");
+    if (f.type === "frame") return "show " + (f.region || "?");
     return "flash " + f.color;
   }
-  function drawVfx(x, t0, t1, w) {
-    const top = Y_VFX + 3, bot = Y_VFX + ROW.vfx - 3, mid = (top + bot) / 2;
+  // A colour per region, so the Camera lane shows at a glance what's on screen when.
+  const REGION_COLS = ["#2a78d6", "#0f9d74", "#c2410c", "#8b5cf6", "#d4a106", "#db2777", "#0891b2", "#65a30d"];
+  function regionCol(name) {
+    const k = Object.keys(D.regions).indexOf(name);
+    return k < 0 ? C.text3 : REGION_COLS[k % REGION_COLS.length];
+  }
+  function drawVfx(x, t0, t1, w, lane) {
+    const Y = lane === "cam" ? Y_CAM : Y_VFX, H = lane === "cam" ? ROW.cam : ROW.vfx;
+    const top = Y + 3, bot = Y + H - 3, mid = (top + bot) / 2;
     ctx.fillStyle = C.border;
-    ctx.fillRect(0, Y_VFX, w, 1);
-    const list = fx.filter(isVis).sort((a, b) => a.t - b.t);
+    ctx.fillRect(0, Y, w, 1);
+    const list = fx.filter(f => isVis(f) && laneOf(f) === lane).sort((a, b) => a.t - b.t);
     list.forEach((f, k) => {
       const a = x(f.t), z = Math.max(x(f.t + f.d), a + 4), on = f.id === selFx;
       if (z < -10 || a > w + 10) return;
-      const col = on ? C.sel : f.by === "claude" ? C.cool : C.hot, alpha = keptFx(f) ? 1 : 0.35;
+      const col = on ? C.sel : lane === "cam" ? regionCol(f.region) : f.by === "claude" ? C.cool : C.hot,
+            alpha = keptFx(f) ? 1 : 0.35;
       ctx.fillStyle = col;
       ctx.strokeStyle = col;
       if (f.type === "push") {
@@ -504,8 +577,11 @@
         ctx.globalAlpha = alpha * 0.8;
         ctx.fillStyle = g;
         ctx.fillRect(a, top, z - a, bot - top);
+      } else if (f.type === "frame") {                       // a shot showing another region: solid
+        ctx.globalAlpha = alpha * 0.85;
+        ctx.fillRect(a, top, z - a, bot - top);
       } else {
-        ctx.globalAlpha = alpha * 0.6;
+        ctx.globalAlpha = alpha * 0.45;
         ctx.fillRect(a, top, z - a, bot - top);
       }
       ctx.globalAlpha = alpha;
@@ -681,14 +757,27 @@
     video.currentTime = Math.min(Math.max(0, t), D.duration);
     needsDraw = true;
   }
-  function playEdit(from = 0, only = false) {
+  function playEdit(from = 0, only = false, at = null) {
     if (!segs.length) return;
     audio();
     editPlay = { i: from, only };
-    armFrom = segs[from][0] - 0.0005;
-    seek(segs[from][0]);
+    const t = at === null ? segs[from][0] : at;
+    armFrom = t - 0.0005;
+    seek(t);
     video.play();
     paintButtons();
+  }
+  // Play the edit from the segment closest to the playhead: from the playhead itself when
+  // it's inside one, else from the start of the nearest segment. Then on to the end.
+  function playFromHere() {
+    if (!segs.length) return;
+    const t = video.currentTime;
+    const inside = segs.findIndex(s => s[0] <= t && t < s[1] - 0.1);
+    if (inside >= 0) { playEdit(inside, false, t); return; }
+    const gap = s => (t < s[0] ? s[0] - t : t - s[1]);
+    let best = 0;
+    segs.forEach((s, i) => { if (gap(s) < gap(segs[best])) best = i; });
+    playEdit(best);
   }
   function stopEditPlay() {
     if (!editPlay) return;
@@ -803,7 +892,9 @@
       return;
     }
     pushUndo();
+    const tr = edge === 0 ? transOf(s) : null;
     s[edge] = r3(Math.min(Math.max(0, t), D.duration));
+    if (tr) tr.t = s[0];
     seek(s[edge]);
     changed();
   }
@@ -907,7 +998,12 @@
     if (snapOn && type !== "push") t = snap(t, DRAG_SNAP_S, D.hits);   // these land on a moment
     const f = { id: "u" + Math.random().toString(36).slice(2, 8), type, t: r3(t), d: Math.min(d, D.duration - t), by: "you", why: "" };
     if (f.d < D.visual.types[type][1]) { flash("Too close to the end of the clip."); return; }
-    if (ZOOMS.includes(type)) {
+    if (type === "frame") {
+      if (kind !== "short") { flash("Frame shots are for Shorts: switch to the Short first."); return; }
+      const names = Object.keys(D.regions);
+      if (!names.length) { flash("Draw a region first (⋯ More → ▢ Draw regions): a frame shot shows one full-screen."); return; }
+      f.region = names.find(n => n !== (layout && layout.bottom)) || names[0];
+    } else if (ZOOMS.includes(type)) {
       const names = Object.keys(D.regions);
       f.region = names.includes("face") ? "face" : names[0] || "";
       f.zoom = type === "punch" ? (f.region ? Math.min(fitZoom(f.region), 2.5) : 1.5) : 1.25;
@@ -918,7 +1014,7 @@
     selFx = f.id;
     changed();
     if (ZOOMS.includes(type) && !f.region)
-      fxStatus("No regions yet, so this zooms on the centre. Draw her face with ▢ Regions to aim zooms at it.", "");
+      fxStatus("No regions yet, so this zooms on the centre. Draw her face with ⋯ More → ▢ Draw regions to aim zooms at it.", "");
   }
   function previewFx() {         // play from a little before the effect to a little after it
     const f = curFx();
@@ -936,6 +1032,43 @@
     if (selFx && !curFx()) selFx = null;
     changed();
     fxStatus(`Removed ${n} of Claude's effects. Ctrl+Z brings them back.`, "");
+  }
+  async function autoEdit() {
+    const b = $('[data-ed-act="autoedit"]');
+    if (segs.length > 1 && !confirm("✨ AI edit replaces your cut, Claude's effects and the subtitles with a new edit (your own effects stay; Ctrl+Z brings everything back). Go on?")) return;
+    b.disabled = true;
+    clearTimeout(saveTimer);
+    fxStatus("Claude is editing the whole clip: cuts, hook, camera and effects… (usually 30–90 s)", "busy");
+    try {
+      const d = await post(`/moment/${pk}/autoedit`, { ...body(), intensity: $("[data-ed-intensity]").value });
+      const fresh = await fetchEdit(kind);
+      if (fresh.ok === false) throw new Error(fresh.error || "Couldn't reload the edit.");
+      pushUndo();
+      D = fresh;
+      segs = clone(fresh.segments);
+      fx = cloneFx(fresh.effects || []);
+      source = fresh.source;
+      subs = cloneFx(fresh.subs || []);
+      subStyle = { ...fresh.subs_style };
+      subsMine = fresh.subs_source === "saved";
+      if (fresh.layout) layout = { ...fresh.layout };
+      sel = 0; selFx = null; selSub = null; subKey = ""; listFor = null; dirty = false;
+      D.saved = true;
+      setSaved("Saved");
+      paintKind();
+      paintAll();
+      showRender(d.render);
+      preload();
+      const c = d.counts || {};
+      const bits = [`cut ${d.cut_s.toFixed(0)} s (kept ${d.kept} of ${d.pieces} pieces)`,
+                    d.cold_open && "opens on a teaser", `${c.camera || 0} camera moves`,
+                    c.sounds && `${c.sounds} sounds`, c.hits && `${c.hits} shakes/flashes`].filter(Boolean);
+      fxStatus(`Claude's edit: ${bits.concat(c.volume ? [`${c.volume} volume change${c.volume > 1 ? "s" : ""}`] : []).join(", ")}. ${d.note || ""} ${(d.warnings || []).join(" ")} Ctrl+Z undoes.`, "ok");
+    } catch (e) {
+      fxStatus(e.message, "err");
+    } finally {
+      b.disabled = false;
+    }
   }
   async function suggestFx() {
     const b = $('[data-ed-act="suggest"]');
@@ -1131,12 +1264,55 @@
     subKey = "";
     changed();
   }
+  function setSubMode(mode) {
+    // Lines that follow Whisper switch to the other way of cutting them; your own lines stay.
+    const auto = (D.subs_auto_by_mode || {})[mode];
+    pushUndo();
+    subStyle.mode = mode;
+    if (!subsMine && auto) { subs = cloneFx(auto); D.subs_auto = auto; selSub = null; listFor = null; }
+    else if (auto) { D.subs_auto = auto; subStatus("Your own lines stay as they are; ↻ From transcript rebuilds them " + mode + " at a time."); }
+    subKey = "";
+    changed();
+  }
   function setSubStyle(change) {
     pushUndo();
     Object.assign(subStyle, change);
     subKey = "";
     changed();
   }
+
+  // ── the side panel's tabs, the lane labels, the ⋯ menus ──────────────────
+  function showTab(name) {
+    root.querySelectorAll("[data-ed-tab]").forEach(b => {
+      b.classList.toggle("on", b.dataset.edTab === name);
+      b.setAttribute("aria-selected", b.dataset.edTab === name ? "true" : "false");
+    });
+    root.querySelectorAll("[data-ed-pane]").forEach(p => { p.hidden = p.dataset.edPane !== name; });
+  }
+  function paintLanes() {
+    const box = $("[data-ed-lanes]");
+    if (box.childElementCount) return;
+    for (const [name, top, h] of LANES) {
+      const l = el("span", "ed-lane", name);
+      l.style.top = top + "px";
+      l.style.height = h + "px";
+      box.appendChild(l);
+    }
+    box.style.height = HEIGHT + "px";
+  }
+  let picked = "";            // what the Selected tab shows; the tab opens when that changes
+  function followSelection() {
+    const now = regionMode ? "regions" : selSub ? "sub:" + selSub : selFx ? "fx:" + selFx : "seg:" + sel;
+    if (picked && now !== picked) showTab("sel");
+    picked = now;
+  }
+  root.addEventListener("click", ev => {
+    const tab = ev.target.closest("[data-ed-tab]");
+    if (tab) { showTab(tab.dataset.edTab); return; }
+    // A pick inside a ⋯ menu closes it; a click outside closes any that is open.
+    for (const m of root.querySelectorAll("details[data-ed-menu][open], details.ed-help[open]"))
+      if (!m.contains(ev.target) || ev.target.closest(".ed-menu-list button")) m.open = false;
+  }, true);
 
   // ── panels ───────────────────────────────────────────────────────────────
   function paintAll() {
@@ -1151,6 +1327,7 @@
     paintList();
     paintSubBar();
     paintLayout();
+    followSelection();
   }
   function paintTotal() {
     const n = segs.length;
@@ -1177,12 +1354,10 @@
   function edgeRow(label, value, data, title, frame) {
     const row = el("div", "ed-edge");
     row.append(el("span", "ed-lbl", label));
-    for (const [l, dt, t] of [["−½", -0.5, "0.5 s earlier"], ["−0.1", -0.1, "0.1 s earlier"], ["−1f", -frame, "one frame earlier"]])
-      row.appendChild(btn(l, t, { [data]: dt }));
+    row.appendChild(btn("‹", "One frame earlier (hold Shift: 0.1 s)", { [data]: -frame, step: 0.1 }));
     row.appendChild(Object.assign(btn(fmt(value), "Jump here", { goT: value }), { className: "small mono ed-val" }));
-    for (const [l, dt, t] of [["+1f", frame, "one frame later"], ["+0.1", 0.1, "0.1 s later"], ["+½", 0.5, "0.5 s later"]])
-      row.appendChild(btn(l, t, { [data]: dt }));
-    row.appendChild(btn("⤓ playhead", title, { [data]: "here" }));
+    row.appendChild(btn("›", "One frame later (hold Shift: 0.1 s)", { [data]: frame, step: 0.1 }));
+    row.appendChild(btn("to playhead", title, { [data]: "here" }));
     return row;
   }
   function paintSelected() {
@@ -1201,6 +1376,26 @@
                         { gain: "" }, "Volume of this segment");
     const gl = el("label", "muted");
     gl.append(el("small", "", "volume "), gain);
+    if (!cutInto(sel)) {
+      box.appendChild(el("small", "muted", "Into this segment"));
+      box.appendChild(el("small", "faint", sel === 0
+        ? "This is where the edit starts, so there's no cut before it to make a transition on. Pick segment 2 or later."
+        : `It plays straight on from segment ${sel} (no cut), so it can't have a transition.`));
+    } else {
+      const tr = transOf(s);
+      box.appendChild(el("small", "muted", "Into this segment"));
+      const row = el("div", "ed-region-chips");
+      for (const [style, label, tip] of [["", "cut", "A straight cut"]].concat(
+        Object.entries(D.visual.transitions).map(([k, [, desc]]) => [k, k, desc]))) {
+        const b = btn(label, tip, { transStyle: style });
+        b.className = "chip ed-rchip" + ((tr ? tr.style : "") === style ? " current" : "");
+        row.appendChild(b);
+      }
+      box.appendChild(row);
+    }
+    const shown = segShots(s)[0];
+    box.appendChild(el("small", "muted", "On screen in this segment"));
+    box.appendChild(regionChips(shown ? shown.region : "", { chipFor: "seg" }, kind === "short" ? "the layout" : "whole frame"));
     acts.append(gl, btn("▶ Play", "Play this segment (P)", { edAct: "play-seg" }),
       btn("↑ Earlier", "Play this segment earlier in the edit", { edAct: "up" }),
       btn("↓ Later", "Play this segment later in the edit", { edAct: "down" }));
@@ -1208,6 +1403,58 @@
     d.classList.add("danger");
     acts.appendChild(d);
     box.appendChild(acts);
+  }
+  // "show" on a segment: frame shots (Short) or fill zooms (long) covering exactly it,
+  // marked by their why, so choosing again replaces them.
+  const SEG_WHY = "segment shows ";
+  const segShotType = () => (kind === "short" ? "frame" : "punch");
+  function segShots(s) {      // in a Short every frame shot on the segment (yours or Claude's); long: your fill zooms
+    return fx.filter(f => f.type === segShotType() && (kind === "short" || (f.why || "").startsWith(SEG_WHY))
+                          && f.t < s[1] - 0.05 && f.t + f.d > s[0] + 0.05);
+  }
+  // A segment's transition: the effect at its start (clip time), only on a real cut.
+  const cutInto = i => i > 0 && segs[i] && Math.abs(segs[i][0] - segs[i - 1][1]) >= 0.002;
+  const transOf = s => fx.find(f => f.type === "transition" && Math.abs(f.t - s[0]) < 0.05);
+  function setTransition(style) {
+    const s = segs[sel];
+    if (!s || !cutInto(sel)) return;
+    pushUndo();
+    fx = fx.filter(f => !(f.type === "transition" && Math.abs(f.t - s[0]) < 0.05));
+    if (style) fx.push({ id: "u" + Math.random().toString(36).slice(2, 8), type: "transition", t: r3(s[0]), style,
+                         d: D.visual.transitions[style][0], by: "you", why: "" });
+    changed();
+    if (style) playEdit(sel - 1, false, Math.max(segs[sel - 1][0], segs[sel - 1][1] - 1.2));   // show it
+  }
+  function setSegRegion(name) {
+    const s = segs[sel];
+    if (!s) return;
+    pushUndo();
+    const old = new Set(segShots(s));
+    fx = fx.filter(f => !old.has(f));
+    if (name) {
+      const type = segShotType(), longest = D.visual.types[type][2];
+      for (let t = s[0]; t < s[1] - 0.05; t += longest) {        // longer than one shot may last: a chain of them
+        const f = { id: "u" + Math.random().toString(36).slice(2, 8), type, t: r3(t), d: r3(Math.min(longest, s[1] - t)),
+                    region: name, by: "you", why: SEG_WHY + name };
+        if (type === "punch") f.zoom = Math.min(fitZoom(name), 3);
+        fx.push(f);
+      }
+    }
+    selFx = null;
+    changed();
+  }
+  function regionChips(current, data, none) {
+    const box = el("div", "ed-region-chips");
+    const opts = (none ? [["", none]] : []).concat(Object.keys(D.regions).map(n => [n, n]));
+    for (const [val, text] of opts) {
+      const b = btn(text, val ? `Show ${val}` : none, { ...data, chipRegion: val });
+      b.className = "chip ed-rchip" + (String(current || "") === val ? " current" : "");
+      if (val) b.style.setProperty("--rc", regionCol(val));
+      box.appendChild(b);
+    }
+    if (!Object.keys(D.regions).length)
+      box.appendChild(btn("▢ Draw regions first", "Draw the boxes the camera can show, once per channel", { edAct: "regions" }));
+    return box;
   }
   function paintFxPanel() {
     const box = $("[data-ed-selected]");
@@ -1261,11 +1508,14 @@
       const names = Object.keys(D.regions);
       const opts = names.map(n => [n, n]).concat([["", "centre of the frame"]]);
       if (f.region && !names.includes(f.region)) opts.unshift([f.region, f.region + " (no such region: centre)"]);
-      acts.appendChild(labelled("on", select(opts, f.region || "", { visRegion: "" }, "Where to zoom", v => v), "The region it zooms towards"));
+      box.appendChild(regionChips(f.region || "", { chipFor: "vis" }, "centre"));
       acts.appendChild(labelled(f.type === "push" ? "ends at" : "zoom",
                                 select(ZOOM_STEPS[f.type].map(v => [v, v + "×"]), f.zoom, { visZoom: "" }, "How far it zooms", v => nice(v) + "×")));
       if (f.region && D.regions[f.region])
         acts.appendChild(btn("⤢ fill", `Zoom so ${f.region} fills the frame (${nice(fitZoom(f.region))}×)`, { visFit: "" }));
+    } else if (f.type === "frame") {
+      const names = Object.keys(D.regions);
+      box.appendChild(regionChips(f.region || "", { chipFor: "vis" }, ""));
     } else if (f.type === "shake") {
       acts.appendChild(labelled("strength", select([[1, "light"], [2, "normal"], [3, "heavy"]], f.strength, { visStrength: "" }, "How strong")));
     } else {
@@ -1278,7 +1528,7 @@
     more.append(btn("▶ Play it", "Play from just before it to just after it", { edAct: "fx-play" }), d);
     box.appendChild(more);
     if (ZOOMS.includes(f.type) && !Object.keys(D.regions).length)
-      box.appendChild(el("p", "faint ed-why", "No regions for this channel yet, so it zooms on the centre. ▢ Regions lets you draw her face once."));
+      box.appendChild(el("p", "faint ed-why", "No regions for this channel yet, so it zooms on the centre. ⋯ More → ▢ Draw regions lets you draw her face once."));
   }
 
   function paintSubPanel() {
@@ -1312,6 +1562,7 @@
     $("[data-sub-on]").checked = subStyle.on;
     $("[data-sub-size]").value = subStyle.size;
     $("[data-sub-pos]").value = subStyle.position;
+    $("[data-sub-mode]").value = subStyle.mode || "lines";
     $('[data-ed-act="sub-rebuild"]').disabled = !D.subs_auto.length;
     const pb = $('[data-ed-act="sub-polish"]');
     pb.disabled = !subs.length || pb.dataset.busy === "1";
@@ -1330,6 +1581,9 @@
   // ── the Short's layout panel, and the Long / Short switch ────────────────
   function paintLayout() {
     const box = $("[data-ed-layout]");
+    const tab = $("[data-ed-tab-short]");
+    tab.hidden = kind !== "short" || !layout;
+    if (tab.hidden && tab.classList.contains("on")) showTab("sel");
     box.hidden = kind !== "short" || !layout;
     if (box.hidden) return;
     root.querySelectorAll("[data-lay-type]").forEach(b => b.classList.toggle("on", b.dataset.layType === layout.type));
@@ -1360,7 +1614,7 @@
     (D.titles || []).forEach((t, i) => tt.appendChild(btn(`Claude's #${i + 1}`, t, { layTitle: i })));
     const hint = [];
     if (layout.type === "stack" && !Object.keys(D.regions).length)
-      hint.push("Draw a face box (and a game box) with ▢ Regions: until then each half shows the whole frame.");
+      hint.push("Draw a face box (and a game box) with ⋯ More → ▢ Draw regions: until then each half shows the whole frame.");
     if (layout.type !== "stack" && D.vertical_crop) hint.push("Claude: " + D.vertical_crop);
     $("[data-lay-hint]").textContent = hint.join(" ");
   }
@@ -1501,7 +1755,7 @@
         D.regions = d.regions;
         setSaved("Regions saved");
         showRender(d.render);
-        if ($("[data-ed-fx-status]").textContent.includes("▢ Regions")) libraryStatus();   // drop the "draw her face" hint
+        if ($("[data-ed-fx-status]").textContent.includes("Draw regions")) libraryStatus();   // drop the "draw her face" hint
         paintButtons();
       } catch (e) { setSaved("Couldn't save the regions: " + e.message, true); }
     }, 350);
@@ -1590,7 +1844,7 @@
   function paintButtons() {
     const rb = $('[data-ed-act="regions"]');
     const nr = Object.keys(D.regions).length;
-    rb.textContent = regionMode ? "✓ Done with regions" : nr ? `▢ Regions (${Object.keys(D.regions).join(", ")})` : "▢ Regions";
+    rb.textContent = regionMode ? "✓ Done with regions" : nr ? `▢ Draw regions (${nr})` : "▢ Draw regions";
     rb.classList.toggle("on", regionMode);
     const b = $('[data-ed-act="play-edit"]');
     b.textContent = editPlay && !editPlay.only ? "⏹ Stop" : "▶ Play edit";
@@ -1878,10 +2132,10 @@
   }
   function libraryStatus() {
     const n = D.sounds.length;
-    const regionsNote = Object.keys(D.regions).length ? "" : " Draw her face with ▢ Regions so zooms can aim at it.";
-    if (!n) fxStatus("No sounds in your library yet." + regionsNote, "", true);
-    else fxStatus(`${n} sound${n === 1 ? "" : "s"} in your library. Orange ticks mark sudden loud moments; sounds, `
-                  + "punch-ins, shakes and flashes snap to them." + regionsNote, "");
+    // Only when something needs doing: the status line is for news, not a manual.
+    const regionsTip = Object.keys(D.regions).length ? "" : "Draw the regions (⋯ More → ▢ Draw regions) so the camera can show her face, the game…";
+    if (!n) fxStatus("No sounds in your library yet. " + regionsTip, "", true);
+    else if (regionsTip) fxStatus(regionsTip, "");
   }
   function fxStatus(text, kind, linkSounds) {
     const s = $("[data-ed-fx-status]");
@@ -2044,8 +2298,8 @@
     return best;
   }
   // The effect under x in the picture lane, and whether x is on its right end (to resize it).
-  function hitVfx(x) {
-    const under = fx.filter(f => isVis(f) && x >= X(f.t) - 4 && x <= Math.max(X(f.t + f.d), X(f.t) + 4) + 4);
+  function hitVfx(x, lane) {
+    const under = fx.filter(f => isVis(f) && laneOf(f) === lane && x >= X(f.t) - 4 && x <= Math.max(X(f.t + f.d), X(f.t) + 4) + 4);
     if (!under.length) return null;
     const f = under.find(f => f.id === selFx) || under.sort((a, b) => b.t - a.t)[0];
     const end = X(f.t + f.d);
@@ -2084,8 +2338,8 @@
       seek(T(x));
       return;
     }
-    if (y >= Y_VFX && y < Y_SUBS) {                       // the picture lane
-      const h = hitVfx(x);
+    if (y >= Y_CAM && y < Y_SUBS) {                       // the camera and effects lanes
+      const h = hitVfx(x, y < Y_VFX ? "cam" : "vfx");
       if (h) {
         pushUndo();
         drag = { vis: h.f.id, edge: h.edge, moved: false, dx: x - X(h.f.t), x0: x };
@@ -2100,7 +2354,7 @@
       seek(T(x));
       return;
     }
-    if (y >= Y_FX && y < Y_VFX) {                         // the sound lane
+    if (y >= Y_FX && y < Y_CAM) {                         // the sound lane
       const f = hitFx(x);
       if (f) {
         pushUndo();
@@ -2140,12 +2394,12 @@
         canvas.style.cursor = h ? (h.edge ? "ew-resize" : "grab") : "pointer";
         return;
       }
-      if (y >= Y_VFX && y < Y_SUBS) {
-        const h = hitVfx(x);
+      if (y >= Y_CAM && y < Y_SUBS) {
+        const h = hitVfx(x, y < Y_VFX ? "cam" : "vfx");
         canvas.style.cursor = h ? (h.edge ? "ew-resize" : "grab") : "pointer";
         return;
       }
-      const overFx = y >= Y_FX && y < Y_VFX;
+      const overFx = y >= Y_FX && y < Y_CAM;
       const h = overFx ? hitFx(x) : hitSeg(x);
       canvas.style.cursor = overFx ? (h ? "grab" : "pointer") : (h && h.edge !== undefined ? "ew-resize" : "pointer");
       return;
@@ -2266,9 +2520,17 @@
     audio();
     if (b.tagName === "BUTTON") b.blur();   // so Space/Enter go to the editor, not the button
     const ds = b.dataset;
-    const nudgeVal = v => (v === "here" ? null : +v);
+    const nudgeVal = v => (v === "here" ? null : ev.shiftKey && ds.step ? Math.sign(+v) * +ds.step : +v);
     if (regionMode && !ds.regDel && ds.edAct !== "regions" && !ds.regName) toggleRegions(false);   // anything else: back to editing
-    if (ds.edKind) switchKind(ds.edKind);
+    if (ds.transStyle !== undefined) setTransition(ds.transStyle);
+    else if (ds.chipRegion !== undefined) {
+      if (ds.chipFor === "seg") setSegRegion(ds.chipRegion);
+      else {
+        const f = curFx(), change = { region: ds.chipRegion };
+        if (f && f.type === "punch" && ds.chipRegion && D.regions[ds.chipRegion]) change.zoom = Math.min(fitZoom(ds.chipRegion), 2.5);
+        if (f) editFx(change);
+      }
+    } else if (ds.edKind) switchKind(ds.edKind);
     else if (ds.layType) { if (layout && layout.type !== ds.layType) setLayout({ type: ds.layType }); }
     else if (ds.layCentre) {
       const b = D.regions[ds.layCentre];
@@ -2308,11 +2570,12 @@
     } else if (ds.line !== undefined) seek(D.lines[+ds.line].t);
     else if (ds.edAct) {
       ({
-        "play-edit": () => (editPlay && !editPlay.only ? (video.pause(), stopEditPlay()) : playEdit(0)),
+        "play-edit": () => (editPlay && !editPlay.only ? (video.pause(), stopEditPlay())
+                                                         : ev.shiftKey ? playEdit(0) : playFromHere()),
         toggle, add, split, undo: doUndo, render, watch: toggleWatch,
         "play-seg": () => playEdit(sel, true),
         up: () => move(-1), down: () => move(1), delete: del,
-        "add-fx": addFx, suggest: suggestFx, "clear-claude": clearClaude,
+        "add-fx": addFx, suggest: suggestFx, autoedit: autoEdit, "clear-claude": clearClaude,
         "fx-play": previewFx, regions: () => toggleRegions(), transcribe,
         "sub-add": addSub, "sub-rebuild": rebuildSubs, "lines-edit": linesToSubs, "sub-polish": polishSubs, "names-save": saveNames,
       })[ds.edAct]?.();
@@ -2329,6 +2592,7 @@
       return;
     }
     if (t.matches("[data-gain]")) setGain(+t.value);
+    else if (t.matches("[data-seg-region]")) setSegRegion(t.value);
     else if (t.matches("[data-fx-sound]")) editFx({ sound: t.value, gain: (sound(t.value) || {}).gain || 0 });
     else if (t.matches("[data-fx-gain]")) editFx({ gain: +t.value });
     else if (t.matches("[data-fx-duck]")) editFx({ duck: +t.value });
@@ -2345,6 +2609,7 @@
     else if (t.matches("[data-sub-on]")) setSubStyle({ on: t.checked });
     else if (t.matches("[data-sub-size]")) setSubStyle({ size: t.value });
     else if (t.matches("[data-sub-pos]")) setSubStyle({ position: t.value });
+    else if (t.matches("[data-sub-mode]")) setSubMode(t.value);
     else if (t.matches("[data-ed-snap]")) {
       snapOn = t.checked;
       try { localStorage.setItem("cw-ed-snap", snapOn ? "1" : "0"); } catch (e) {}
@@ -2381,7 +2646,7 @@
       s: split, p: () => playEdit(sel, true), f: addFx, z: () => addVis("punch"), x: () => addVis("shake"),
       "[": () => selectSeg(sel - 1), "]": () => selectSeg(sel + 1),
       Delete: del, Backspace: del,
-      Enter: () => (editPlay ? (video.pause(), stopEditPlay()) : playEdit(0)),
+      Enter: () => (editPlay ? (video.pause(), stopEditPlay()) : ev.shiftKey ? playEdit(0) : playFromHere()),
       Escape: () => { if (selFx || selSub) { selFx = null; selSub = null; paintAll(); } },
       "+": () => setZoom(Math.min(16, zoom * 2)), "=": () => setZoom(Math.min(16, zoom * 2)),
       "-": () => setZoom(Math.max(1, zoom / 2)),
@@ -2402,6 +2667,7 @@
     if (!d.ok) { $("[data-ed-loading]").textContent = d.error || "Couldn't load the editor."; return; }
     apply(d);
     $("[data-ed-loading]").remove();
+    paintLanes();
     const notes = [d.hook && "Hook: " + d.hook, d.notes].filter(Boolean).join("\n\n");
     if (notes) { $("[data-ed-notes]").hidden = false; $("[data-ed-notes-text]").textContent = notes; }
     paintTranscript();

@@ -2,13 +2,14 @@
 
 Never `--bare`: bare mode only accepts ANTHROPIC_API_KEY. Unless allowed in config, the
 API key variables are removed from the environment so the CLI can't bill the API.
-For clip analysis Claude gets one tool, Read, confined to the clip folder (to look at
-frames). Questions from the dashboard get no tools, or WebSearch only if the user ticks it.
+Clip analysis sends the frames inside the prompt (as images, through
+--input-format stream-json), so it needs no tools and finishes in one round trip. Questions from the dashboard get no tools, or WebSearch only if the user ticks it.
 Never a shell, WebFetch, user settings, MCP servers or slash commands.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -84,10 +85,13 @@ class ClaudeRunner:
 
     def command(self, schema: dict[str, Any] | None, *, system: str, allow_read: bool = False,
                 read_dir: Path | None = None, model: str | None = None, effort: str | None = None,
-                tools: list[str] | None = None) -> list[str]:
-        """schema=None: plain-text answer. tools: extra built-in tools (e.g. WebSearch)."""
+                tools: list[str] | None = None, images: bool = False) -> list[str]:
+        """schema=None: plain-text answer. tools: extra built-in tools (e.g. WebSearch).
+        images: the prompt goes in as a stream-json message that can carry images."""
         allowed = list(tools or []) + (["Read"] if allow_read else [])
-        cmd = [self.exe, "-p", "--output-format", "json"]
+        cmd = [self.exe, "-p"]
+        cmd += (["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+                if images else ["--output-format", "json"])
         if schema is not None:
             cmd += ["--json-schema", json.dumps(schema, ensure_ascii=False)]
         cmd += [
@@ -123,7 +127,7 @@ class ClaudeRunner:
             raise ClaudeError(f"claude timed out after {self.cfg.timeout_s}s", kind="timeout") from e
 
         try:
-            out = json.loads(proc.stdout)
+            out = _parse_output(proc.stdout)
         except json.JSONDecodeError:
             msg = (proc.stderr or proc.stdout or f"exit code {proc.returncode}").strip()[-500:]
             raise ClaudeError(f"claude failed: {msg}", kind=classify(msg))
@@ -143,11 +147,13 @@ class ClaudeRunner:
 
     def run(self, prompt: str, schema: dict[str, Any], *, system: str, cwd: Path,
             allow_read: bool = False, model: str | None = None,
-            effort: str | None = None) -> ClaudeResult:
-        """One structured answer matching `schema`. model/effort override the config."""
+            effort: str | None = None, images: list[bytes] | None = None) -> ClaudeResult:
+        """One structured answer matching `schema`. model/effort override the config.
+        images: JPEGs shown to Claude before the prompt text."""
         cmd = self.command(schema, system=system, allow_read=allow_read,
-                           read_dir=cwd if allow_read else None, model=model, effort=effort)
-        out = self._invoke(cmd, prompt, cwd)
+                           read_dir=cwd if allow_read else None, model=model, effort=effort,
+                           images=bool(images))
+        out = self._invoke(cmd, image_message(prompt, images) if images else prompt, cwd)
         data = out.get("structured_output")
         if data is None:
             data = _json_from_text(out.get("result") or "")
@@ -168,6 +174,33 @@ class ClaudeRunner:
         if not text:
             raise ClaudeError("claude returned an empty answer", kind="bad_output")
         return self._result({"text": text}, out, model)
+
+
+def image_message(prompt: str, images: list[bytes]) -> str:
+    """One stream-json user message: the JPEGs, then the prompt text."""
+    content: list[dict[str, Any]] = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                     "data": base64.b64encode(img).decode("ascii")}} for img in images]
+    content.append({"type": "text", "text": prompt})
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}},
+                      ensure_ascii=False) + "\n"
+
+
+def _parse_output(stdout: str) -> dict[str, Any]:
+    """The CLI's result: one JSON object (--output-format json), or the "result" event of
+    a stream-json run. Raises json.JSONDecodeError when there's neither."""
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(stdout.splitlines()):
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            return ev
+    raise json.JSONDecodeError("no result in claude output", stdout[-200:], 0)
 
 
 def _json_from_text(text: str) -> Any:

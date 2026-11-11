@@ -533,6 +533,27 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
                              "note": r.note, "model": r.model,
                              "render": with_worker(render_state(conn, pk, cfg=cfg, kind=body.kind))})
 
+    @app.post("/moment/{pk}/autoedit")
+    def edit_auto(pk: int, body: SuggestIn, conn=Depends(get_conn)):
+        """Save the edit, then have Claude cut the clip, plan the camera, place effects and
+        set word-by-word captions and a Short's hook title (30-90 s; the page waits)."""
+        from chatwatcher.edit.autoedit import AutoEditError, auto_edit
+        from chatwatcher.edit.service import EditError, render_state
+        try:
+            save_body(conn, pk, body)
+            r = auto_edit(cfg, conn, pk, kind=body.kind, intensity=body.intensity,
+                          runner=deps.claude if deps else None, **claude_choice(body.model, body.effort))
+        except (EditError, MediaError) as e:
+            return edit_error(e)
+        except AutoEditError as e:
+            return JSONResponse({"ok": False, "error": str(e), "kind": e.kind},
+                                status_code=503 if e.kind in ("usage_limit", "timeout") else 400)
+        p = r.plan
+        return JSONResponse({"ok": True, "segments": r.segments, "note": r.note, "hook_title": r.hook_title,
+                             "cut_s": p.cut_s, "kept": p.pieces_kept, "pieces": p.pieces_total,
+                             "cold_open": p.cold_open, "warnings": p.warnings, "counts": r.counts, "model": r.model,
+                             "render": with_worker(render_state(conn, pk, cfg=cfg, kind=body.kind))})
+
     @app.post("/moment/{pk}/subs/polish")
     def subs_polish(pk: int, body: PolishIn, conn=Depends(get_conn)):
         """Save the edit, then have Claude fix (and translate) its subtitle lines (10-60 s; the page waits)."""

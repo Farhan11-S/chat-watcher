@@ -65,6 +65,42 @@
 
 {% if clip and clip.exists %}
 <div class="card editor" id="edit" data-editor="{{ moment.id }}">
+  {# 1 · Start: which edit, and one button that makes it #}
+  <div class="ed-start">
+    <div class="ed-start-row">
+      <h2>Edit</h2>
+      <div class="ed-kinds" role="tablist" aria-label="Which edit">
+        <button type="button" class="small" role="tab" aria-selected="false" data-ed-kind="short"
+                title="A 9:16 Short of this clip, with its own cut, effects, captions and layout: short.mp4">Short 9:16</button>
+        <button type="button" class="small on" role="tab" aria-selected="true" data-ed-kind="long"
+                title="The 16:9 edit: edit.mp4">Video 16:9</button>
+      </div>
+      <button type="button" class="primary ed-ai" data-ed-act="autoedit"
+              title="Claude edits the whole clip: cuts the dead air, opens on the hook, moves the camera, adds effects, word-by-word captions and a Short's hook title. Your own effects stay; Ctrl+Z undoes. One Claude call.">✨ AI edit</button>
+      <label class="muted" title="How many sounds and effects Claude may add"><small>effects</small>
+        <select data-ed-intensity aria-label="How many effects Claude may add">
+          <option value="light">few</option><option value="normal" selected>some</option><option value="heavy">many</option></select></label>
+      <details class="ed-menu" data-ed-menu>
+        <summary class="button small" title="Other ways to start, and tools">⋯ More</summary>
+        <div class="ed-menu-list">
+          <small class="faint">Start over from</small>
+          <button type="button" class="small" data-ed-preset="long">Claude's suggested cut</button>
+          <button type="button" class="small" data-ed-preset="short">Claude's suggested Short</button>
+          <button type="button" class="small" data-ed-preset="whole">The whole clip</button>
+          <small class="faint">Claude</small>
+          <button type="button" class="small" data-ed-act="suggest" title="Claude places sounds and effects on your current cut, without changing it">✨ Effects only (keep my cut)</button>
+          <button type="button" class="small" data-ed-act="clear-claude" title="Remove Claude's effects; yours stay">Remove Claude's effects</button>
+          <small class="faint">Picture</small>
+          <button type="button" class="small" data-ed-act="regions" title="Draw the boxes the camera can show (her face, the game, each person…), once per channel">▢ Draw regions</button>
+        </div>
+      </details>
+      <span class="muted ed-total" data-ed-total></span>
+      <small class="muted" data-ed-kind-note></small>
+    </div>
+    <small class="ed-status" data-ed-fx-status role="status"></small>
+  </div>
+
+  {# 2 · Adjust: the picture, one panel for what you picked, and the timeline #}
   <div class="ed-top">
     <div class="ed-player">
       <video controls preload="auto" src="/media/clip/{{ clip.id }}"
@@ -73,121 +109,126 @@
       <div class="ed-subs" data-ed-subs hidden aria-hidden="true"></div>
       <div class="ed-regions" data-ed-regions hidden></div>
     </div>
-    <div class="ed-side">
-      <div class="ed-head">
-        <h2>Edit</h2>
-        <div class="ed-kinds" role="tablist" aria-label="Which edit">
-          <button type="button" class="small on" role="tab" aria-selected="true" data-ed-kind="long"
-                  title="The 16:9 edit: edit.mp4">Long 16:9</button>
-          <button type="button" class="small" role="tab" aria-selected="false" data-ed-kind="short"
-                  title="A 9:16 Short of this clip, with its own cut, effects, subtitles and layout: short.mp4">Short 9:16</button>
+    <aside class="ed-side">
+      <div class="ed-tabs" role="tablist" aria-label="Panel">
+        <button type="button" class="on" role="tab" data-ed-tab="sel">Selected</button>
+        <button type="button" role="tab" data-ed-tab="text">Transcript</button>
+        <button type="button" role="tab" data-ed-tab="caps">Captions</button>
+        <button type="button" role="tab" data-ed-tab="lay" data-ed-tab-short hidden>Layout</button>
+      </div>
+      <div class="ed-pane" data-ed-pane="sel">
+        <div class="ed-selected" data-ed-selected></div>
+      </div>
+      <div class="ed-pane" data-ed-pane="text" hidden>
+        <details class="ed-notes" data-ed-notes hidden><summary>Claude's editing notes</summary><p data-ed-notes-text></p></details>
+        <div class="ed-tx" data-ed-tx></div>
+        <div class="ed-lines" data-ed-lines><p class="faint"><small>Loading the transcript…</small></p></div>
+        <small class="ed-list-msg" data-ed-list-msg role="status" hidden></small>
+      </div>
+      <div class="ed-pane" data-ed-pane="caps" hidden>
+        <label class="ed-check" title="Burn the captions into the video (the .srt is made either way)"><input type="checkbox" data-sub-on> Show captions on the video</label>
+        <div class="ed-form">
+          <label><small>Show</small>
+            <select data-sub-mode aria-label="Caption mode"><option value="words">a few words at a time</option><option value="lines">whole lines</option></select></label>
+          <label><small>Size</small>
+            <select data-sub-size aria-label="Caption size"><option value="small">small</option><option value="normal">normal</option><option value="large">large</option></select></label>
+          <label><small>Place</small>
+            <select data-sub-pos aria-label="Caption position"><option value="top">near the top</option><option value="bottom">at the bottom</option></select></label>
         </div>
-        <small class="muted" data-ed-kind-note></small>
-        <span class="muted" data-ed-total></span>
-      </div>
-      <div class="actions ed-presets">
-        <small class="muted">Start from</small>
-        <button type="button" class="small" data-ed-preset="long">Claude's cut</button>
-        <button type="button" class="small" data-ed-preset="short">Claude's short</button>
-        <button type="button" class="small" data-ed-preset="whole">Whole clip</button>
-      </div>
-      <div class="ed-layout" data-ed-layout hidden>
         <div class="actions">
-          <small class="muted">Layout</small>
-          <button type="button" class="small" data-lay-type="crop" title="A tall window cut from the stream, centred on her">Crop</button>
-          <button type="button" class="small" data-lay-type="stack" title="Two boxes stacked: the game on top, her face below (draw them with ▢ Regions)">Stack</button>
-          <button type="button" class="small" data-lay-type="fit" title="The whole frame across the middle, over a blurred copy">Fit + blur</button>
+          <button type="button" class="small" data-ed-act="sub-polish" title="Claude fixes misheard words and names, punctuation and filler, translates, and marks punch words. Your own lines stay. One Claude call.">✨ Fix the words</button>
+          <button type="button" class="small" data-ed-act="sub-rebuild" title="Start over from Whisper's words (Ctrl+Z undoes)">↻ Rebuild from transcript</button>
         </div>
-        <div class="ed-lay-row" data-lay-for="crop">
-          <label><small>Left ↔ right</small><input type="range" min="0" max="1" step="0.005" data-lay="x" aria-label="Crop position, left to right"></label>
-          <label><small>Zoom</small><input type="range" min="1" max="2.5" step="0.05" data-lay="scale" aria-label="Crop zoom"></label>
-          <label><small>Up ↕ down</small><input type="range" min="0" max="1" step="0.01" data-lay="y" aria-label="Crop position, top to bottom (when zoomed)"></label>
-          <span class="actions" data-lay-centre></span>
-        </div>
-        <div class="ed-lay-row" data-lay-for="stack">
-          <label><small>Top</small><select data-lay="top" aria-label="Top box"></select></label>
-          <label><small>Bottom</small><select data-lay="bottom" aria-label="Bottom box"></select></label>
-          <label><small>Split</small><input type="range" min="0.3" max="0.7" step="0.01" data-lay="split" aria-label="Top part's share of the height"></label>
-        </div>
-        <div class="ed-lay-row">
-          <label class="ed-lay-title"><small>Title</small><input type="text" maxlength="100" data-lay="title"
-                 placeholder="Text in the top band (optional)" title="*stars* around a word make it yellow"></label>
-          <span class="actions" data-lay-titles></span>
-        </div>
-        <small class="faint" data-lay-hint></small>
+        <small class="muted" data-ed-sub-status></small>
+        <details class="ed-names" data-ed-names>
+          <summary><small>Names Claude spells right (<span data-ed-names-count>0</span>)</small></summary>
+          <p class="faint"><small>For every stream of this channel: people, games, catchphrases. One per line or comma-separated.</small></p>
+          <textarea data-ed-names-text rows="3" aria-label="Names Claude spells right"></textarea>
+          <div class="actions"><button type="button" class="small" data-ed-act="names-save">Save names</button></div>
+        </details>
+        <p class="faint"><small>Click a caption on the timeline (bottom lane) to retype it or move it.</small></p>
       </div>
-      <details class="ed-notes" data-ed-notes hidden><summary>Claude's editing notes</summary><p data-ed-notes-text></p></details>
-      <div class="ed-tx" data-ed-tx></div>
-      <div class="ed-lines" data-ed-lines><p class="faint"><small>Loading the transcript…</small></p></div>
-      <small class="ed-list-msg" data-ed-list-msg role="status" hidden></small>
-    </div>
+      <div class="ed-pane" data-ed-pane="lay" hidden>
+        <div class="ed-layout" data-ed-layout hidden>
+          <div class="actions">
+            <small class="muted">Picture</small>
+            <button type="button" class="small" data-lay-type="crop" title="A tall window cut from the stream, centred on her">Crop</button>
+            <button type="button" class="small" data-lay-type="stack" title="Two boxes stacked: the game on top, her face below">Stack</button>
+            <button type="button" class="small" data-lay-type="fit" title="The whole frame across the middle, over a blurred copy">Fit + blur</button>
+          </div>
+          <div class="ed-lay-row" data-lay-for="crop">
+            <label><small>Left ↔ right</small><input type="range" min="0" max="1" step="0.005" data-lay="x" aria-label="Crop position, left to right"></label>
+            <label><small>Zoom</small><input type="range" min="1" max="2.5" step="0.05" data-lay="scale" aria-label="Crop zoom"></label>
+            <label><small>Up ↕ down</small><input type="range" min="0" max="1" step="0.01" data-lay="y" aria-label="Crop position, top to bottom (when zoomed)"></label>
+            <span class="actions" data-lay-centre></span>
+          </div>
+          <div class="ed-lay-row" data-lay-for="stack">
+            <label><small>Top</small><select data-lay="top" aria-label="Top box"></select></label>
+            <label><small>Bottom</small><select data-lay="bottom" aria-label="Bottom box"></select></label>
+            <label><small>Split</small><input type="range" min="0.3" max="0.7" step="0.01" data-lay="split" aria-label="Top part's share of the height"></label>
+          </div>
+          <div class="ed-lay-row">
+            <label class="ed-lay-title"><small>Hook text</small><input type="text" maxlength="100" data-lay="title"
+                   placeholder="Text over the top of the Short" title="*stars* around a word make it yellow"></label>
+            <span class="actions" data-lay-titles></span>
+          </div>
+          <small class="faint" data-lay-hint></small>
+        </div>
+        <p class="faint"><small>The layout is the Short's normal picture. A shot on the Camera lane can show another region for a while.</small></p>
+      </div>
+    </aside>
   </div>
 
   <div class="ed-toolbar">
     <div class="actions">
-      <button type="button" class="primary small" data-ed-act="play-edit" title="Play your edit from the start (Enter)">▶ Play edit</button>
+      <button type="button" class="primary small" data-ed-act="play-edit" title="Play your edit from the segment nearest the playhead (Enter). Shift+click or Shift+Enter: from the start.">▶ Play edit</button>
       <button type="button" class="small" data-ed-act="toggle" title="Play / pause (Space)">⏯</button>
       <span class="mono ed-time" data-ed-time>0:00.00</span>
+      <details class="ed-menu" data-ed-menu>
+        <summary class="button small" title="Add something at the playhead">＋ Add</summary>
+        <div class="ed-menu-list">
+          <button type="button" class="small" data-ed-act="split" title="Split the selected segment at the playhead (S)">✂ Cut here (S)</button>
+          <button type="button" class="small" data-ed-act="add" title="A new segment at the playhead">Segment</button>
+          <button type="button" class="small" data-ed-add="frame" title="Short only: show one region full-screen for a while">Camera: show a region</button>
+          <button type="button" class="small" data-ed-add="punch" title="Instant zoom on a region (Z)">Camera: punch-in (Z)</button>
+          <button type="button" class="small" data-ed-add="push" title="Slow zoom towards a region">Camera: push-in</button>
+          <button type="button" class="small" data-ed-act="add-fx" title="A sound effect at the playhead (F)">Sound (F)</button>
+          <button type="button" class="small" data-ed-add="shake" title="Camera shake on an impact or a scream (X)">Shake (X)</button>
+          <button type="button" class="small" data-ed-add="flash" title="A quick white, red or black flash">Flash</button>
+          <button type="button" class="small" data-ed-act="sub-add" title="A new caption at the playhead">Caption</button>
+        </div>
+      </details>
+      <button type="button" class="small" data-ed-act="undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
     </div>
     <div class="actions">
-      <button type="button" class="small" data-ed-act="add" title="New segment at the playhead">+ Segment</button>
-      <button type="button" class="small" data-ed-act="split" title="Split the selected segment at the playhead (S)">✂ Split</button>
-      <button type="button" class="small" data-ed-act="undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
-      <label class="muted" title="Cuts you drag, and Claude's cuts, land in the nearest pause instead of mid-word. Hold Shift while dragging to skip it.">
-        <input type="checkbox" data-ed-snap checked> <small>snap to pauses</small></label>
+      <label class="muted" title="Cuts you drag land in the nearest pause instead of mid-word. Hold Shift while dragging to skip it.">
+        <input type="checkbox" data-ed-snap checked> <small>snap</small></label>
       <label class="muted"><small>zoom</small>
         <select data-ed-zoom aria-label="Timeline zoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select></label>
+      <details class="ed-menu ed-help">
+        <summary class="button small" title="Keyboard shortcuts">?</summary>
+        <div class="ed-menu-list"><small>
+          <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> 0.1 s (<kbd>Shift</kbd> 1 s)<br>
+          <kbd>I</kbd>/<kbd>O</kbd> segment start/end here · <kbd>S</kbd> cut here<br>
+          <kbd>F</kbd> sound · <kbd>Z</kbd> punch-in · <kbd>X</kbd> shake<br>
+          <kbd>[</kbd><kbd>]</kbd> previous/next segment · <kbd>Del</kbd> delete<br>
+          <kbd>Enter</kbd> play edit from here (<kbd>Shift</kbd> from the start) · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</small></div>
+      </details>
     </div>
   </div>
-  <div class="ed-scroll" data-ed-scroll>
-    <div class="ed-spacer" data-ed-spacer>
-      <canvas data-ed-canvas aria-label="Timeline: Claude's storyboard beats, the waveform with your segments, sounds, zooms, shakes and flashes, and subtitle lines"></canvas>
+  <div class="ed-timeline">
+    <div class="ed-lanes" data-ed-lanes aria-hidden="true"></div>
+    <div class="ed-scroll" data-ed-scroll>
+      <div class="ed-spacer" data-ed-spacer>
+        <canvas data-ed-canvas aria-label="Timeline: Claude's beats, the cut, sounds, camera shots, effects and captions"></canvas>
+      </div>
+      <p class="ed-loading" data-ed-loading>Reading the audio…</p>
     </div>
-    <p class="ed-loading" data-ed-loading>Reading the audio…</p>
   </div>
-  <div class="ed-fxbar">
-    <div class="actions">
-      <b class="ed-fx-title">Effects</b>
-      <button type="button" class="small" data-ed-act="add-fx" title="Add a sound effect at the playhead (F)">+ Sound</button>
-      <button type="button" class="small" data-ed-add="punch" title="Instant zoom on a region, e.g. her face when she realises (Z)">+ Punch-in</button>
-      <button type="button" class="small" data-ed-add="push" title="Slow zoom towards a region, building up to a moment">+ Push-in</button>
-      <button type="button" class="small" data-ed-add="shake" title="Camera shake on an impact or a scream (X)">+ Shake</button>
-      <button type="button" class="small" data-ed-add="flash" title="A quick white, red or black flash">+ Flash</button>
-      <button type="button" class="small" data-ed-act="regions" title="Draw the boxes zooms aim at (her face, the game…), once per channel">▢ Regions</button>
-    </div>
-    <div class="actions">
-      <button type="button" class="small" data-ed-act="suggest" title="Claude places sounds from your library, and zooms, shakes and flashes, on this cut">✨ Suggest effects</button>
-      <select data-ed-intensity aria-label="How many effects Claude may add" title="How many effects Claude may add">
-        <option value="light">light</option><option value="normal" selected>normal</option><option value="heavy">heavy</option></select>
-      <button type="button" class="small" data-ed-act="clear-claude" title="Remove Claude's effects; yours stay">Clear Claude's</button>
-    </div>
-    <small class="muted" data-ed-fx-status></small>
-  </div>
-  <div class="ed-fxbar ed-subbar">
-    <div class="actions">
-      <b class="ed-fx-title">Subtitles</b>
-      <label class="muted" title="Burn the subtitles into edit.mp4 (the .srt is made either way)"><input type="checkbox" data-sub-on> <small>burn in</small></label>
-      <label class="muted"><small>size</small>
-        <select data-sub-size aria-label="Subtitle size"><option value="small">small</option><option value="normal">normal</option><option value="large">large</option></select></label>
-      <label class="muted"><small>at the</small>
-        <select data-sub-pos aria-label="Subtitle position"><option value="bottom">bottom</option><option value="top">top</option></select></label>
-      <button type="button" class="small" data-ed-act="sub-add" title="A new subtitle line at the playhead">+ Line</button>
-      <button type="button" class="small" data-ed-act="sub-rebuild" title="Start over from Whisper's words (Ctrl+Z undoes)">↻ From transcript</button>
-      <button type="button" class="small" data-ed-act="sub-polish" title="Claude fixes misheard words and names, punctuation and filler, translates lines that aren't in English, and marks punch words. Your own lines stay. One Claude call.">✨ Clean up</button>
-    </div>
-    <small class="muted" data-ed-sub-status></small>
-    <details class="ed-names" data-ed-names>
-      <summary><small>Names Claude spells right (<span data-ed-names-count>0</span>)</small></summary>
-      <p class="faint"><small>For every stream of this channel: people, games, catchphrases. Claude adds the names it finds;
-        a name you fix by retyping a line is added too. One per line or comma-separated.</small></p>
-      <textarea data-ed-names-text rows="3" aria-label="Names Claude spells right"></textarea>
-      <div class="actions"><button type="button" class="small" data-ed-act="names-save">Save names</button></div>
-    </details>
-  </div>
-  <div class="ed-chips" data-ed-chips></div>
+  <div class="ed-chips" data-ed-chips hidden></div>
 
-  <div class="ed-bottom">
-    <div class="ed-selected" data-ed-selected></div>
+  {# 3 · Export #}
+  <div class="ed-export">
     <div class="ed-render" data-ed-render>
       <div class="actions">
         <button type="button" class="primary" data-ed-act="render">Render edit</button>
@@ -196,12 +237,10 @@
       <div class="ed-render-state" data-ed-render-state></div>
     </div>
   </div>
-  <p class="faint ed-keys"><small>
-    <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> 0.1 s (<kbd>Shift</kbd> 1 s) · <kbd>I</kbd>/<kbd>O</kbd> start/end here ·
-    <kbd>S</kbd> split · <kbd>F</kbd> add sound · <kbd>Z</kbd> punch-in · <kbd>X</kbd> shake · <kbd>[</kbd><kbd>]</kbd> previous/next segment · <kbd>Del</kbd> delete · <kbd>Enter</kbd> play edit · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo
-  </small></p>
 </div>
 
+<details class="card ed-extras">
+<summary><b>Intro and thumbnail</b> <small class="muted">· the branded opening of the 16:9 video, and the cover pictures</small></summary>
 <div class="maker-row">
 <div class="card maker" id="intro" data-intro="{{ moment.id }}">
   <div class="maker-head">
@@ -270,6 +309,7 @@
   </div>
 </div>
 </div>
+</details>
 {% endif %}
 
 <div class="grid-2">

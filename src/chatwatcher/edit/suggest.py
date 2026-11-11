@@ -148,6 +148,10 @@ def _where(box: dict[str, float]) -> str:
 
 def _placed(fx: dict[str, Any]) -> str:
     t, kind = fx["t"], fx.get("type", "sfx")
+    if kind == "transition":
+        return f"- {t:.2f} s {fx.get('style')} transition into the cut there"
+    if kind == "frame":
+        return f"- {t:.2f}–{t + fx['d']:.2f} s showing {fx.get('region')} full-screen"
     if kind == "sfx":
         return f"- {t:.2f} s sound {fx.get('sound')}"
     span = f"- {t:.2f}–{t + fx['d']:.2f} s"

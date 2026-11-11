@@ -10,7 +10,7 @@ from chatwatcher import db, jobs
 from chatwatcher.config import EditConfig
 from chatwatcher.edit.audio import RATE, analyse, from_samples, snap
 from chatwatcher.edit.render import render
-from chatwatcher.edit.service import EditError, clean_segments
+from chatwatcher.edit.service import MAX_SEGMENTS, EditError, clean_segments
 from chatwatcher.worker import Worker
 
 from test_clip import make_video
@@ -56,7 +56,7 @@ def test_analyse_reads_a_file_and_caches(tmp_path):
 def test_clean_segments():
     assert clean_segments([[1, 5], [8.12345, 9, -6]], 10) == [[1.0, 5.0, 0.0], [8.123, 9.0, -6.0]]
     assert clean_segments([[-3, 4, -99]], 10) == [[0.0, 4.0, -30.0]]        # clamped
-    for bad in (None, [], [[1]], [["a", 2]], [[5, 5.1]], [[0.2, 0.9]], [[1, float("nan")]], [[0, 1]] * 41):
+    for bad in (None, [], [[1]], [["a", 2]], [[5, 5.1]], [[0.2, 0.9]], [[1, float("nan")]], [[0, 1]] * (MAX_SEGMENTS + 1)):
         with pytest.raises(EditError) as e:
             clean_segments(bad, 10)
         assert e.value.kind == "invalid"
@@ -377,3 +377,16 @@ def test_starter_pack_knows_the_sites_own_file_names(site, tmp_path):  # noqa: F
     names = {r["name"] for r in conn.execute("SELECT name FROM sounds")}
     assert names == {"ドーン heavy impact", "ドーン reveal", "チーン chiin"}
     assert "3 of 40 in your library" in client.get("/sounds").text
+
+
+def test_render_in_a_folder_with_a_hash_in_its_name(tmp_path):
+    """Stream titles like "iya iya #bozet" end up in folder names; ffmpeg's concat list
+    once read the "#" as the end of a URL and couldn't find the parts."""
+    from chatwatcher.config import EditConfig
+    from chatwatcher.edit.render import render
+    from test_clip import make_video
+    folder = tmp_path / "2026-11-09_【Karaoke】iya_iya_#bozet_?x" / "01_laugh"
+    folder.mkdir(parents=True)
+    src = make_video(folder / "clip.mp4", 4)
+    r = render(EditConfig(loudness_lufs=0), src, [[0.0, 1.0, 0.0], [2.0, 3.0, 0.0]], folder / "short.mp4", fps=30)
+    assert r.path.is_file() and 1.9 < r.duration_s < 2.2

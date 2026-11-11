@@ -210,8 +210,8 @@ def test_model_picker_reaches_claude(site):
     cfg, conn, client, deps = site
     m = mid(conn)
     page = client.get(f"/moment/{m}").text
-    assert '<select name="model"' in page and "<option selected>sonnet</option>" in page
-    assert 'value="low" selected' in page
+    assert '<select name="model"' in page and "<option selected>opus</option>" in page
+    assert 'value="medium" selected' in page
     r = client.post(f"/moment/{m}/reanalyze", data={"model": "opus", "effort": "high"}, follow_redirects=False)
     assert "opus" in r.headers["location"]
     job = conn.execute("SELECT * FROM jobs WHERE moment_id = ? AND stage = 'analyze'", (m,)).fetchone()
