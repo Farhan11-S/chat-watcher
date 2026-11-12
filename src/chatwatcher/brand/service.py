@@ -32,17 +32,17 @@ INTRO_FILE = "intro.mp4"
 def _context(cfg: Config, conn: sqlite3.Connection, pk: int, clip: es.ClipRef) -> dict[str, Any]:
     from chatwatcher.edit.audio import RATE, analyse
     from chatwatcher.subs import lines
-    row = es._stored(conn, pk)
+    row = es.stored(conn, pk)
     wf = analyse(clip.path, clip.folder / es.WAVEFORM_FILE)
-    a = es._latest_analysis(conn, pk)
-    segs = es._to_clip(json.loads(row["segments_json"]), clip) if row else []
+    a = es.latest_analysis(conn, pk)
+    segs = es.to_clip(json.loads(row["segments_json"]), clip) if row else []
     if not segs:
         segs = es.whole(clip)
     cues, _src, style = es.current_subs(cfg, row, clip)
     shift = float((a.get("_meta") or {}).get("zero_s", clip.zero_s)) - clip.zero_s
     beats = [{"start": float(b.get("start", 0)) + shift, "end": float(b.get("end", 0)) + shift, "beat": b.get("beat", "")}
              for b in a.get("storyboard") or []]
-    words = es._words(clip)
+    words = es.words(clip)
     return {"segments": segs, "cues": cues, "style": style, "wf": wf, "rate": RATE, "beats": beats,
             "words": [[w0, w1] for w0, w1, _ in lines.words_of(words)] if words else [],
             "lines": es.transcript_lines(clip.folder), "analysis": a}
@@ -255,7 +255,7 @@ def _thumb_row(conn: sqlite3.Connection, pk: int) -> sqlite3.Row | None:
 def thumb_defaults(conn: sqlite3.Connection, pk: int, clip: es.ClipRef, shape: str = "wide") -> dict[str, Any]:
     """Claude's frame and text; the thumbnail zoomed on the channel's face box if there is
     one, the Short's cover as the Short shows it."""
-    a = es._latest_analysis(conn, pk)
+    a = es.latest_analysis(conn, pk)
     pick = (a.get("thumbnail") or {})
     want = pick.get("frame_file") or ""
     t = None
@@ -294,8 +294,8 @@ def thumb_path(clip: es.ClipRef, shape: str = "wide") -> Path:
 def _short_layout(conn: sqlite3.Connection, pk: int, clip: es.ClipRef) -> tuple[dict[str, Any], list]:
     """The Short's layout (saved, or the first one it would get) and its panels."""
     from chatwatcher.edit import layout as lay
-    layout = es.current_layout(conn, pk, clip, es._stored(conn, pk, "short"))
-    sw, sh = es._size(clip)
+    layout = es.current_layout(conn, pk, clip, es.stored(conn, pk, "short"))
+    sw, sh = es.size(clip)
     return layout, lay.panels(layout, regions.get(conn, regions.scope_for(conn, pk)[0]), sw, sh)
 
 
@@ -322,7 +322,7 @@ def load_thumb(cfg: Config, conn: sqlite3.Connection, pk: int, shape: str = "wid
     if shape == "tall":
         layout, _ps = _short_layout(conn, pk, clip)
         out["layout"] = layout["type"]
-        out["short_saved"] = es._stored(conn, pk, "short") is not None
+        out["short_saved"] = es.stored(conn, pk, "short") is not None
     return out
 
 

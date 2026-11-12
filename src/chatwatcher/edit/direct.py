@@ -98,7 +98,7 @@ def describe(m: ae.Material, segments: list[list[float]], effects: list[dict[str
         gain = float(g[0]) if g else 0.0
         part = _ids(inside) if inside else "(part of a piece)"
         lines.append(f"- {s:.1f}–{e:.1f} s: {part}" + (f" at {gain:+.0f} dB" if gain else ""))
-    fx = [ae._placed(f) + (" (yours)" if f.get("by") == "claude" else " (placed by the director)") for f in effects]
+    fx = [ae.placed_line(f) + (" (yours)" if f.get("by") == "claude" else " (placed by the director)") for f in effects]
     out = "Kept, in play order:\n" + ("\n".join(lines) or "(nothing)")
     out += "\nEffects:\n" + ("\n".join(fx) or "(none)")
     if title:
@@ -143,9 +143,9 @@ def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str =
     if not fresh:
         if not message:
             raise DirectError("Write what you want changed.", "invalid")
-        row = service._stored(conn, moment_pk, kind)
-        segs = service._to_clip(json.loads(row["segments_json"]), m.clip) if row else service.whole(m.clip)
-        effects = service._effects_to_clip(service._effects(m.base), m.clip)
+        row = service.stored(conn, moment_pk, kind)
+        segs = service.to_clip(json.loads(row["segments_json"]), m.clip) if row else service.whole(m.clip)
+        effects = service.effects_to_clip(service.effects(m.base), m.clip)
         title = (service.current_layout(conn, moment_pk, m.clip, row).get("title") or "") if kind == "short" else ""
         prompt = FOLLOW_UP.format(message=message, state=describe(m, segs, effects, title))
         try:

@@ -141,10 +141,10 @@ def polish(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, runner: Cla
     if not cfg.claude.enabled:
         raise PolishError("claude.enabled is false in the config.", "disabled")
     clip = service.clip_ref(conn, moment_pk)
-    row = service._stored(conn, moment_pk, kind)
+    row = service.stored(conn, moment_pk, kind)
     if row is None:
         raise PolishError("Save a cut first.", "invalid")
-    segs = service._to_clip(json.loads(row["segments_json"]), clip)
+    segs = service.to_clip(json.loads(row["segments_json"]), clip)
     cues, _source, _style = service.current_subs(cfg, row, clip, kind)
     in_cut = [c for c in cues if any(c["t0"] < e and c["t1"] > s for s, e, *_ in segs)]
     if not in_cut:
@@ -153,12 +153,12 @@ def polish(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, runner: Cla
     scope, channel = regions.scope_for(conn, moment_pk)
     known = name_list.get(conn, scope)
     known += [v["name"] for v in clip.voices.values() if v.get("name") and v["name"] not in known]
-    words = service._words(clip) or {}
+    words = service.words(clip) or {}
     language = LANGUAGES.get(words.get("language") or "", words.get("language") or "unknown")
     meta_path, chat_path = clip.folder / "moment.json", clip.folder / "chat_excerpt.txt"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
     chat = compress_chat(chat_path.read_text(encoding="utf-8", errors="replace")) if chat_path.is_file() else ""
-    prompt = build_prompt(meta=meta, channel=channel, summary=service._latest_analysis(conn, moment_pk).get("summary", ""),
+    prompt = build_prompt(meta=meta, channel=channel, summary=service.latest_analysis(conn, moment_pk).get("summary", ""),
                           language=language, names=known, chat=chat, cues=in_cut)
     try:
         runner = runner or ClaudeRunner(cfg.claude)
@@ -174,5 +174,5 @@ def polish(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, runner: Cla
     new, changed, joined, dropped = apply(cues, res.data.get("lines") or [], {c["id"] for c in in_cut})
     service.save(cfg, conn, moment_pk, segs, None, None, subs=new, kind=kind)
     all_names, added = name_list.add(conn, scope, res.data.get("names") or [])
-    saved, _s, _st = service.current_subs(cfg, service._stored(conn, moment_pk, kind), clip, kind)
+    saved, _s, _st = service.current_subs(cfg, service.stored(conn, moment_pk, kind), clip, kind)
     return Polished(saved, changed, joined, dropped, all_names, added, str(res.data.get("note") or ""), res.model)
