@@ -1,3 +1,19 @@
+{# Shared pieces of every page: icons, pills, the stage track, ratings, the pager. #}
+{% macro icon(name) -%}
+<svg class="icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{%- if name == 'streams' %}<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/>
+{%- elif name == 'clips' %}<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/>
+{%- elif name == 'queue' %}<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
+{%- elif name == 'library' %}<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+{%- elif name == 'vtubers' %}<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+{%- elif name == 'brand' %}<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>
+{%- elif name == 'channels' %}<rect x="2" y="7" width="20" height="14" rx="2"/><path d="m17 2-5 5-5-5"/>
+{%- elif name == 'storage' %}<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>
+{%- elif name == 'search' %}<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
+{%- elif name == 'theme' %}<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>
+{%- endif %}</svg>
+{%- endmacro %}
+
 {% macro stage_pills(stages) -%}
 <span class="stages">
   {%- for name, j in stages.items() %}
@@ -9,10 +25,50 @@
 </span>
 {%- endmacro %}
 
+{# The pipeline at a glance: one small block per stage, and words only for what needs them. #}
+{% macro stage_track(stages) -%}
+{%- set names = {'frames': 'preview'} -%}
+<span class="track" role="img" aria-label="Pipeline: {% for name, j in stages.items() %}{{ names.get(name, name) }} {{ 'not run' if j.status == 'none' else j.status }}{{ ', ' if not loop.last }}{% endfor %}">
+  {%- for name, j in stages.items() %}<i class="{{ j.status }}" title="{{ names.get(name, name) }}: {{ ('not run' if j.status == 'none' else j.status) }}{% if j.error or j.message %} · {{ (j.error or j.message)[:160] | e }}{% endif %}"></i>{% endfor -%}
+</span>
+{%- for name, j in stages.items() if j.status in ('running', 'pending', 'error') %}
+<span class="pill {{ j.status }}" title="{{ (j.error or j.message or j.status) | e }}">{{ {'running': '▶', 'pending': '⏳', 'error': '✗'}[j.status] }} {{ names.get(name, name) }}</span>
+{%- endfor %}
+{%- endmacro %}
+
 {% macro status_pill(status) -%}
 <span class="pill {{ status }}">{{ status }}</span>
 {%- endmacro %}
 
+{# A moment's review state in the words the review buttons use. #}
+{% macro moment_status(status) -%}
+<span class="pill {{ status }}">{{ {'new': 'to review', 'approved': 'kept', 'rejected': 'skipped'}.get(status, status) }}</span>
+{%- endmacro %}
+
+{% macro rating(n) -%}
+<b class="rating {{ 'hi' if n >= 8 else 'mid' if n >= 6 else 'lo' }}">{{ n }}</b>
+{%- endmacro %}
+
 {% macro flag(lang) -%}
 {{ {'ja': '🇯🇵', 'en': '🇬🇧', 'id': '🇮🇩', 'ko': '🇰🇷', 'zh': '🇨🇳', 'es': '🇪🇸'}.get(lang, lang) }}
+{%- endmacro %}
+
+{# Prev / numbers / Next for a listing.Page; key is the query value that holds the page. #}
+{% macro pager(page, request, key='page', what='', anchor='') -%}
+{% if page.pages > 1 %}
+<nav class="pager" aria-label="Pages">
+  <span class="muted">{{ page.first }}–{{ page.last }} of {{ page.total }}{{ ' ' ~ what if what }}</span>
+  <span class="pager-links">
+    {% if page.page > 1 %}<a class="btn small" rel="prev" href="{{ qs(request, **{key: (page.page - 1) if page.page > 2 else none}) }}{{ anchor }}">← Prev</a>
+    {% else %}<span class="btn small disabled" aria-disabled="true">← Prev</span>{% endif %}
+    {% for n in page.numbers %}
+    {%- if n is none %}<span class="gap">…</span>
+    {%- elif n == page.page %}<b class="cur" aria-current="page">{{ n }}</b>
+    {%- else %}<a class="num" href="{{ qs(request, **{key: n if n > 1 else none}) }}{{ anchor }}">{{ n }}</a>{% endif %}
+    {% endfor %}
+    {% if page.page < page.pages %}<a class="btn small" rel="next" href="{{ qs(request, **{key: page.page + 1}) }}{{ anchor }}">Next →</a>
+    {% else %}<span class="btn small disabled" aria-disabled="true">Next →</span>{% endif %}
+  </span>
+</nav>
+{% endif %}
 {%- endmacro %}

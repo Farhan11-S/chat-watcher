@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pager, icon, rating, moment_status %}
+{% block title %}Clips · chat-watcher{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Clips</h1>
+    <p class="sub">The moments of every stream in one place. Open one to edit it.</p>
+  </div>
+</div>
+
+<div class="card flush">
+  <nav class="tabs" aria-label="Which moments">
+    {% for k, label in shows.items() %}
+    <a class="{{ 'on' if k == flt.show }}" href="{{ qs(request, show=k, page=none) }}">{{ label }} <span class="n">{{ counts[k] }}</span></a>
+    {% endfor %}
+  </nav>
+  <form method="get" action="/clips" class="toolbar" data-autosubmit aria-label="Search and filter moments">
+    {% if flt.show %}<input type="hidden" name="show" value="{{ flt.show }}">{% endif %}
+    <label class="search">{{ icon('search') }}<input type="search" name="q" value="{{ flt.q }}" placeholder="Search titles, summaries, streams…" aria-label="Search moments"></label>
+    <select name="rating" aria-label="Minimum Claude rating">
+      <option value="">Any rating</option>
+      {% for n in [9, 8, 7, 6, 5] %}<option value="{{ n }}" {{ 'selected' if n == flt.rating }}>Rated {{ n }}+</option>{% endfor %}
+    </select>
+    <select name="category" aria-label="Category">
+      <option value="">Any category</option>
+      {% for c in categories %}<option {{ 'selected' if c == flt.category }}>{{ c }}</option>{% endfor %}
+    </select>
+    <select name="channel" aria-label="Channel">
+      <option value="">All channels</option>
+      {% for c in channels %}<option value="{{ c.id }}" {{ 'selected' if c.id == flt.channel }}>{{ c.title }}</option>{% endfor %}
+    </select>
+    <span class="grow"></span>
+    <label class="sort"><small>Sort</small>
+      <select name="sort" aria-label="Sort">
+        {% for k, s in sorts.items() %}<option value="{{ k }}" {{ 'selected' if k == flt.sort }}>{{ s[0] | capitalize }}</option>{% endfor %}
+      </select></label>
+    <button class="small" data-autosubmit-hide>Apply</button>
+    {% if flt.any %}<a class="btn small ghost" href="{{ '/clips?show=' ~ flt.show if flt.show else '/clips' }}">Clear filters</a>{% endif %}
+  </form>
+
+  {% if page.items %}
+  <div class="clip-grid">
+    {% for m in page.items %}
+    <a class="clip-card {{ m.status }}" href="/moment/{{ m.id }}">
+      <span class="thumb">
+        <img loading="lazy" src="{{ m.thumb }}" alt="" width="320" height="180">
+        {% if m.worthiness %}{{ rating(m.worthiness) }}{% endif %}
+        <span class="dur">{{ (m.end_s - m.start_s) | int }}s{% if m.kind == 'song' %} ♪{% endif %}</span>
+      </span>
+      <span class="clip-body">
+        <span class="clip-title">{{ m.title or ('Moment #' ~ m.rank ~ ' at ' ~ (m.start_s | ts)) }}</span>
+        <span class="meta">{{ m.channel_title or 'Unknown channel' }} · {{ m.stream_at | day }} · {{ m.start_s | ts }}</span>
+        <span class="clip-tags">
+          {% if m.category %}<span class="tag">{{ m.category }}</span>{% endif %}
+          {% if m.status != 'new' %}{{ moment_status(m.status) }}{% endif %}
+          {% if m.clip_id and m.clip_exists %}<span class="pill done" title="Downloaded at full quality">{{ m.height }}p</span>
+          {% elif m.clip_id %}<span class="pill" title="The clip video was deleted to free space">video deleted</span>{% endif %}
+          {% if m.short_rendered %}<span class="pill ok" title="short.mp4 is rendered">Short ✓</span>{% elif m.has_short %}<span class="pill" title="A Short edit is started">Short draft</span>{% endif %}
+          {% if m.edit_rendered %}<span class="pill ok" title="edit.mp4 is rendered">Video ✓</span>{% elif m.has_edit %}<span class="pill" title="A 16:9 edit is started">Video draft</span>{% endif %}
+          {% if m.uploaded_at %}<span title="On Google Drive since {{ m.uploaded_at | when }}">☁</span>{% endif %}
+        </span>
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  {{ pager(page, request, what='moments') }}
+  {% elif flt.any or flt.show %}
+  <p class="empty">No moments match. <a href="/clips">Show all moments</a></p>
+  {% else %}
+  <p class="empty">No moments yet. They appear once a stream is scored: <a href="/">add a stream</a> or <a href="/channels">watch a channel</a>.</p>
+  {% endif %}
+</div>
+{% endblock %}

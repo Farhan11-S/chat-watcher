@@ -376,6 +376,7 @@
   }
   colors();
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { colors(); needsDraw = true; });
+  window.addEventListener("cw-theme", () => { colors(); needsDraw = true; });   // the sidebar's theme button
   const beatColor = b => ({ hook: C.hot, payoff: C.hot, reaction: C.cool, callback: C.cool })[b] || C.other;
 
   // ── geometry: canvas covers the visible part; the spacer gives the scroll width ──

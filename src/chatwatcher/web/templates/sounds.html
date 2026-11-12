@@ -1,36 +1,143 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon %}
 {% block title %}Library · chat-watcher{% endblock %}
 {% block autorefresh %}0{% endblock %}
+{% macro asset_fields(x) %}
+      <div class="sound-fields">
+        <input type="text" name="name" value="{{ x.name }}" maxlength="80" aria-label="Name" class="sound-name">
+        <input type="text" name="description" value="{{ x.description }}" maxlength="500" aria-label="Description"
+               placeholder="When to use it (Claude reads this)" class="{{ 'missing' if not x.description }}">
+        <div class="sound-meta">
+          <input type="text" name="tags" value="{{ x.tags }}" maxlength="200" aria-label="Tags" placeholder="tags">
+          <input type="text" name="source" value="{{ x.source }}" maxlength="300" aria-label="Source and license" placeholder="source · license">
+          <label class="muted" title="Volume when it's placed. 0 = about as loud as her voice."><small>volume</small>
+            <select name="gain_db">
+              {% for g in [6, 3, 0, -3, -6, -10, -15, -20] %}<option value="{{ g }}" {{ 'selected' if g == x.gain_db }}>{{ '+' if g > 0 }}{{ g }} dB</option>{% endfor %}
+              {% if x.gain_db not in [6, 3, 0, -3, -6, -10, -15, -20] %}<option value="{{ x.gain_db }}" selected>{{ x.gain_db }} dB</option>{% endif %}
+            </select></label>
+        </div>
+      </div>
+{% endmacro %}
 {% block content %}
-<div class="card">
-  <h1>Sounds</h1>
-  <p class="muted" style="margin:.2rem 0 .8rem">Your sound-effect library. Claude picks from these when it suggests sounds for an edit,
-    using each sound's <b>description</b>, so write when to use it. Every sound is cleaned up as it's added: silence at the
-    start and end is cut (it plays exactly at its marker) and it's levelled to about the loudness of normal talking.</p>
-  <form method="post" action="/sounds/upload" enctype="multipart/form-data" class="sound-upload">
-    <label class="sound-files">
-      <span>Sound files <small class="muted">· mp3, wav, ogg, m4a, flac, or a short video · under 30 s each</small></span>
-      <input type="file" name="files" multiple required accept="audio/*,video/*,.mp3,.wav,.ogg,.m4a,.flac,.opus,.webm,.mp4">
-    </label>
-    <label><span>Description <small class="muted">(optional, for all of them; you can edit each one after)</small></span>
-      <input type="text" name="description" maxlength="500" placeholder="e.g. dramatic fail scream: right after something goes badly wrong"></label>
-    <div class="grid-2">
-      <label><span>Tags</span><input type="text" name="tags" maxlength="200" placeholder="fail, scream, meme"></label>
-      <label><span>Source and license</span><input type="text" name="source" maxlength="300" placeholder="e.g. freesound.org/s/12345 · CC0"></label>
-    </div>
-    <div class="actions"><button class="primary">Add sounds</button></div>
-  </form>
+<div class="page-head">
+  <div>
+    <h1>Library</h1>
+    <p class="sub">Sound effects and green-screen overlays for your edits. ✨ AI edit picks from these by each one's
+      <b>description</b>, so write when to use it.</p>
+  </div>
 </div>
 
-<div class="card" id="starter">
-  <details class="pack" {{ 'open' if pack.have < pack.sounds | length }}>
-    <summary><h2>{{ pack.title }} <small class="muted">· {{ pack.have }} of {{ pack.sounds | length }} in your library</small></h2></summary>
+<div class="card flush" data-tabs>
+  <nav class="tabs" aria-label="Library">
+    <button type="button" class="on" data-tab="sounds">Sounds <span class="n">{{ sounds | length }}</span></button>
+    <button type="button" data-tab="overlays">Overlays <span class="n">{{ overlays | length }}</span></button>
+    <button type="button" data-tab="starter">Starter pack <span class="n">{{ pack.have }}/{{ pack.sounds | length }}</span></button>
+  </nav>
+
+  <section data-tab-panel="sounds">
+    <div class="toolbar" data-filter="#sound-rows">
+      <label class="search">{{ icon('search') }}<input type="search" data-filter-q placeholder="Search name, description, tags…" aria-label="Search sounds"></label>
+      <span class="segmented" data-filter-attr="desc" role="group" aria-label="Description">
+        <button type="button" class="on" data-value="">All</button><button type="button" data-value="no" title="Claude can't pick a sound without a description">No description</button>
+      </span>
+      <span class="count" data-filter-count>{{ sounds | length }}</span>
+      <span class="grow"></span>
+      <details class="menu right wide" data-menu>
+        <summary class="btn primary">＋ Add sounds</summary>
+        <form method="post" action="/sounds/upload" enctype="multipart/form-data" class="menu-list sound-upload">
+          <label class="sound-files">
+            <span>Sound files <small class="muted">· mp3, wav, ogg, m4a, flac, or a short video · under 30 s each</small></span>
+            <input type="file" name="files" multiple required accept="audio/*,video/*,.mp3,.wav,.ogg,.m4a,.flac,.opus,.webm,.mp4">
+          </label>
+          <label><span>Description <small class="muted">(optional, for all of them; you can edit each one after)</small></span>
+            <input type="text" name="description" maxlength="500" placeholder="e.g. dramatic fail scream: right after something goes badly wrong"></label>
+          <label><span>Tags</span><input type="text" name="tags" maxlength="200" placeholder="fail, scream, meme"></label>
+          <label><span>Source and license</span><input type="text" name="source" maxlength="300" placeholder="e.g. freesound.org/s/12345 · CC0"></label>
+          <small class="faint">Each sound is cleaned up as it's added: silence at the start and end is cut and it's levelled to about the loudness of normal talking.</small>
+          <div class="actions"><button class="primary">Add sounds</button></div>
+        </form>
+      </details>
+    </div>
+    {% if not sounds %}
+    <p class="empty">No sounds yet. Add a few; even five good ones (fail, bonk, vine boom, whoosh, riser) go a long way.</p>
+    {% endif %}
+    <div class="sound-list" id="sound-rows">
+      {% for s in sounds %}
+      <form class="sound-row" id="s-{{ s.id }}" method="post" action="/sounds/{{ s.id }}/save" data-item data-desc="{{ 'yes' if s.description else 'no' }}"
+            data-search="{{ s.name }} {{ s.description }} {{ s.tags }} {{ s.id }}">
+        <div class="sound-play">
+          <audio controls preload="none" src="/media/sound/{{ s.id }}"></audio>
+          <small class="muted"><span class="mono">{{ s.id }}</span> · {{ '%.1f' | format(s.duration_s) }} s
+            {% if used.get(s.id) %}· in {{ used[s.id] }} edit marker{{ 's' if used[s.id] != 1 }}{% endif %}</small>
+        </div>
+        {{ asset_fields(s) }}
+        <div class="sound-actions">
+          <button class="small">Save</button>
+          <button class="small danger" formaction="/sounds/{{ s.id }}/delete"
+                  onclick="return confirm('Delete {{ s.name | e }}? Edits that use it keep their markers but render without it.')">Delete</button>
+        </div>
+      </form>
+      {% endfor %}
+    </div>
+    <p class="empty" data-filter-empty hidden>No sounds match.</p>
+  </section>
+
+  <section data-tab-panel="overlays" id="overlays" hidden>
+    <div class="toolbar" data-filter="#overlay-rows">
+      <label class="search">{{ icon('search') }}<input type="search" data-filter-q placeholder="Search overlays…" aria-label="Search overlays"></label>
+      <span class="count" data-filter-count>{{ overlays | length }}</span>
+      <span class="grow"></span>
+      <details class="menu right wide" data-menu>
+        <summary class="btn primary">＋ Add overlays</summary>
+        <form method="post" action="/overlays/upload" enctype="multipart/form-data" class="menu-list sound-upload">
+          <label class="sound-files">
+            <span>Green-screen clips <small class="muted">· mp4, webm, mov · under 15 s each · takes a few seconds each</small></span>
+            <input type="file" name="files" multiple required accept="video/*,.mp4,.webm,.mov,.mkv">
+          </label>
+          <label><span>Description <small class="muted">(optional, for all of them; you can edit each one after)</small></span>
+            <input type="text" name="description" maxlength="500" placeholder="e.g. question-mark pings: someone says something dumb or makes a bad call"></label>
+          <label><span>Tags</span><input type="text" name="tags" maxlength="200" placeholder="lol, ping, meme"></label>
+          <label><span>Source and license</span><input type="text" name="source" maxlength="300" placeholder="e.g. youtube.com/watch?v=… · free to use"></label>
+          <div class="actions"><button class="primary">Add overlays</button></div>
+        </form>
+      </details>
+    </div>
+    <p class="muted pad">Meme effects that play over the picture with their sound: the LoL "?" ping spam, an explosion, a "WASTED" banner.
+      Upload the green-screen (or blue-screen) clip as it is: the screen colour is found from the corners and made see-through, once.
+      Place them in the editor (＋ Add → Overlay).</p>
+    {% if not overlays %}<p class="empty">No overlays yet.</p>{% endif %}
+    <div class="sound-list" id="overlay-rows">
+      {% for o in overlays %}
+      <form class="sound-row" id="o-{{ o.id }}" method="post" action="/overlays/{{ o.id }}/save" data-item
+            data-search="{{ o.name }} {{ o.description }} {{ o.tags }} {{ o.id }}">
+        <div class="sound-play">
+          <video class="overlay-preview" src="/media/overlay/{{ o.id }}" muted loop autoplay playsinline
+                 aria-label="{{ o.name }} (see-through)"></video>
+          <small class="muted"><span class="mono">{{ o.id }}</span> · {{ '%.1f' | format(o.duration_s) }} s
+            · keyed #{{ o.key_color }}{% if not o.sound %} · no sound{% endif %}
+            {% if used.get(o.id) %}· in {{ used[o.id] }} edit{{ 's' if used[o.id] != 1 }}{% endif %}</small>
+          {% if o.sound %}<audio controls preload="none" src="/media/overlay/{{ o.id }}/sound"></audio>{% endif %}
+        </div>
+        {{ asset_fields(o) }}
+        <div class="sound-actions">
+          <button class="small">Save</button>
+          <button class="small danger" formaction="/overlays/{{ o.id }}/delete"
+                  onclick="return confirm('Delete {{ o.name | e }}? Edits that use it keep their markers but render without it.')">Delete</button>
+        </div>
+      </form>
+      {% endfor %}
+    </div>
+    <p class="empty" data-filter-empty hidden>No overlays match.</p>
+  </section>
+
+  <section data-tab-panel="starter" id="starter" class="pad" hidden>
+    <h2>{{ pack.title }} <small class="muted">· {{ pack.have }} of {{ pack.sounds | length }} in your library</small></h2>
     <p class="muted">Free sounds from {{ pack.site }}, the site most Japanese clip channels use: monetized YouTube is fine and no
       credit is needed, but don't share the files or register them in Content ID. All of them are on one page.</p>
     <ol class="pack-steps">
       <li><a class="btn small" href="{{ pack.page }}" target="_blank" rel="noopener">Open the 演出・アニメ page ↗</a>
         and click the download icon next to each sound below (the heading it's under is in grey).</li>
-      <li>Drop all the downloaded files into <b>Sound files</b> above and press <b>Add sounds</b>. Leave the other fields empty:
+      <li>Drop all the downloaded files into <b>＋ Add sounds</b> on the Sounds tab. Leave the other fields empty:
         the app recognises these files by name and fills in a name, a description for Claude, tags and the license.</li>
     </ol>
     <div class="pack-grid">
@@ -42,101 +149,8 @@
       </div>
       {% endfor %}
     </div>
-    <p class="faint" style="margin:.6rem 0 0"><small>Not on this site: studio laughter and audience reactions ("えー!?", "おお〜"), and
+    <p class="faint"><small>Not on this site: studio laughter and audience reactions ("えー!?", "おお〜"), and
       English memes like FAAAH or vine boom. Add those yourself and write their descriptions.</small></p>
-  </details>
-</div>
-
-<div class="card">
-  <h2>Your sounds <small class="muted">({{ sounds | length }})</small></h2>
-  {% if not sounds %}
-  <p class="empty">No sounds yet. Add a few above; even five good ones (fail, bonk, vine boom, whoosh, riser) go a long way.</p>
-  {% endif %}
-  <div class="sound-list">
-    {% for s in sounds %}
-    <form class="sound-row" id="s-{{ s.id }}" method="post" action="/sounds/{{ s.id }}/save">
-      <div class="sound-play">
-        <audio controls preload="none" src="/media/sound/{{ s.id }}"></audio>
-        <small class="muted"><span class="mono">{{ s.id }}</span> · {{ '%.1f' | format(s.duration_s) }} s
-          {% if used.get(s.id) %}· in {{ used[s.id] }} edit marker{{ 's' if used[s.id] != 1 }}{% endif %}</small>
-      </div>
-      <div class="sound-fields">
-        <input type="text" name="name" value="{{ s.name }}" maxlength="80" aria-label="Name" class="sound-name">
-        <input type="text" name="description" value="{{ s.description }}" maxlength="500" aria-label="Description"
-               placeholder="When to use it (Claude reads this)" class="{{ 'missing' if not s.description }}">
-        <div class="sound-meta">
-          <input type="text" name="tags" value="{{ s.tags }}" maxlength="200" aria-label="Tags" placeholder="tags">
-          <input type="text" name="source" value="{{ s.source }}" maxlength="300" aria-label="Source and license" placeholder="source · license">
-          <label class="muted" title="Volume when it's placed. 0 = about as loud as her voice."><small>volume</small>
-            <select name="gain_db">
-              {% for g in [6, 3, 0, -3, -6, -10, -15, -20] %}<option value="{{ g }}" {{ 'selected' if g == s.gain_db }}>{{ '+' if g > 0 }}{{ g }} dB</option>{% endfor %}
-              {% if s.gain_db not in [6, 3, 0, -3, -6, -10, -15, -20] %}<option value="{{ s.gain_db }}" selected>{{ s.gain_db }} dB</option>{% endif %}
-            </select></label>
-        </div>
-      </div>
-      <div class="sound-actions">
-        <button class="small">Save</button>
-        <button class="small danger" formaction="/sounds/{{ s.id }}/delete"
-                onclick="return confirm('Delete {{ s.name | e }}? Edits that use it keep their markers but render without it.')">Delete</button>
-      </div>
-    </form>
-    {% endfor %}
-  </div>
-</div>
-
-<div class="card" id="overlays">
-  <h2>Overlays <small class="muted">· green-screen clips ({{ overlays | length }})</small></h2>
-  <p class="muted" style="margin:.2rem 0 .8rem">Meme effects that play over the picture with their sound: the LoL "?" ping spam,
-    an explosion, a "WASTED" banner. Upload the green-screen (or blue-screen) clip as it is: the screen colour is found from
-    the corners and made see-through, once. Place them in the editor (＋ Add → Overlay); Claude's ✨ AI edit picks from
-    these too, by their <b>description</b>.</p>
-  <form method="post" action="/overlays/upload" enctype="multipart/form-data" class="sound-upload">
-    <label class="sound-files">
-      <span>Green-screen clips <small class="muted">· mp4, webm, mov · under 15 s each · takes a few seconds each</small></span>
-      <input type="file" name="files" multiple required accept="video/*,.mp4,.webm,.mov,.mkv">
-    </label>
-    <label><span>Description <small class="muted">(optional, for all of them; you can edit each one after)</small></span>
-      <input type="text" name="description" maxlength="500" placeholder="e.g. question-mark pings: someone says something dumb or makes a bad call"></label>
-    <div class="grid-2">
-      <label><span>Tags</span><input type="text" name="tags" maxlength="200" placeholder="lol, ping, meme"></label>
-      <label><span>Source and license</span><input type="text" name="source" maxlength="300" placeholder="e.g. youtube.com/watch?v=… · free to use"></label>
-    </div>
-    <div class="actions"><button class="primary">Add overlays</button></div>
-  </form>
-  {% if overlays %}
-  <div class="sound-list" style="margin-top:.8rem">
-    {% for o in overlays %}
-    <form class="sound-row" id="o-{{ o.id }}" method="post" action="/overlays/{{ o.id }}/save">
-      <div class="sound-play">
-        <video class="overlay-preview" src="/media/overlay/{{ o.id }}" muted loop autoplay playsinline
-               aria-label="{{ o.name }} (see-through)"></video>
-        <small class="muted"><span class="mono">{{ o.id }}</span> · {{ '%.1f' | format(o.duration_s) }} s
-          · keyed #{{ o.key_color }}{% if not o.sound %} · no sound{% endif %}
-          {% if used.get(o.id) %}· in {{ used[o.id] }} edit{{ 's' if used[o.id] != 1 }}{% endif %}</small>
-        {% if o.sound %}<audio controls preload="none" src="/media/overlay/{{ o.id }}/sound"></audio>{% endif %}
-      </div>
-      <div class="sound-fields">
-        <input type="text" name="name" value="{{ o.name }}" maxlength="80" aria-label="Name" class="sound-name">
-        <input type="text" name="description" value="{{ o.description }}" maxlength="500" aria-label="Description"
-               placeholder="When to use it (Claude reads this)" class="{{ 'missing' if not o.description }}">
-        <div class="sound-meta">
-          <input type="text" name="tags" value="{{ o.tags }}" maxlength="200" aria-label="Tags" placeholder="tags">
-          <input type="text" name="source" value="{{ o.source }}" maxlength="300" aria-label="Source and license" placeholder="source · license">
-          <label class="muted" title="Its sound's volume when it's placed. 0 = about as loud as her voice."><small>volume</small>
-            <select name="gain_db">
-              {% for g in [6, 3, 0, -3, -6, -10, -15, -20] %}<option value="{{ g }}" {{ 'selected' if g == o.gain_db }}>{{ '+' if g > 0 }}{{ g }} dB</option>{% endfor %}
-              {% if o.gain_db not in [6, 3, 0, -3, -6, -10, -15, -20] %}<option value="{{ o.gain_db }}" selected>{{ o.gain_db }} dB</option>{% endif %}
-            </select></label>
-        </div>
-      </div>
-      <div class="sound-actions">
-        <button class="small">Save</button>
-        <button class="small danger" formaction="/overlays/{{ o.id }}/delete"
-                onclick="return confirm('Delete {{ o.name | e }}? Edits that use it keep their markers but render without it.')">Delete</button>
-      </div>
-    </form>
-    {% endfor %}
-  </div>
-  {% endif %}
+  </section>
 </div>
 {% endblock %}

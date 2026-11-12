@@ -1,27 +1,27 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_pill, flag %}
+{% from "_macros.html" import status_pill, moment_status, flag %}
 {% block title %}#{{ moment.rank }} · {{ video.title }}{% endblock %}
+{% block shell %}compact{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('editor.css') }}">{% endblock %}
 {% block content %}
 {% set a = analysis %}
-<div class="actions" style="justify-content: space-between; margin-bottom: .75rem">
+<nav class="crumbs" aria-label="Where you are"><a href="/">Streams</a><span>›</span><a href="/video/{{ video.video_id }}">{{ (video.title or video.video_id)[:80] }}</a><span>›</span>Moment #{{ moment.rank }}</nav>
+<div class="page-head">
   <div>
-    <a href="/video/{{ video.video_id }}">← {{ (video.title or video.video_id)[:80] }}</a>
+    <h1>{{ (a.titles[0].text if a and a.titles else 'Moment #' ~ moment.rank ~ ' · ' ~ (moment.start_s | ts) ~ '–' ~ (moment.end_s | ts)) }}</h1>
+    <div class="actions">
+      <span class="pill">#{{ moment.rank }}</span>
+      {{ moment_status(moment.status) }}
+      {% if a %}<span class="pill"><b>{{ a.clip_worthiness }}/10</b>&nbsp;{{ a.category }}</span><span class="pill">{{ a.format }}</span>{% endif %}
+      {% if moment.kind == 'song' %}<span class="pill">♪ song</span>{% endif %}
+      {% if a and a.song %}<span class="pill">{{ a.song.title }} — {{ a.song.artist }}</span>{% endif %}
+      {% if a and a.music_copyright and a.music_copyright.risk != 'none' %}<span class="pill {{ 'error' if a.music_copyright.risk == 'high' else 'pending' }}">music © {{ a.music_copyright.risk }}</span>{% endif %}
+      {% for j in jobs %}<span class="pill {{ j.status }}">{{ j.stage }} {{ j.status }}</span>{% endfor %}
+    </div>
   </div>
   <div class="actions">
-    {% if prev %}<a class="btn" href="/moment/{{ prev }}">← #{{ moment.rank - 1 }}</a>{% endif %}
-    {% if next %}<a class="btn" href="/moment/{{ next }}">#{{ moment.rank + 1 }} →</a>{% endif %}
-  </div>
-</div>
-
-<div class="card">
-  <h1>#{{ moment.rank }} · {{ (a.titles[0].text if a and a.titles else (moment.start_s | ts) ~ '–' ~ (moment.end_s | ts)) }}</h1>
-  <div class="actions">
-    {{ status_pill(moment.status) }}
-    {% if a %}<span class="pill"><b>{{ a.clip_worthiness }}/10</b>&nbsp;{{ a.category }}</span><span class="pill">{{ a.format }}</span>{% endif %}
-    {% if moment.kind == 'song' %}<span class="pill">♪ song</span>{% endif %}
-    {% if a and a.song %}<span class="pill">{{ a.song.title }} — {{ a.song.artist }}</span>{% endif %}
-    {% if a and a.music_copyright and a.music_copyright.risk != 'none' %}<span class="pill {{ 'error' if a.music_copyright.risk == 'high' else 'pending' }}">music © {{ a.music_copyright.risk }}</span>{% endif %}
-    {% for j in jobs %}<span class="pill {{ j.status }}">{{ j.stage }} {{ j.status }}</span>{% endfor %}
+    {% if prev %}<a class="btn" href="/moment/{{ prev }}" title="The stream's moment #{{ moment.rank - 1 }}">← #{{ moment.rank - 1 }}</a>{% endif %}
+    {% if next %}<a class="btn" href="/moment/{{ next }}" title="The stream's moment #{{ moment.rank + 1 }}">#{{ moment.rank + 1 }} →</a>{% endif %}
   </div>
 </div>
 

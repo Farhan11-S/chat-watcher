@@ -2,10 +2,14 @@
 {% block title %}Brand · chat-watcher{% endblock %}
 {% block autorefresh %}0{% endblock %}
 {% block content %}
+<div class="page-head">
+  <div>
+    <h1>Brand</h1>
+    <p class="sub">Your channel's look, set once. Every clip's <b>intro</b> (teaser → glitch → your
+      logo and name) and <b>thumbnail</b> use it. Make them on a clip's page, under the editor.</p>
+  </div>
+</div>
 <div class="card">
-  <h1>Brand</h1>
-  <p class="muted" style="margin:.2rem 0 .8rem">Your channel's look, set once. Every clip's <b>intro</b> (teaser → glitch → your
-    logo and name) and <b>thumbnail</b> use it. Make them on a clip's page, under the editor.</p>
   <div class="brand-grid">
     <form method="post" action="/brand" enctype="multipart/form-data" class="brand-form">
       <label><span>Channel name <small class="muted">· shown in capitals on the intro and the corner badge</small></span>

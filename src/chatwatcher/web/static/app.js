@@ -1,4 +1,6 @@
-// chat-watcher dashboard: auto-refresh, chart hover, seek-to-time, copy buttons.
+// chat-watcher dashboard, every page: auto-refresh, chart hover, the stream page's review
+// player, storage, copy buttons, colour hex boxes; then the list tools (theme, auto-submit
+// filters, in-page filter, sortable tables, tabs, menus) at the end.
 (function () {
   // Reload the page when the worker changes something (only if the user isn't typing
   // or watching a video).
@@ -197,7 +199,9 @@
       const chip = review.querySelector(`[data-strip] [data-goto="${m.id}"]`);
       if (chip) chip.className = "chip " + m.status + (m === current ? " current" : "");
       const pill = document.querySelector(`[data-status-pill="${m.id}"] .pill`);
-      if (pill) { pill.className = "pill " + m.status; pill.textContent = m.status; }
+      if (pill) { pill.className = "pill " + m.status; pill.textContent = statusLabel[m.status] || m.status; }
+      const row = document.querySelector(`tr[data-row="${m.id}"]`);
+      if (row) { row.dataset.status = m.status; row.dispatchEvent(new Event("cw-filter", { bubbles: true })); }
     }
 
     panel.addEventListener("click", ev => {
@@ -378,4 +382,119 @@
       if (n.matches('input[type="color"]')) hexFor(n); else hexAll(n);
     }
   }).observe(document.body, { childList: true, subtree: true });
+
+  // ── list tools ───────────────────────────────────────────────────────────
+  // Theme: system → light → dark, remembered on this browser (base.html applies it before paint).
+  const themeBtn = document.querySelector("[data-theme-toggle]");
+  if (themeBtn) {
+    const label = themeBtn.querySelector("[data-theme-label]");
+    const order = ["", "light", "dark"], names = { "": "Theme: system", light: "Theme: light", dark: "Theme: dark" };
+    const now = () => document.documentElement.dataset.theme || "";
+    const paint = () => { if (label) label.textContent = names[now()]; };
+    themeBtn.addEventListener("click", () => {
+      const next = order[(order.indexOf(now()) + 1) % order.length];
+      if (next) document.documentElement.dataset.theme = next; else delete document.documentElement.dataset.theme;
+      try { next ? localStorage.setItem("cw-theme", next) : localStorage.removeItem("cw-theme"); } catch (e) {}
+      paint();
+      window.dispatchEvent(new Event("cw-theme"));
+    });
+    paint();
+  }
+
+  // Filter forms ([data-autosubmit]): a changed select submits at once; empty fields stay out of the URL.
+  document.querySelectorAll("form[data-autosubmit]").forEach(form => {
+    form.querySelectorAll("[data-autosubmit-hide]").forEach(b => b.hidden = true);
+    form.addEventListener("change", ev => { if (ev.target.matches("select")) form.requestSubmit(); });
+    form.addEventListener("search", () => form.requestSubmit());          // the search box's × button
+    form.addEventListener("submit", () => {
+      form.querySelectorAll("input, select").forEach(el => { if (!el.value) el.disabled = true; });
+    });
+  });
+  window.addEventListener("pageshow", () => document.querySelectorAll("form[data-autosubmit] :disabled")
+    .forEach(el => { if (!el.matches("button")) el.disabled = false; }));
+
+  // In-page filter: <div data-filter="#list"> holds a search box [data-filter-q], button groups
+  // [data-filter-attr="status"] (each button's data-value; data-attr on a button names another attribute)
+  // and selects [data-filter-min="rating"]. It hides the list's [data-item] children that don't match.
+  document.querySelectorAll("[data-filter]").forEach(bar => {
+    const list = document.querySelector(bar.dataset.filter);
+    if (!list) return;
+    const q = bar.querySelector("[data-filter-q]");
+    const count = bar.querySelector("[data-filter-count]");
+    const empty = list.closest(".card, section, form")?.querySelector("[data-filter-empty]");
+    function apply() {
+      const text = (q ? q.value : "").trim().toLowerCase();
+      const want = [];
+      bar.querySelectorAll("[data-filter-attr]").forEach(g => {
+        const on = g.querySelector(".on");
+        if (on && on.dataset.value) want.push([on.dataset.attr || g.dataset.filterAttr, on.dataset.value]);
+      });
+      const mins = [...bar.querySelectorAll("[data-filter-min]")].filter(s => s.value).map(s => [s.dataset.filterMin, +s.value]);
+      let shown = 0, all = 0;
+      list.querySelectorAll("[data-item]").forEach(el => {
+        all++;
+        const ok = (!text || (el.dataset.search || el.textContent).toLowerCase().includes(text))
+          && want.every(([k, v]) => el.dataset[k] === v) && mins.every(([k, v]) => +el.dataset[k] >= v);
+        el.hidden = !ok;
+        if (ok) shown++;
+      });
+      if (count) count.textContent = shown === all ? all : `${shown} of ${all}`;
+      if (empty) empty.hidden = shown > 0 || !all;
+    }
+    if (q) q.addEventListener("input", apply);
+    bar.querySelectorAll("[data-filter-attr] button").forEach(b => b.addEventListener("click", () => {
+      b.parentElement.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+      apply();
+    }));
+    bar.querySelectorAll("[data-filter-min]").forEach(s => s.addEventListener("change", apply));
+    list.addEventListener("cw-filter", apply);
+  });
+
+  // Sortable tables: <table data-sortable>, <th data-sort> (text) or <th data-sort="num">; a cell's
+  // data-v is what it sorts by (else its text). Click again to reverse.
+  document.querySelectorAll("table[data-sortable]").forEach(table => {
+    const heads = [...table.querySelectorAll("thead th")];
+    heads.forEach((th, col) => {
+      if (!("sort" in th.dataset)) return;
+      th.addEventListener("click", () => {
+        const num = th.dataset.sort === "num";
+        const dir = th.classList.contains(num ? "desc" : "asc") ? (num ? 1 : -1) : (num ? -1 : 1);   // numbers: biggest first
+        heads.forEach(h => h.classList.remove("asc", "desc"));
+        th.classList.add(dir > 0 ? "asc" : "desc");
+        const key = tr => { const c = tr.children[col]; const v = c ? (c.dataset.v ?? c.textContent.trim()) : ""; return num ? (parseFloat(v) || 0) : v.toLowerCase(); };
+        const body = table.tBodies[0];
+        [...body.rows].sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * dir; })
+          .forEach(tr => body.appendChild(tr));
+      });
+    });
+  });
+
+  // Tabs inside a page: [data-tabs] holds buttons [data-tab="x"] and panels [data-tab-panel="x"].
+  // The address's #hash opens the tab that holds that element (e.g. /sounds#overlays, #o-<id>).
+  document.querySelectorAll("[data-tabs]").forEach(box => {
+    const show = name => {
+      box.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+      box.querySelectorAll("[data-tab-panel]").forEach(p => p.hidden = p.dataset.tabPanel !== name);
+    };
+    box.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => {
+      show(b.dataset.tab);
+      history.replaceState(null, "", "#" + b.dataset.tab);
+    }));
+    const fromHash = () => {
+      const id = decodeURIComponent(location.hash.slice(1));
+      if (!id) return;
+      const panel = box.querySelector(`[data-tab-panel="${CSS.escape(id)}"]`) || document.getElementById(id)?.closest("[data-tab-panel]");
+      if (panel && box.contains(panel)) { show(panel.dataset.tabPanel); document.getElementById(id)?.scrollIntoView({ block: "nearest" }); }
+    };
+    fromHash();
+    window.addEventListener("hashchange", fromHash);
+  });
+
+  // Menus (details[data-menu]) close when you click outside them or press Escape.
+  document.addEventListener("click", ev => {
+    document.querySelectorAll("details[data-menu][open]").forEach(d => { if (!d.contains(ev.target)) d.open = false; });
+  });
+  document.addEventListener("keydown", ev => {
+    if (ev.key === "Escape") document.querySelectorAll("details[data-menu][open]").forEach(d => d.open = false);
+  });
 })();

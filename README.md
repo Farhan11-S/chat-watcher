@@ -71,7 +71,10 @@ Open **http://localhost:8000**. The dashboard and the worker run in the same pro
    (or leave `auto`). It processes the latest finished stream right away, then checks
    every 30 minutes. Upcoming and live streams are picked up once they end.
 2. **Streams** shows each stream's progress through ingest → score → clip → analyze
-   (→ upload).
+   (→ upload). Search by title or channel, filter by channel, status, type or day, and
+   sort by newest, best rating or most left to review; long lists are paged.
+   **Clips** lists the moments of every stream together (all, downloaded, kept, to
+   review, edited), with search and filters by rating, category and channel.
 3. **Open a stream and review its moments** on the embedded YouTube player:
    - a button per moment under the player jumps straight to it; **Next / Prev** walk
      through them, and clicking the chart jumps to any time

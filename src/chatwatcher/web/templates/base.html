@@ -4,24 +4,35 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}chat-watcher{% endblock %}</title>
+  <script>try { var t = localStorage.getItem("cw-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
   <link rel="stylesheet" href="{{ asset('app.css') }}">
+  {% block head %}{% endblock %}
 </head>
+{% from "_macros.html" import icon %}
 <body data-autorefresh="{% block autorefresh %}1{% endblock %}">
-<header class="top">
-  <a class="brand" href="/">🎬 chat-watcher</a>
-  <nav>
-    {% set here = request.url.path %}
-    <a href="/" class="{{ 'on' if here == '/' else '' }}">Streams</a>
-    <a href="/channels" class="{{ 'on' if here.startswith('/channels') else '' }}">Channels</a>
-    <a href="/jobs" class="{{ 'on' if here.startswith('/jobs') else '' }}">Queue</a>
-    <a href="/sounds" class="{{ 'on' if here.startswith('/sounds') else '' }}">Library</a>
-    <a href="/vtubers" class="{{ 'on' if here.startswith('/vtubers') else '' }}">VTubers</a>
-    <a href="/brand" class="{{ 'on' if here.startswith('/brand') else '' }}">Brand</a>
-    <a href="/storage" class="{{ 'on' if here.startswith('/storage') else '' }}">Storage</a>
+<div class="shell {% block shell %}{% endblock %}">
+<aside class="side">
+  <a class="brand" href="/" title="chat-watcher"><span class="brand-mark" aria-hidden="true">▶</span><span class="brand-name">chat-watcher</span></a>
+  {% set here = request.url.path %}
+  {% macro link(href, name, ico, on) %}<a href="{{ href }}" class="{{ 'on' if on }}" title="{{ name }}" {{ 'aria-current="page"' | safe if on }}>{{ icon(ico) }}<span>{{ name }}</span></a>{% endmacro %}
+  <nav aria-label="Main">
+    <span class="nav-label">Clipping</span>
+    {{ link('/', 'Streams', 'streams', here == '/' or here.startswith('/video')) }}
+    {{ link('/clips', 'Clips', 'clips', here.startswith('/clips') or here.startswith('/moment')) }}
+    {{ link('/jobs', 'Queue', 'queue', here.startswith('/jobs')) }}
+    <span class="nav-label">Editing kit</span>
+    {{ link('/sounds', 'Library', 'library', here.startswith('/sounds')) }}
+    {{ link('/vtubers', 'VTubers', 'vtubers', here.startswith('/vtubers')) }}
+    {{ link('/brand', 'Brand', 'brand', here.startswith('/brand')) }}
+    <span class="nav-label">Setup</span>
+    {{ link('/channels', 'Channels', 'channels', here.startswith('/channels')) }}
+    {{ link('/storage', 'Storage', 'storage', here.startswith('/storage')) }}
   </nav>
-  <span class="spacer"></span>
-  <span id="worker-pill" class="pill {{ 'ok' if worker != 'stopped' else 'warn' }}">worker: {{ worker }}</span>
-</header>
+  <div class="side-foot">
+    <span id="worker-pill" class="worker {{ 'ok' if worker != 'stopped' else 'warn' }}" title="The worker processes streams and renders edits">worker: {{ worker }}</span>
+    <button type="button" class="theme-toggle" data-theme-toggle title="Switch between light, dark and your system's theme">{{ icon('theme') }}<span data-theme-label>Theme</span></button>
+  </div>
+</aside>
 <main>
   {% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
   {% if error %}<div class="flash err">{{ error }}</div>{% endif %}
@@ -32,6 +43,7 @@
   {% endif %}
   {% block content %}{% endblock %}
 </main>
+</div>
 <script src="{{ asset('app.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>

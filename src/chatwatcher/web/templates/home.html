@@ -1,58 +1,107 @@
 {% extends "base.html" %}
-{% from "_macros.html" import stage_pills, status_pill %}
+{% from "_macros.html" import stage_track, status_pill, pager, icon, rating %}
 {% block content %}
-<div class="tiles">
-  <div class="tile"><div class="n">{{ summary.done }}</div><div class="l">streams done</div></div>
-  <div class="tile"><div class="n">{{ summary.processing + summary.new }}</div><div class="l">in progress</div></div>
-  <div class="tile"><div class="n">{{ summary.clips }}</div><div class="l">clips</div></div>
-  <div class="tile"><div class="n">{{ summary.analysed }}</div><div class="l">clips analysed</div></div>
-  <div class="tile"><div class="n">{{ summary.get('jobs_error', 0) }}</div><div class="l">failed jobs</div></div>
-  <div class="tile"><div class="n">{{ summary.channels }}</div><div class="l">watched channels</div></div>
-</div>
-
-<div class="card">
-  <form method="post" action="/add" class="actions">
-    <input type="text" name="url" placeholder="Paste a VOD URL to process it…" style="flex:1; min-width: 260px" required>
-    <button class="primary">Add stream</button>
-    <a class="btn" href="/channels">Watch a channel instead</a>
-  </form>
-  {% if worker == 'stopped' %}
-  <p class="muted" style="margin:.6rem 0 0">⚠️ No worker is running, so nothing will be processed. Start one with <code>cw serve</code> or <code>cw worker</code>.</p>
-  {% endif %}
-</div>
-
-<div class="card">
-  <div class="streams-head">
-    <h2>Streams{% if flt.on %} <small class="muted">· {{ flt.label }} · {{ videos | length }}</small>{% endif %}</h2>
-    <form method="get" action="/" class="actions stream-filter" aria-label="Filter streams by date">
-      <a class="btn small{{ ' on' if flt.day == 'today' }}" href="/?day=today" title="Streams that started today ({{ tzname }})">Today</a>
-      <a class="btn small{{ ' on' if flt.day == 'yesterday' }}" href="/?day=yesterday">Yesterday</a>
-      <label class="muted"><small>from</small> <input type="date" name="from" value="{{ flt['from'] }}" max="{{ flt.today }}"></label>
-      <label class="muted"><small>to</small> <input type="date" name="to" value="{{ flt['to'] }}" max="{{ flt.today }}"></label>
-      <button class="small">Show</button>
-      {% if flt.on %}<a class="btn small" href="/">All streams</a>{% endif %}
-    </form>
+<div class="page-head">
+  <div>
+    <h1>Streams</h1>
+    <p class="sub">Every VOD that was processed. Open one to review its moments.</p>
   </div>
-  {% if videos %}
-  <div class="table-wrap"><table>
-    <tr><th>Stream</th><th>Progress</th><th class="num">Moments</th><th class="num" title="Claude's highest rating (clip worthiness, 1-10) of a moment in this stream">Top rating</th><th class="num">Clips</th><th>Status</th></tr>
-    {% for v in videos %}
-    <tr>
-      <td><a href="/video/{{ v.video_id }}">{{ v.title or v.video_id }}</a><br>
-        <small>{{ v.channel_title or '' }}{% if v.published_at or v.added_at %} · {{ (v.published_at or v.added_at) | when }}{% endif %}{% if v.duration_s %} · {{ v.duration_s | ts }}{% endif %}{% if v.detected_type %} · {{ v.stream_type if v.stream_type != 'auto' else v.detected_type }}{% endif %}</small></td>
-      <td>{{ stage_pills(v.stages) }}</td>
-      <td class="num">{{ v.n_moments }}{% if v.n_moments %}<br><small class="muted" title="kept · skipped · still to review">{{ v.n_kept }} ✓ · {{ v.n_skipped }} ✗{% if v.n_moments - v.n_kept - v.n_skipped %} · <b>{{ v.n_moments - v.n_kept - v.n_skipped }} to review</b>{% endif %}</small>{% endif %}</td>
-      <td class="num toprate">{% if v.top %}<a href="/moment/{{ v.top.id }}" title="Moment #{{ v.top.rank }}{% if v.top.category %} · {{ v.top.category }}{% endif %}"><b class="{{ 'hi' if v.top.worthiness >= 8 else 'mid' if v.top.worthiness >= 6 else '' }}">{{ v.top.worthiness }}</b><small>/10</small></a><br><small class="muted">#{{ v.top.rank }}{% if v.top.n_great > 1 %} · {{ v.top.n_great }} rated 8+{% endif %}</small>{% else %}<small class="faint">—</small>{% endif %}</td>
-      <td class="num">{{ v.n_clips }}</td>
-      <td>{{ status_pill(v.status) }}{% if v.error %}<br><small class="faint">{{ v.error[:90] }}</small>{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </table></div>
-  {% elif flt.on %}
-  <p class="empty">No streams {{ 'today' if flt.day == 'today' else 'yesterday' if flt.day == 'yesterday' else 'in that range' }}. <a href="/">Show all streams</a></p>
-  {% else %}
-  <p class="empty">No streams yet. Paste a VOD URL above, or watch a channel.</p>
-  {% endif %}
+  <form method="post" action="/add" class="add-form">
+    <input type="text" name="url" placeholder="Paste a VOD URL to process it…" aria-label="VOD URL" required>
+    <button class="primary">Add stream</button>
+  </form>
+</div>
+{% if worker == 'stopped' %}
+<div class="flash warn">⚠️ No worker is running, so nothing will be processed. Start one with <code>cw serve</code> or <code>cw worker</code>.</div>
+{% endif %}
+
+<div class="stats">
+  <a class="stat" href="/?status=review"><b>{{ summary.to_review }}</b><span>moments to review</span></a>
+  <a class="stat" href="/clips?show=kept"><b>{{ summary.kept }}</b><span>moments kept</span></a>
+  <a class="stat" href="/clips?show=clips"><b>{{ summary.clips }}</b><span>clips downloaded</span></a>
+  <a class="stat" href="/?status=busy"><b>{{ summary.processing + summary.new }}</b><span>streams in progress</span></a>
+  <a class="stat{{ ' bad' if summary.get('jobs_error', 0) }}" href="/jobs?status=error"><b>{{ summary.get('jobs_error', 0) }}</b><span>failed jobs</span></a>
+  <a class="stat" href="/channels"><b>{{ summary.channels }}</b><span>watched channels</span></a>
 </div>
 
+<div class="card flush">
+  <form method="get" action="/" class="toolbar" data-autosubmit aria-label="Search and filter streams">
+    <label class="search">{{ icon('search') }}<input type="search" name="q" value="{{ flt.q }}" placeholder="Search title or channel…" aria-label="Search streams"></label>
+    <select name="channel" aria-label="Channel">
+      <option value="">All channels</option>
+      {% for c in channels %}<option value="{{ c.id }}" {{ 'selected' if c.id == flt.channel }}>{{ c.title }} ({{ c.n }})</option>{% endfor %}
+    </select>
+    <select name="status" aria-label="Status">
+      <option value="">Any status</option>
+      {% for k, label in statuses.items() %}<option value="{{ k }}" {{ 'selected' if k == flt.status }}>{{ label | capitalize }}</option>{% endfor %}
+    </select>
+    <select name="type" aria-label="Stream type">
+      <option value="">Any type</option>
+      {% for t in types %}<option {{ 'selected' if t == flt.type }}>{{ t }}</option>{% endfor %}
+    </select>
+    <span class="segmented" role="group" aria-label="Day">
+      <a class="{{ 'on' if flt.day == 'today' }}" href="{{ qs(request, day=none if flt.day == 'today' else 'today', from_=none, to=none, page=none) }}" title="Streams that started today ({{ tzname }})">Today</a>
+      <a class="{{ 'on' if flt.day == 'yesterday' }}" href="{{ qs(request, day=none if flt.day == 'yesterday' else 'yesterday', from_=none, to=none, page=none) }}">Yesterday</a>
+    </span>
+    <details class="menu" data-menu>
+      <summary class="btn{{ ' on' if flt['from'] or flt['to'] }}">{{ (flt['from'] or '…') ~ ' – ' ~ (flt['to'] or '…') if flt['from'] or flt['to'] else 'Dates' }}</summary>
+      <div class="menu-list dates">
+        <label><small>From</small> <input type="date" name="from" value="{{ flt['from'] }}" max="{{ flt.today }}"></label>
+        <label><small>To</small> <input type="date" name="to" value="{{ flt['to'] }}" max="{{ flt.today }}"></label>
+        <button class="small primary">Show</button>
+      </div>
+    </details>
+    {% if flt.day %}<input type="hidden" name="day" value="{{ flt.day }}">{% endif %}
+    <span class="grow"></span>
+    <label class="sort"><small>Sort</small>
+      <select name="sort" aria-label="Sort">
+        {% for k, s in sorts.items() %}<option value="{{ k }}" {{ 'selected' if k == flt.sort }}>{{ s[0] | capitalize }}</option>{% endfor %}
+      </select></label>
+    <button class="small" data-autosubmit-hide>Apply</button>
+    {% if flt.any %}<a class="btn small ghost" href="/">Clear filters</a>{% endif %}
+  </form>
+
+  {% if videos %}
+  <div class="list-cols stream-cols" aria-hidden="true">
+    <span>Stream <small class="count">{% if flt.on %}· {{ flt.label }} · {{ page.total }}{% else %}· {{ page.total }}{% endif %}</small></span>
+    <span>Moments</span><span title="Claude's highest rating (clip worthiness, 1-10) of a moment in this stream">Top rating</span><span>Clips</span>
+  </div>
+  <ul class="stream-list">
+    {% for v in videos %}
+    {% set left = v.n_moments - v.n_kept - v.n_skipped %}
+    <li class="stream">
+      <a class="thumb" href="/video/{{ v.video_id }}" tabindex="-1" aria-hidden="true">
+        <img loading="lazy" src="{{ stream_thumb(v.video_id) }}" alt="" width="160" height="90">
+        {% if v.duration_s %}<span class="dur">{{ v.duration_s | ts }}</span>{% endif %}
+      </a>
+      <div class="stream-main">
+        <a class="stream-title" href="/video/{{ v.video_id }}">{{ v.title or v.video_id }}</a>
+        <div class="meta">{{ v.channel_title or 'Unknown channel' }}{% if v.published_at or v.added_at %} · {{ (v.published_at or v.added_at) | when }}{% endif %}{% if v.detected_type %} · <span class="tag">{{ v.stream_type if v.stream_type != 'auto' else v.detected_type }}</span>{% endif %}</div>
+        <div class="stream-state">{{ stage_track(v.stages) }}{% if v.status != 'done' %} {{ status_pill(v.status) }}{% endif %}
+          {% if v.error %}<small class="faint">{{ v.error[:90] }}</small>{% endif %}</div>
+      </div>
+      <div class="stream-review" data-label="Moments">
+        {% if v.n_moments %}
+        <div class="meter" aria-hidden="true">{% if v.n_kept %}<i class="kept" style="flex:{{ v.n_kept }}"></i>{% endif %}{% if v.n_skipped %}<i class="skipped" style="flex:{{ v.n_skipped }}"></i>{% endif %}{% if left %}<i class="left" style="flex:{{ left }}"></i>{% endif %}</div>
+        <small class="muted" title="kept · skipped · still to review">{{ v.n_kept }} ✓ · {{ v.n_skipped }} ✗{% if left %} · <b>{{ left }} to review</b>{% endif %}</small>
+        {% else %}<small class="faint">no moments yet</small>{% endif %}
+      </div>
+      <div class="stream-top toprate" data-label="Top rating">
+        {% if v.top %}<a href="/moment/{{ v.top.id }}" title="Moment #{{ v.top.rank }}{% if v.top.category %} · {{ v.top.category }}{% endif %}">{{ rating(v.top.worthiness) }}<small>/10</small></a>
+        <small class="muted">#{{ v.top.rank }}{% if v.top.category %} · {{ v.top.category }}{% endif %}{% if v.top.n_great > 1 %} · {{ v.top.n_great }} rated 8+{% endif %}</small>
+        {% else %}<small class="faint">not rated</small>{% endif %}
+      </div>
+      <div class="stream-clips" data-label="Clips">{% if v.n_clips %}<b>{{ v.n_clips }}</b>{% else %}<small class="faint">–</small>{% endif %}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  {{ pager(page, request, what='streams') }}
+  {% elif flt.on %}
+  <p class="empty">No streams {{ 'today' if flt.day == 'today' else 'yesterday' if flt.day == 'yesterday' else 'in that range' }}{{ ' match these filters' if flt.q or flt.channel or flt.status or flt.type }}. <a href="/">Show all streams</a></p>
+  {% elif flt.any %}
+  <p class="empty">No streams match these filters. <a href="/">Show all streams</a></p>
+  {% else %}
+  <p class="empty">No streams yet. Paste a VOD URL above, or <a href="/channels">watch a channel</a>.</p>
+  {% endif %}
+</div>
 {% endblock %}

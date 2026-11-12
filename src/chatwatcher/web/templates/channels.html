@@ -1,35 +1,52 @@
 {% extends "base.html" %}
+{% from "_macros.html" import pager, icon %}
 {% block title %}Channels · chat-watcher{% endblock %}
 {% block content %}
+<div class="page-head">
+  <div>
+    <h1>Channels</h1>
+    <p class="sub">The worker checks each channel's Streams tab every {{ cfg.discover.poll_minutes }} minutes. Finished streams are
+      processed; upcoming and live ones are picked up when they end.</p>
+  </div>
+</div>
+
 <div class="card">
   <h2>Watch a channel</h2>
   <form method="post" action="/channels" class="actions">
-    <input type="text" name="channel" placeholder="@handle, channel URL or UC… id" style="flex:1; min-width: 240px" required>
+    <input type="text" name="channel" placeholder="@handle, channel URL or UC… id" class="grow" style="min-width: 240px" required>
     <label>type <select name="stream_type">
       {% for t in ['auto', 'talk', 'gaming', 'karaoke'] %}<option>{{ t }}</option>{% endfor %}
     </select></label>
     <label>process latest <input type="number" name="backfill" value="{{ cfg.discover.default_backfill }}" min="0" max="15" style="width:4.5rem"> stream(s) now</label>
     <button class="primary">Watch</button>
   </form>
-  <p class="muted" style="margin:.6rem 0 0">The worker checks each channel's Streams tab every {{ cfg.discover.poll_minutes }} minutes. Finished streams are processed; upcoming and live ones are picked up when they end.</p>
 </div>
 
-<div class="card">
-  <h2>Watched channels</h2>
+<div class="card flush">
+  <div class="toolbar" data-filter="#channel-rows">
+    <h2>Watched channels</h2>
+    <span class="count" data-filter-count>{{ channels | length }}</span>
+    <span class="grow"></span>
+    <label class="search">{{ icon('search') }}<input type="search" data-filter-q placeholder="Search channels…" aria-label="Search channels"></label>
+    <span class="segmented" data-filter-attr="state" role="group" aria-label="State">
+      <button type="button" class="on" data-value="">All</button><button type="button" data-value="on">Watching</button><button type="button" data-value="off">Paused</button>
+    </span>
+  </div>
   {% if channels %}
-  <div class="table-wrap"><table>
-    <tr><th>Channel</th><th>Type</th><th class="num">Streams</th><th>Last check</th><th></th></tr>
+  <div class="table-wrap"><table class="table" data-sortable>
+    <thead><tr><th data-sort>Channel</th><th>Type</th><th class="num" data-sort="num">Streams</th><th data-sort>Last check</th><th></th></tr></thead>
+    <tbody id="channel-rows">
     {% for c in channels %}
-    <tr>
-      <td><a href="https://www.youtube.com/channel/{{ c.channel_id }}/streams" target="_blank" rel="noopener">{{ c.title }}</a><br>
-        <small class="muted">{{ c.handle or c.channel_id }}</small>{% if not c.enabled %} <span class="pill">off</span>{% endif %}</td>
+    <tr data-item data-state="{{ 'on' if c.enabled else 'off' }}" data-search="{{ c.title }} {{ c.handle or '' }} {{ c.channel_id }}">
+      <td data-v="{{ c.title | lower }}"><a href="https://www.youtube.com/channel/{{ c.channel_id }}/streams" target="_blank" rel="noopener">{{ c.title }}</a>{% if not c.enabled %} <span class="pill">paused</span>{% endif %}<br>
+        <small class="muted">{{ c.handle or c.channel_id }}</small></td>
       <td><form method="post" action="/channels/{{ c.id }}/type" class="inline">
-        <select name="stream_type" onchange="this.form.submit()">
+        <select name="stream_type" onchange="this.form.submit()" aria-label="Stream type of {{ c.title }}">
           {% for t in ['auto', 'talk', 'gaming', 'karaoke'] %}<option {{ 'selected' if c.default_type == t }}>{{ t }}</option>{% endfor %}
         </select></form></td>
-      <td class="num">{{ c.videos }}</td>
-      <td><small>{{ c.last_checked_at | when if c.last_checked_at else 'never' }}</small></td>
-      <td class="actions">
+      <td class="num" data-v="{{ c.videos }}">{% if c.videos %}<a href="/?channel={{ c.id }}">{{ c.videos }}</a>{% else %}0{% endif %}</td>
+      <td data-v="{{ c.last_checked_at or '' }}"><small>{{ c.last_checked_at | when if c.last_checked_at else 'never' }}</small></td>
+      <td class="row-actions">
         <form method="post" action="/channels/{{ c.id }}/check" class="inline"><button class="small">Check now</button></form>
         {% if c.enabled %}
         <form method="post" action="/channels/{{ c.id }}/disable" class="inline"><button class="small">Pause</button></form>
@@ -40,23 +57,44 @@
       </td>
     </tr>
     {% endfor %}
+    </tbody>
   </table></div>
+  <p class="empty" data-filter-empty hidden>No channels match.</p>
   {% else %}
   <p class="empty">No channels yet.</p>
   {% endif %}
 </div>
 
-{% if discovered %}
-<div class="card">
-  <h2>Recently seen streams</h2>
-  <table>
-    {% for d in discovered %}
+{% if seen.total or flt.seen or flt.sq %}
+<div class="card flush" id="seen">
+  <form method="get" action="/channels#seen" class="toolbar" data-autosubmit aria-label="Search streams the watcher has seen">
+    <h2>Recently seen streams</h2>
+    <span class="count">{{ seen.total }}</span>
+    <span class="grow"></span>
+    <label class="search">{{ icon('search') }}<input type="search" name="sq" value="{{ flt.sq }}" placeholder="Search seen streams…" aria-label="Search seen streams"></label>
+    <span class="segmented" role="group" aria-label="What happened">
+      {% for k, label in [('', 'All'), ('queued', 'Queued'), ('skipped', 'Skipped')] %}
+      <a class="{{ 'on' if k == flt.seen }}" href="{{ qs(request, seen=k, sp=none) }}#seen">{{ label }}</a>{% endfor %}
+    </span>
+    {% if flt.seen %}<input type="hidden" name="seen" value="{{ flt.seen }}">{% endif %}
+    <button class="small" data-autosubmit-hide>Apply</button>
+  </form>
+  {% if seen.items %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Stream</th><th>Result</th><th>Why</th></tr></thead>
+    <tbody>
+    {% for d in seen.items %}
     <tr><td>{% if d.action == 'queued' %}<a href="/video/{{ d.video_id }}">{{ d.title or d.video_id }}</a>{% else %}{{ d.title or d.video_id }}{% endif %}
       <br><small class="muted">{{ d.channel_title or '' }} · {{ d.seen_at | when }}</small></td>
       <td><span class="pill {{ 'done' if d.action == 'queued' else '' }}">{{ d.action }}</span></td>
       <td><small class="muted">{{ d.reason or '' }}</small></td></tr>
     {% endfor %}
-  </table>
+    </tbody>
+  </table></div>
+  {{ pager(seen, request, key='sp', what='streams', anchor='#seen') }}
+  {% else %}
+  <p class="empty">No seen streams match. <a href="/channels#seen">Show all</a></p>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}

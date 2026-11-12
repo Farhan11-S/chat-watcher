@@ -1,33 +1,49 @@
 {% extends "base.html" %}
+{% from "_macros.html" import icon %}
 {% block title %}VTubers · chat-watcher{% endblock %}
 {% block autorefresh %}0{% endblock %}
 {% block content %}
-<div class="card">
-  <h1>VTubers</h1>
-  <p class="muted" style="margin:.2rem 0 .8rem">Each VTuber's colour, on every clip. In the editor, add the people in a clip under
-    <b>Captions → People in this clip</b>: her name brings her colour (her full name, her Japanese name, or one word of it when
-    only she has it: <i>Gigi</i> → Gigi Murin), and a new name is added here. Changing a named person's colour in the editor
-    changes it here too. Captions use the <b>on video</b> shade: a colour too dark to read over video with a black outline is
-    made lighter, same hue.</p>
-  <form method="post" action="/vtubers/save" class="vt-row vt-add">
-    <input type="color" name="color" value="#{{ suggest | lower }}" aria-label="Colour">
-    <input type="text" name="name" maxlength="40" required placeholder="Name, e.g. Gigi Murin" aria-label="Name">
-    <button class="primary small">Add</button>
-  </form>
-  <form method="post" action="/vtubers/import" enctype="multipart/form-data" class="vt-row vt-import">
-    <label><span class="muted"><small>Import a CSV (header: <code>name</code>, <code>main_hex</code>; also read:
-      <code>japanese_name</code>, <code>accent_hex</code>, <code>status</code>, <code>profile_url</code>). Same names are updated.</small></span>
-      <input type="file" name="file" accept=".csv,text/csv" required></label>
-    <button class="small">Import</button>
-  </form>
+<div class="page-head">
+  <div>
+    <h1>VTubers</h1>
+    <p class="sub">Each VTuber's caption colour, on every clip. Name the people in a clip in the editor
+      (<b>Captions → People in this clip</b>) and her colour comes from here.</p>
+  </div>
 </div>
 
-<div class="card">
+<div class="card flush">
+  <div class="toolbar" data-filter="#vt-rows">
+    <label class="search">{{ icon('search') }}<input type="search" data-filter-q placeholder="Search name…" aria-label="Search VTubers"></label>
+    <span class="segmented" data-filter-attr="state" role="group" aria-label="Status">
+      <button type="button" class="on" data-value="">All</button><button type="button" data-value="active">Active</button><button type="button" data-value="gone">Retired</button><button type="button" data-value="used" data-attr="used">In your clips</button>
+    </span>
+    <span class="count" data-filter-count>{{ vtubers | length }}</span>
+    <span class="grow"></span>
+    <details class="menu right wide" data-menu>
+      <summary class="btn primary">＋ Add or import</summary>
+      <div class="menu-list">
+        <small class="faint">Add one</small>
+        <form method="post" action="/vtubers/save" class="vt-row vt-add">
+          <input type="color" name="color" value="#{{ suggest | lower }}" aria-label="Colour">
+          <input type="text" name="name" maxlength="40" required placeholder="Name, e.g. Gigi Murin" aria-label="Name">
+          <button class="primary small">Add</button>
+        </form>
+        <small class="faint">Import a CSV</small>
+        <form method="post" action="/vtubers/import" enctype="multipart/form-data" class="vt-import">
+          <label><span class="muted"><small>Header: <code>name</code>, <code>main_hex</code>; also read:
+            <code>japanese_name</code>, <code>accent_hex</code>, <code>status</code>, <code>profile_url</code>. Same names are updated.</small></span>
+            <input type="file" name="file" accept=".csv,text/csv" required></label>
+          <button class="small">Import</button>
+        </form>
+      </div>
+    </details>
+  </div>
   {% if vtubers %}
-  <p class="muted"><small>{{ vtubers | length }} VTubers.</small></p>
-  <div class="vt-list">
+  <div class="vt-list" id="vt-rows">
     {% for key, v in vtubers.items() %}
-    <div class="vt-item {{ 'vt-gone' if v.status in ('Retirement', 'Alum') }}">
+    {% set gone = v.status in ('Retirement', 'Alum') %}
+    <div class="vt-item {{ 'vt-gone' if gone }}" data-item data-state="{{ 'gone' if gone else 'active' }}" data-used="{{ 'used' if used.get(key, 0) else '' }}"
+         data-search="{{ v.name }} {{ v.japanese_name }}">
       <form method="post" action="/vtubers/save" class="vt-row">
         <input type="hidden" name="old" value="{{ v.name }}">
         <input type="color" name="color" value="#{{ v.color | lower }}" aria-label="Colour of {{ v.name }}">
@@ -46,8 +62,11 @@
     </div>
     {% endfor %}
   </div>
+  <p class="empty" data-filter-empty hidden>No VTubers match.</p>
+  <p class="faint pad"><small>Captions use the <b>on video</b> shade: a colour too dark to read over video with a black outline is made lighter, same hue.
+    Changing a named person's colour in the editor changes it here too.</small></p>
   {% else %}
-  <p class="muted">No VTubers yet. Add them above, import a CSV, or name people in a clip's captions.</p>
+  <p class="empty">No VTubers yet. Add them, import a CSV, or name people in a clip's captions.</p>
   {% endif %}
 </div>
 {% endblock %}

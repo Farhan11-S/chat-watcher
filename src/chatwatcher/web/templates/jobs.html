@@ -1,27 +1,52 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_pill %}
+{% from "_macros.html" import status_pill, pager, icon %}
 {% block title %}Queue · chat-watcher{% endblock %}
 {% block content %}
-<div class="card">
-  <h2>Queue</h2>
+<div class="page-head">
+  <div>
+    <h1>Queue</h1>
+    <p class="sub">What the worker is doing, what waits, and what failed.</p>
+  </div>
+</div>
+<div class="card flush">
+  <nav class="tabs" aria-label="Job status">
+    {% for k, label in [('', 'All'), ('running', 'Running'), ('pending', 'Waiting'), ('error', 'Failed'), ('done', 'Done')] %}
+    <a class="{{ 'on' if k == flt.status }}{{ ' bad' if k == 'error' and counts[k] }}" href="{{ qs(request, status=k, page=none) }}">{{ label }} <span class="n">{{ counts[k] }}</span></a>
+    {% endfor %}
+  </nav>
+  <form method="get" action="/jobs" class="toolbar" data-autosubmit aria-label="Search and filter jobs">
+    {% if flt.status %}<input type="hidden" name="status" value="{{ flt.status }}">{% endif %}
+    <label class="search">{{ icon('search') }}<input type="search" name="q" value="{{ flt.q }}" placeholder="Search by stream title…" aria-label="Search jobs"></label>
+    <select name="stage" aria-label="Stage">
+      <option value="">Any stage</option>
+      {% for s in stages %}<option value="{{ s }}" {{ 'selected' if s == flt.stage }}>{{ {'frames': 'preview'}.get(s, s) }}</option>{% endfor %}
+    </select>
+    <button class="small" data-autosubmit-hide>Apply</button>
+    {% if flt.q or flt.stage %}<a class="btn small ghost" href="{{ qs(request, q=none, stage=none, page=none) }}">Clear filters</a>{% endif %}
+  </form>
   {% if rows %}
-  <div class="table-wrap"><table>
-    <tr><th>Status</th><th>Stream</th><th>Stage</th><th class="num">Tries</th><th>When ({{ tzname }})</th><th>Last result</th><th></th></tr>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Status</th><th>Stream</th><th>Stage</th><th class="num">Tries</th><th>When ({{ tzname }})</th><th>Last result</th><th></th></tr></thead>
+    <tbody>
     {% for j in rows %}
     <tr>
       <td>{{ status_pill(j.status) }}</td>
       <td><a href="/video/{{ j.yt_id }}">{{ (j.title or j.yt_id)[:60] }}</a></td>
-      <td>{{ j.stage }}{% if j.moment_rank %} #{{ j.moment_rank }}{% endif %}</td>
+      <td class="nowrap"><span class="tag">{{ {'frames': 'preview'}.get(j.stage, j.stage) }}</span>{% if j.moment_rank %} <small class="muted">#{{ j.moment_rank }}</small>{% endif %}</td>
       <td class="num">{{ j.attempts }}</td>
-      <td><small>{% if j.status == 'pending' %}runs at {{ j.run_after | when }}{% elif j.finished_at %}{{ j.finished_at | when }}{% elif j.started_at %}started {{ j.started_at | when }}{% endif %}</small></td>
-      <td><small class="{{ 'muted' if j.status != 'error' else '' }}" style="white-space:pre-wrap">{{ ((j.error or j.message) or '')[:300] }}</small></td>
+      <td class="nowrap"><small>{% if j.status == 'pending' %}runs at {{ j.run_after | when }}{% elif j.finished_at %}{{ j.finished_at | when }}{% elif j.started_at %}started {{ j.started_at | when }}{% endif %}</small></td>
+      <td><small class="result {{ 'muted' if j.status != 'error' else 'bad' }}">{{ ((j.error or j.message) or '')[:300] }}</small></td>
       <td class="nowrap">{% if j.status in ('error', 'pending') %}<form method="post" action="/jobs/{{ j.id }}/retry" class="inline"><button class="small">Run now</button></form>{% endif %}
         {% if j.status == 'error' %}<form method="post" action="/video/{{ j.yt_id }}/remove" class="inline"
           onsubmit="return confirm('Remove this stream from the dashboard and this computer? Its queue jobs go too, and the channel watcher won\'t fetch it again.')">
           <input type="hidden" name="back_to" value="jobs"><button class="small danger" title="Remove the stream and its queue jobs">✕ Remove stream</button></form>{% endif %}</td>
     </tr>
     {% endfor %}
+    </tbody>
   </table></div>
+  {{ pager(page, request, what='jobs') }}
+  {% elif flt.q or flt.stage or flt.status %}
+  <p class="empty">No jobs match. <a href="/jobs">Show the whole queue</a></p>
   {% else %}
   <p class="empty">Nothing queued yet.</p>
   {% endif %}

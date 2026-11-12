@@ -465,3 +465,86 @@ def test_home_filters_streams_by_local_day_and_shows_the_top_rating(site):
     # Local days: a stream at 00:30 WIB is that day, though it's the day before in UTC.
     lo, hi = clock.local_days(day, day, ZoneInfo("Asia/Jakarta"))
     assert lo.endswith("17:00:00") and hi > lo
+
+
+def test_home_search_filters_sort_and_pages(site):
+    cfg, conn, client, _ = site
+    for i in range(45):                                  # 46 streams: three pages of 20
+        store.upsert_video(conn, f"filler{i:05d}", title=f"Filler stream {i}", status="done")
+    page = client.get("/").text
+    assert 'aria-label="Pages"' in page and "1–20 of 46 streams" in page and 'href="/?page=2"' in page
+    assert page.count('class="stream"') == 20
+    last = client.get("/?page=3").text
+    assert "41–46 of 46 streams" in last and last.count('class="stream"') == 6
+    assert client.get("/?page=99").text.count('class="stream"') == 6      # past the end: the last page
+    assert client.get("/?page=x&channel=").status_code == 200              # junk and empty selects are ignored
+
+    hit = client.get("/", params={"q": "テスト"}).text                      # the title, not the fillers
+    assert f'href="/video/{VID}"' in hit and "Filler stream" not in hit and "Clear filters" in hit
+    assert "No streams match these filters" in client.get("/", params={"q": "nothing like this"}).text
+    assert "Filler stream 7<" in client.get("/", params={"q": "stream 7"}).text
+    assert client.get("/", params={"q": "100%_"}).status_code == 200       # LIKE wildcards are plain text
+
+    review = client.get("/?status=review").text                            # only the scored stream has moments
+    assert f'href="/video/{VID}"' in review and "Filler stream" not in review
+    assert f'href="/video/{VID}"' in client.get("/?status=clips").text
+    conn.execute("UPDATE moments SET status = 'approved'")
+    assert f'href="/video/{VID}"' not in client.get("/?status=review").text
+    assert f'href="/video/{VID}"' in client.get("/?status=reviewed").text
+    best = client.get("/?sort=rating").text                                # the rated stream comes first
+    assert best.index(f'href="/video/{VID}"') < best.index("Filler stream")
+    # the pager keeps the other filters
+    assert 'href="/?q=Filler&amp;page=2"' in client.get("/", params={"q": "Filler"}).text
+
+
+def test_clips_page_lists_moments_of_every_stream(site):
+    cfg, conn, client, _ = site
+    n = conn.execute("SELECT COUNT(*) FROM moments").fetchone()[0]
+    page = client.get("/clips").text
+    assert page.count('class="clip-card') == n and f'href="/moment/{mid(conn)}"' in page
+    assert "ぺこら爆笑" in page and "/media/frame/" in page                  # Claude's title, the clip's peak frame
+    assert f'All moments <span class="n">{n}</span>' in page and f'Downloaded <span class="n">{n}</span>' in page
+    assert 'Kept <span class="n">0</span>' in page
+    assert "No moments match" in client.get("/clips?show=kept").text
+    client.post(f"/moment/{mid(conn)}/status", json={"status": "approved"})
+    kept = client.get("/clips?show=kept").text
+    assert kept.count('class="clip-card') == 1 and ">kept<" in kept
+    assert client.get("/clips?rating=9").text.count('class="clip-card') == n      # FakeRunner rates 9
+    assert "No moments match" in client.get("/clips?rating=9&category=nope").text
+    assert client.get("/clips", params={"q": "ぺこら"}).text.count('class="clip-card') == n
+    assert "No moments match" in client.get("/clips", params={"q": "zzzz"}).text
+    assert client.get("/clips?sort=new&page=5&channel=x").status_code == 200
+
+
+def test_queue_tabs_search_and_pages(site):
+    cfg, conn, client, _ = site
+    for i in range(40):                                  # one job per stream and stage
+        pk = store.upsert_video(conn, f"queued{i:05d}", title=f"Queued {i}", status="done")
+        conn.execute("INSERT INTO jobs (video_id, stage, status) VALUES (?, 'score', 'done')", (pk,))
+    bad = store.upsert_video(conn, "brokenvid01", title="Broken one", status="error")
+    conn.execute("INSERT INTO jobs (video_id, stage, status, error) VALUES (?, 'ingest', 'error', 'boom')", (bad,))
+    conn.commit()
+    page = client.get("/jobs").text
+    assert 'All <span class="n">41</span>' in page and 'Failed <span class="n">1</span>' in page
+    assert "1–30 of 41 jobs" in page and "boom" in page                    # failures come first
+    failed = client.get("/jobs?status=error").text
+    assert "Broken one" in failed and failed.count("<tr>") == 2            # the header and the one job
+    assert "Broken one" not in client.get("/jobs?status=done").text
+    assert "Broken one" in client.get("/jobs", params={"q": "broken"}).text
+    assert "No jobs match" in client.get("/jobs?stage=upload").text
+    assert "31–41 of 41 jobs" in client.get("/jobs?page=2").text
+
+
+def test_seen_streams_are_paged_and_filtered(site):
+    cfg, conn, client, _ = site
+    for i in range(25):
+        conn.execute("INSERT INTO discovered (video_id, title, action, reason, seen_at) VALUES (?, ?, ?, 'test', datetime('now', ?))",
+                     (f"seen{i:07d}", f"Seen stream {i}", "queued" if i % 5 == 0 else "skipped", f"-{i} minutes"))
+    conn.commit()
+    page = client.get("/channels").text
+    assert "Recently seen streams" in page and "1–20 of 25 streams" in page and 'href="/channels?sp=2#seen"' in page
+    assert "Seen stream 24" in client.get("/channels?sp=2").text
+    queued = client.get("/channels?seen=queued").text
+    assert "Seen stream 20" in queued and "Seen stream 21" not in queued
+    assert "Seen stream 13" in client.get("/channels", params={"sq": "stream 13"}).text
+    assert "No seen streams match" in client.get("/channels", params={"sq": "zzzz"}).text

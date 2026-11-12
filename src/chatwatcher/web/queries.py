@@ -37,6 +37,11 @@ def summary(conn: sqlite3.Connection) -> dict[str, int]:
     out["channels"] = conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]
     out["clips"] = conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
     out["analysed"] = conn.execute("SELECT COUNT(*) FROM analyses WHERE moment_id IS NOT NULL").fetchone()[0]
+    out["streams"] = sum(out[s] for s in ("new", "processing", "done", "error"))
+    out["to_review"] = conn.execute(
+        """SELECT COUNT(*) FROM moments m JOIN videos v ON v.id = m.video_id
+           WHERE m.status = 'new' AND v.status != 'skipped'""").fetchone()[0]
+    out["kept"] = conn.execute("SELECT COUNT(*) FROM moments WHERE status = 'approved'").fetchone()[0]
     return out
 
 
@@ -126,13 +131,16 @@ def video_detail(conn: sqlite3.Connection, video_id: str, *, with_upload: bool =
         (video_id,)).fetchone()
     if v is None:
         return None
+    from chatwatcher.web.listing import thumb   # listing imports this module
     moments = []
     for m in conn.execute(
             """SELECT m.*, cl.id AS clip_id, cl.height, cl.fps, cl.vcodec, cl.size_bytes, cl.folder,
-                      cl.uploaded_at, cl.path AS clip_path
-               FROM moments m LEFT JOIN clips cl ON cl.moment_id = m.id
+                      cl.uploaded_at, cl.path AS clip_path, cl.frames_json AS clip_frames,
+                      p.frames_json AS preview_frames
+               FROM moments m LEFT JOIN clips cl ON cl.moment_id = m.id LEFT JOIN previews p ON p.moment_id = m.id
                WHERE m.video_id = ? ORDER BY m.rank""", (v["id"],)):
         d = dict(m) | _j(m["features_json"], {})
+        d["thumb"] = thumb(v["video_id"], m["id"], m["clip_id"], d.pop("clip_frames"), d.pop("preview_frames"))
         d["analysis"] = latest_analysis(conn, m["id"])
         d["clip_exists"] = bool(m["clip_path"]) and Path(m["clip_path"]).is_file()
         moments.append(d)

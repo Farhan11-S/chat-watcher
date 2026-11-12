@@ -12,13 +12,20 @@
   {%- for p in parts %}<span><span class="sw seg-{{ p.cls }}"></span>{{ p.name }}</span>{% endfor -%}
 </div>
 {%- endmacro %}
+{% from "_macros.html" import icon %}
 {% block content %}
-<div class="tiles">
-  <div class="tile"><div class="n">{{ local.disk_free | bytes }}</div><div class="l">free on this disk (of {{ local.disk_total | bytes }})</div></div>
-  <div class="tile"><div class="n">{{ local.ours | bytes }}</div><div class="l">chat-watcher on this disk</div></div>
+<div class="page-head">
+  <div>
+    <h1>Storage</h1>
+    <p class="sub">What chat-watcher keeps on this computer{{ ' and on Google Drive' if cfg.drive.enabled }}, and the health check.</p>
+  </div>
+</div>
+<div class="stats">
+  <div class="stat"><b>{{ local.disk_free | bytes }}</b><span>free on this disk (of {{ local.disk_total | bytes }})</span></div>
+  <div class="stat"><b>{{ local.ours | bytes }}</b><span>chat-watcher on this disk</span></div>
   {% if cfg.drive.enabled %}
-  <div class="tile"><div class="n">{{ (drive.ours if drive and not drive.error else none) | bytes }}</div><div class="l">chat-watcher on Google Drive</div></div>
-  <div class="tile"><div class="n">{{ (drive.free if drive and not drive.error else none) | bytes }}</div><div class="l">free on Google Drive</div></div>
+  <div class="stat"><b>{{ (drive.ours if drive and not drive.error else none) | bytes }}</b><span>chat-watcher on Google Drive</span></div>
+  <div class="stat"><b>{{ (drive.free if drive and not drive.error else none) | bytes }}</b><span>free on Google Drive</span></div>
   {% endif %}
 </div>
 
@@ -94,36 +101,44 @@
 {% set local_streams = streams | selectattr('local') | list %}
 {# A stream that's just started has an empty folder here and nothing on Drive yet (or Drive isn't loaded): it's in neither list. #}
 {% set drive_only = streams | rejectattr('local') | selectattr('drive') | list %}
-<div class="card">
-  <h2>Streams on this computer</h2>
+<div class="card flush">
+  <div class="toolbar" data-filter="#storage-rows">
+    <h2>Streams on this computer</h2>
+    <span class="count" data-filter-count>{{ local_streams | length }}</span>
+    <span class="grow"></span>
+    {% if local_streams %}<label class="search">{{ icon('search') }}<input type="search" data-filter-q placeholder="Search stream or channel…" aria-label="Search streams"></label>{% endif %}
+  </div>
   {% if local_streams %}
-  <p class="faint" style="margin:-.4rem 0 .6rem"><small>Tick streams to free space on this computer.
+  <p class="faint pad"><small>Tick streams to free space on this computer.
     <b>Delete videos only</b> removes the clip videos and keeps summaries, frames and your edits; download
     them again any time with <b>Clip kept</b> (stream page) or <b>Download it again</b> (clip page). <b>Delete streams</b> removes everything, and the channel watcher won't fetch
     them again.{% if cfg.drive.enabled %} Google Drive copies are never touched.{% endif %}</small></p>
   <form method="post" action="/storage/delete" data-delete-form data-drive="{{ 1 if cfg.drive.enabled else 0 }}">
-    <div class="actions delete-bar">
+    <div class="actions delete-bar pad">
       <span class="muted" data-selection>Nothing selected</span>
       <span style="flex:1"></span>
       <button class="small" name="mode" value="videos" disabled data-needs-selection>Delete videos only</button>
       <button class="small danger" name="mode" value="all" disabled data-needs-selection>Delete streams</button>
     </div>
-    <div class="table-wrap"><table>
-      <tr><th style="width:2rem"><input type="checkbox" data-select-all aria-label="Select all streams"></th>
-        <th>Stream</th><th class="num">Clip videos</th><th class="num">On this computer</th>{% if cfg.drive.enabled %}<th class="num">On Google Drive</th>{% endif %}</tr>
+    <div class="table-wrap"><table class="table" data-sortable>
+      <thead><tr><th style="width:2rem"><input type="checkbox" data-select-all aria-label="Select all streams"></th>
+        <th data-sort>Stream</th><th class="num" data-sort="num">Clip videos</th><th class="num" data-sort="num">On this computer</th>{% if cfg.drive.enabled %}<th class="num" data-sort="num">On Google Drive</th>{% endif %}</tr></thead>
+      <tbody id="storage-rows">
       {% for s in local_streams %}
       {% set on_drive = (s.drive or 0) > 0 if drive_known else (s.drive_url is not none) %}
-      <tr>
+      <tr data-item>
         <td><input type="checkbox" name="key" value="{{ s.key }}" aria-label="Select {{ s.label }}"
               data-size="{{ s.local }}" data-clips="{{ s.clips }}" data-on-drive="{{ 1 if on_drive else 0 }}"></td>
-        <td>{% if s.video_id %}<a href="/video/{{ s.video_id }}">{{ s.label }}</a>{% else %}{{ s.label }}{% endif %}<br>
+        <td data-v="{{ s.label | lower }}">{% if s.video_id %}<a href="/video/{{ s.video_id }}">{{ s.label }}</a>{% else %}{{ s.label }}{% endif %}<br>
           <small class="muted">{{ (channels | selectattr('key', 'equalto', s.channel) | map(attribute='label') | first) or s.channel }}</small></td>
-        <td class="num">{{ s.clips | bytes if s.clips else '–' }}</td>
-        <td class="num">{{ s.local | bytes }}</td>
-        {% if cfg.drive.enabled %}<td class="num">{% if drive_known %}{{ s.drive | bytes if s.drive else 'not on Drive' }}{% elif s.drive_url %}☁ uploaded{% else %}–{% endif %}</td>{% endif %}
+        <td class="num" data-v="{{ s.clips or 0 }}">{{ s.clips | bytes if s.clips else '–' }}</td>
+        <td class="num" data-v="{{ s.local or 0 }}">{{ s.local | bytes }}</td>
+        {% if cfg.drive.enabled %}<td class="num" data-v="{{ s.drive or 0 }}">{% if drive_known %}{{ s.drive | bytes if s.drive else 'not on Drive' }}{% elif s.drive_url %}☁ uploaded{% else %}–{% endif %}</td>{% endif %}
       </tr>
       {% endfor %}
+      </tbody>
     </table></div>
+    <p class="empty" data-filter-empty hidden>No streams match.</p>
   </form>
   {% else %}
   <p class="empty">Nothing from chat-watcher takes space on this computer right now{% if local.data_bytes %}
@@ -135,10 +150,10 @@
 <div class="card">
   <h2>Only on Google Drive <small class="muted">· {{ drive_only | length }} stream{{ 's' if drive_only | length != 1 }},
     {{ drive_only | sum(attribute='drive') | bytes }}</small></h2>
-  <p class="faint" style="margin:-.4rem 0 .6rem"><small>Deleted from this computer (or uploaded from another one). chat-watcher
+  <p class="faint"><small>Deleted from this computer (or uploaded from another one). chat-watcher
     never deletes anything on Drive; remove these in Google Drive if you don't need them.</small></p>
-  <div class="table-wrap"><table>
-    <tr><th>Stream</th><th class="num">On Google Drive</th></tr>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Stream</th><th class="num">On Google Drive</th></tr></thead>
     {% for s in drive_only %}
     <tr>
       <td>{{ s.label }}{% if s.youtube_id %} <a href="https://youtu.be/{{ s.youtube_id }}" target="_blank" rel="noopener">YouTube ↗</a>{% endif %}<br>
