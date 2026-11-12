@@ -52,6 +52,18 @@ def external_worker_running(cfg: Config) -> bool:
     return False
 
 
+class Static(StaticFiles):
+    """Static files. The editor's modules (static/editor/) import each other by plain paths,
+    so asset()'s ?v= only covers editor/main.js: they're sent with no-cache, which has the
+    browser ask each time whether its copy is still the newest (a 304 when it is)."""
+
+    def file_response(self, full_path, *args, **kwargs):
+        response = super().file_response(full_path, *args, **kwargs)
+        if Path(full_path).parent.name == "editor":
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = None) -> FastAPI:
     state: dict[str, Any] = {"worker": None, "thread": None}
 
@@ -80,7 +92,7 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             state["thread"].join(timeout=3)
 
     app = FastAPI(title="chat-watcher", lifespan=lifespan, docs_url=None, redoc_url=None)
-    app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+    app.mount("/static", Static(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters["ts"] = lambda s: fmt_ts(s or 0)
     templates.env.filters["mb"] = lambda n: f"{(n or 0) / 1_048_576:.0f} MB"

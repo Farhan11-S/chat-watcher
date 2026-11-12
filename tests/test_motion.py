@@ -18,7 +18,7 @@ from chatwatcher.worker import Worker
 from test_web import mid, site  # noqa: F401  (fixture)
 
 needs_ffmpeg = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
-EDITOR_JS = Path(__file__).resolve().parents[1] / "src/chatwatcher/web/static/editor.js"
+PREVIEW_JS = Path(__file__).resolve().parents[1] / "src/chatwatcher/web/static/editor/preview.js"
 
 _ENV = {"_if": lambda c, a, b: a if c else b, "gte": lambda a, b: float(a >= b), "lt": lambda a, b: float(a < b),
         "gt": lambda a, b: float(a > b), "clip": lambda x, lo, hi: max(min(x, hi), lo), "sin": math.sin}
@@ -89,13 +89,14 @@ SHORT_LAYOUTS = [None, {"type": "crop", "x": 0.75, "y": 0.5, "scale": 1.4, "titl
 
 @pytest.mark.parametrize("layout", SHORT_LAYOUTS)
 def test_preview_maths_matches_the_render(layout):
-    """editor.js draws the preview with a copy of camera() (and, for a Short, of the layout's
+    """editor/preview.js draws the preview with a copy of camera() (and, for a Short, of the layout's
     panels); they must agree."""
     node = shutil.which("node")
     if not node:
         pytest.skip("node isn't installed")
-    js = EDITOR_JS.read_text(encoding="utf-8")
-    start, end = js.index("  function centre("), js.index("  // The picture box inside")
+    js = PREVIEW_JS.read_text(encoding="utf-8")       # a module: S is the shared state it imports
+    start, end = js.index("function centre("), js.index("// The picture box inside")
+    code = js[start:end].replace("\nexport ", "\n")
     regions = {"face": {"x": 0.7, "y": 0.2, "w": 0.2, "h": 0.4}, "game": {"x": 0, "y": 0, "w": 0.7, "h": 0.8}}
     fx = [{"type": "push", "t": 1.0, "d": 3.0, "zoom": 1.4, "region": "game"},
           {"type": "punch", "t": 2.5, "d": 1.0, "zoom": 2.2, "region": "face"},
@@ -110,12 +111,12 @@ def test_preview_maths_matches_the_render(layout):
                                         "transitions": motion.TRANSITIONS, "transition_d": motion.TRANSITION_D},
          "layout_info": {"out": [lay.OUT_W, lay.OUT_H], "src": [1920, 1080]}}
     times = [i / 50 for i in range(400)]
-    script = (f"const ZOOMS = {json.dumps(['punch', 'push'])};\nconst D = {json.dumps(D)};\nlet fx = {json.dumps(fx)};\n"
-              f"let segs = {json.dumps(segs)};\n"
-              f"let kind = {json.dumps('short' if layout else 'long')}, layout = {json.dumps(layout)}, regionMode = false;\n"
+    script = (f"const ZOOMS = {json.dumps(['punch', 'push'])};\n"
+              f"const S = {{ D: {json.dumps(D)}, fx: {json.dumps(fx)}, segs: {json.dumps(segs)},\n"
+              f"  kind: {json.dumps('short' if layout else 'long')}, layout: {json.dumps(layout)}, regionMode: false }};\n"
               "const video = { videoWidth: 1920, videoHeight: 1080 };\n"
-              f"{js[start:end]}\nconsole.log(JSON.stringify({{cams: {json.dumps(times)}.map(t => [camera(t), flashesAt(t)]),"
-              " panels: layout ? panels() : []}));")
+              f"{code}\nconsole.log(JSON.stringify({{cams: {json.dumps(times)}.map(t => [camera(t), flashesAt(t)]),"
+              " panels: S.layout ? panels() : []}));")
     got = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
     from chatwatcher.edit.service import short_visuals, visuals
     fx_full = [f | {"strength": f.get("strength", 2)} for f in fx]

@@ -132,7 +132,10 @@ def test_editor_save_render_and_media(site):  # noqa: F811
     client.post(f"/moment/{m}/edit", json={"segments": [[4, 9]]})
     assert client.get(f"/api/moment/{m}/render").json()["render"]["state"] == "stale"
     page = client.get(f"/moment/{m}").text
-    assert 'data-editor="' in page and "/static/editor.js" in page
+    assert 'data-editor="' in page and '<script type="module" src="/static/editor/main.js?v=' in page
+    # The modules import each other by plain paths (no ?v=), so the browser must ask each time.
+    assert client.get("/static/editor/state.js").headers["cache-control"] == "no-cache"
+    assert "cache-control" not in client.get("/static/app.js").headers
 
     # "Delete videos only" removes the rendered edit too.
     out = Path(conn.execute("SELECT output_dir FROM videos").fetchone()["output_dir"])

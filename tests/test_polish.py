@@ -11,7 +11,7 @@ from chatwatcher.subs.polish import apply
 from test_subs import words
 from test_web import mid, site  # noqa: F401  (fixture)
 
-EDITOR_JS = Path(__file__).resolve().parents[1] / "src/chatwatcher/web/static/editor.js"
+EDITING_JS = Path(__file__).resolve().parents[1] / "src/chatwatcher/web/static/editor/editing.js"
 
 
 def cue(i, t0, t1, text, by="auto"):
@@ -95,11 +95,11 @@ def test_retyped_names_are_spotted():
     node = shutil.which("node")
     if not node:
         pytest.skip("node isn't installed")
-    js = EDITOR_JS.read_text(encoding="utf-8")
-    start, end = js.index("  const NOT_NAMES = "), js.index("  async function addNames(")
+    js = EDITING_JS.read_text(encoding="utf-8")
+    start, end = js.index("const NOT_NAMES = "), js.index("async function addNames(")
     cases = [["are you deaf sicilia", "Are you deaf, Cecilia?"], ["the holo one gp", "The holo1GP is on"],
              ["okay i'm sorry", "Okay. I'm sorry, CeCe!"], ["Good thing I put", "Good thing I put"],
              ["she said hi", "She said hi to Gigi Murin."]]
-    script = f"{js[start:end]}\nconsole.log(JSON.stringify({json.dumps(cases)}.map(([a, b]) => newNames(a, b))));"
+    script = f"{js[start:end].replace(chr(10) + 'export ', chr(10))}\nconsole.log(JSON.stringify({json.dumps(cases)}.map(([a, b]) => newNames(a, b))));"
     got = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
     assert got == [["Cecilia"], ["holo1GP"], ["CeCe"], [], ["Gigi", "Murin"]]

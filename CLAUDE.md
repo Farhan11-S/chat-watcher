@@ -43,7 +43,7 @@ the worker status and the Drive cache. Never use module globals for these: tests
 |---|---|---|---|
 | `/`, `/add`, `/video/…` | `routes/streams.py` | `home.html`, `video.html` | `app.js` |
 | `/clips`, `/moment/{pk}`, keep/skip, re-cut | `routes/clips.py` | `clips.html`, `moment.html` | `app.js` |
-| Editor API (`/api/moment/…`, `/moment/{pk}/edit`, `render`, `autoedit`, `direct`, `subs`, …) | `routes/editor.py` | `moment.html` | `editor.js`, `editor.css` |
+| Editor API (`/api/moment/…`, `/moment/{pk}/edit`, `render`, `autoedit`, `direct`, `subs`, …) | `routes/editor.py` | `moment.html` | `editor/main.js` (modules, below), `editor.css` |
 | `/brand`, intro and thumbnail endpoints | `routes/brand.py` | `brand.html`, `moment.html` | `maker.js` |
 | `/sounds`, `/overlays/…` | `routes/library.py` | `sounds.html` | |
 | `/vtubers` | `routes/vtubers.py` | `vtubers.html` | |
@@ -52,6 +52,31 @@ the worker status and the Drive cache. Never use module globals for these: tests
 | `/storage`, `/settings` | `routes/storage.py` | `storage.html` | |
 | `/media/…` (files the database points at) | `routes/media.py` | | |
 
+- The editor's script is native ES modules in `static/editor/` (no build step); `moment.html` loads
+  `editor/main.js`. A module imports only from ones before it in this list, state shared between
+  modules is the one object `S` in `state.js`, and the few calls upwards go through `call` (filled
+  in by `main.js`). Read only the module you change:
+
+  | Module | What |
+  |---|---|
+  | `state.js` | page elements, constants, `S` (the edit), `call` |
+  | `util.js` | helpers, colours, subtitle wrapping (`subs/lines.py`), status lines, `body()` (what is saved) |
+  | `preview.js` | camera (`edit/motion.py`), Short panels (`edit/layout.py`), spotlights, the stage canvas |
+  | `audio.js`, `playback.js` | Web Audio sounds; seek, Play edit, toolbar buttons |
+  | `captions.js` | speakers and colours, caption styles (`edit/captions.py`), the subtitle preview |
+  | `io.js` | autosave, render request and status |
+  | `editing.js` | undo, segment / sound / effect operations, subtitle line operations |
+  | `overlays.js` | overlay clips, text callouts, spotlights and their drag handles |
+  | `timeline.js` | time ↔ x, drawing the lanes, hit-testing |
+  | `transcript.js` | the list of lines beside the player, the Transcript tab |
+  | `panels.js` | side panel tabs and menus, the Selected panel, people, the subtitle bar |
+  | `regions.js`, `layout.js` | drawing regions; the Short's layout panel, Long / Short switch, loading an edit |
+  | `ai.js` | AI edit and Direct |
+  | `input.js` | pointer and keyboard handlers |
+  | `main.js` | entry: wires `call`, `paintAll`, the frame loop, start |
+
+  `tests/test_motion.py`, `test_subs.py` and `test_polish.py` run slices of `preview.js`, `util.js`
+  and `editing.js` in node against the Python they mirror.
 - List-page SQL (search, filter, sort, paging) is `web/listing.py`; page read models are
   `web/queries.py`; the SVG charts are `web/charts.py`. Shared markup: `base.html`, `_macros.html`.
 - Route order matters: `POST /moment/{pk}/{action}` (clips) and `POST /video/{video_id}/{action}`

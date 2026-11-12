@@ -371,4 +371,4 @@
   </div>
 </div>
 {% endblock %}
-{% block scripts %}{% if clip and clip.exists %}<script src="{{ asset('editor.js') }}"></script><script src="{{ asset('maker.js') }}"></script>{% endif %}{% endblock %}
+{% block scripts %}{% if clip and clip.exists %}<script type="module" src="{{ asset('editor/main.js') }}"></script><script src="{{ asset('maker.js') }}"></script>{% endif %}{% endblock %}

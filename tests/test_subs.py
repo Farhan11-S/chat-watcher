@@ -15,7 +15,7 @@ from chatwatcher.worker import Worker
 from test_web import mid, site  # noqa: F401  (fixture)
 
 needs_ffmpeg = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
-EDITOR_JS = Path(__file__).resolve().parents[1] / "src/chatwatcher/web/static/editor.js"
+UTIL_JS = Path(__file__).resolve().parents[1] / "src/chatwatcher/web/static/editor/util.js"
 
 
 def words(*spoken):
@@ -64,15 +64,16 @@ def test_preview_wraps_like_the_render(rules):
     if not node:
         pytest.skip("node isn't installed")
     max_line, max_lines = rules
-    js = EDITOR_JS.read_text(encoding="utf-8")
-    start, end = js.index("  const WIDE = "), js.index("  const curSub = ")
+    js = UTIL_JS.read_text(encoding="utf-8")          # a module: S is the shared state it imports
+    start, end = js.index("const WIDE = "), js.index("export const curSub = ")
+    code = js[start:end].replace("\nexport ", "\n")
     rnd = random.Random(3)
     vocab = ["Okay,", "sorry", "*limiter*", "I", "was", "really", "loud", "ちょっと", "待って、", "リミッター", "deaf?", "hololive"]
     samples = [" ".join(rnd.choice(vocab) for _ in range(rnd.randint(1, 14))) for _ in range(300)]
     samples += ["リミッター入れといてよかったちょっと待ってよ本当に", "x" * 50]
-    script = (f"const D = {{ sub_layout: {{ max_line: {lines.MAX_LINE} }} }};\n{js[start:end]}\n"
-              f"const S = {json.dumps(samples, ensure_ascii=False)};\n"
-              f"console.log(JSON.stringify(S.map(t => {{ let on = false; return wrapSub(t, {max_line}, {max_lines})"
+    script = (f"const S = {{ D: {{ sub_layout: {{ max_line: {lines.MAX_LINE} }} }} }};\n{code}\n"
+              f"const SAMPLES = {json.dumps(samples, ensure_ascii=False)};\n"
+              f"console.log(JSON.stringify(SAMPLES.map(t => {{ let on = false; return wrapSub(t, {max_line}, {max_lines})"
               ".map(l => { const [r, a] = runsOf(l, on); on = a; return r; }); })));")
     got = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
     for text, js_lines in zip(samples, got):
