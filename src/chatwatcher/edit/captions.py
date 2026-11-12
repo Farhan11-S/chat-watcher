@@ -5,8 +5,8 @@ The bubble look (subs_style "look": "bubble") is the clip channels' Shorts look:
 chunky font; the text in a deep shade of the speaker's colour; a thick white outline with
 a thin dark ring round it; *highlighted* words bigger. Every caption springs in.
 
-A caption style on an edit is an effect {"type": "caption", "t", "d", "fx", "font", "at"}:
-the captions that start in [t, t + d) get it.
+A caption style on an edit is an effect {"type": "caption", "t", "d", "fx", "font", "at",
+"size"}: the captions that start in [t, t + d) get it.
     fx    pop: springs in · shake: rattles (anger, screaming, a scare) · wave: the letters
           bob (sing-song, teasing, smug) · wobble: rocks side to side (confused, silly) ·
           bounce: drops in and squashes (a punchline, a deadpan answer) · grow: swells (a
@@ -14,6 +14,8 @@ the captions that start in [t, t + d) get it.
     font  round (the default) · angry (dripping paint) · scary (horror) · loud (comic capitals)
     at    "" (the subtitles' own place) · top · bottom · middle · seam (on the line between a
           Short's two pictures) · a region (on it, low: under the face of whoever talks)
+    size  "" (the subtitles' own size) · small (an aside, a whisper) · big (a shout, the
+          punchline) · huge (a scream, the one word that is the joke)
 
 Drawn by libass from the fonts in FONT_DIR (shipped with the app, OFL), so a render needs
 no installed fonts. editor.js draws the same for its preview (drawSubPreview, capAnim):
@@ -40,6 +42,7 @@ CJK_FONT = "Rounded Mplus 1c ExtraBold"     # the fonts above have no Japanese: 
 CJK_FILE = "MPLUSRounded1c-ExtraBold.ttf"
 FX = ("pop", "shake", "wave", "wobble", "bounce", "grow", "none")
 PLACES = ("top", "bottom", "middle", "seam")
+SIZES = {"small": 0.72, "big": 1.35, "huge": 1.8}   # times the subtitles' own size
 D_LIMITS = (2.0, 0.2, 60.0)    # default, shortest and longest, seconds
 
 OUTER, INNER = 0.20, 0.13      # the dark ring and the white outline, as shares of the font size
@@ -112,6 +115,7 @@ class Mark:
     font: str                   # a FONTS key, or "" for the look's own
     at: str                     # "" | top | bottom (an edge) | a point, in xy
     xy: tuple[float, float] | None = None    # middle / seam / a region: the caption's centre, shares of the picture
+    size: str = ""              # a SIZES key, or "" for the subtitles' own
 
 
 def seam_y(panels: list[lay.Panel] | None) -> float:
@@ -149,7 +153,8 @@ def placed(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]],
         out.append(Mark(float(fx["t"]), float(fx.get("d") or D_LIMITS[0]),
                         fx.get("fx") if fx.get("fx") in FX else "pop",
                         fx.get("font") if fx.get("font") in FONTS else "", at,
-                        None if at in ("", "top", "bottom") else anchor(at, boxes, panels)))
+                        None if at in ("", "top", "bottom") else anchor(at, boxes, panels),
+                        fx.get("size") if fx.get("size") in SIZES else ""))
     return sorted(out, key=lambda m: m.t)
 
 
@@ -308,8 +313,8 @@ def events(shown: list[Shown], style: dict[str, Any], w: int, h: int, *, title: 
     the style's font. Captions at an edge stack like libass stacks plain ones."""
     rules = lines.frame_rules(w, h)
     bubble = style.get("look") == "bubble"
-    size = lines.SIZES.get(style.get("size"), lines.SIZES["normal"]) * (w if rules["vertical"] else h)
-    size *= BUBBLE_SCALE if bubble else 1
+    base = lines.SIZES.get(style.get("size"), lines.SIZES["normal"]) * (w if rules["vertical"] else h)
+    base *= BUBBLE_SCALE if bubble else 1
     top_edge = h * (rules["top_title" if title else "top"])
     bottom_edge = h * (1 - rules["bottom"])
     stacked: list[tuple[float, float, str, float]] = []      # (a, b, edge, height) of edge captions so far
@@ -317,7 +322,9 @@ def events(shown: list[Shown], style: dict[str, Any], w: int, h: int, *, title: 
     for n, s in enumerate(shown):
         mark = s.mark
         fx = mark.fx if mark else ("pop" if bubble else "none")
-        rows = lines.wrap(s.text, rules["max_line"], rules["max_lines"])
+        k = SIZES.get(mark.size, 1.0) if mark else 1.0
+        size = base * k                          # bigger text wraps sooner, so it still fits across
+        rows = lines.wrap(s.text, max(6, int(rules["max_line"] / max(k, 1.0))), rules["max_lines"])
         height = len(rows) * size * LINE_H
         edge = (mark.at if mark and mark.at in ("top", "bottom") else
                 None if mark and mark.xy else ("top" if style.get("position") == "top" else "bottom"))
@@ -364,7 +371,7 @@ def font_files() -> list[Path]:
 def info() -> dict[str, Any]:
     """What the editor needs to draw the same (sub_layout.captions)."""
     return {"fonts": FONTS, "font_files": FONT_FILES, "cjk_font": CJK_FONT, "cjk_file": CJK_FILE, "fx": FX,
-            "places": PLACES, "looks": lines.LOOKS, "d": D_LIMITS, "outer": OUTER, "inner": INNER,
+            "places": PLACES, "sizes": SIZES, "looks": lines.LOOKS, "d": D_LIMITS, "outer": OUTER, "inner": INNER,
             "classic_bord": CLASSIC_BORD, "hi_scale": HI_SCALE, "bubble_scale": BUBBLE_SCALE, "default_fill": DEFAULT_FILL, "low": LOW,
             "pop_ms": POP_MS, "shake": [SHAKE_STEP_MS, SHAKE_AMP, SHAKE_TILT],
             "wave": [WAVE_AMP, WAVE_PERIOD_MS, WAVE_PHASE], "wobble": [WOBBLE_DEG, WOBBLE_PERIOD_MS],

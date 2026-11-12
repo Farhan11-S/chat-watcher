@@ -565,7 +565,8 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
             at = str(fx.get("at") or "")
             at = at if at in ("", *cap.PLACES) else (regions.normal_name(at) or "")
             e |= {"d": round(min(max(d, shortest), longest), 3), "fx": fx.get("fx") if fx.get("fx") in cap.FX else "pop",
-                  "font": fx.get("font") if fx.get("font") in cap.FONTS else "", "at": at}
+                  "font": fx.get("font") if fx.get("font") in cap.FONTS else "", "at": at,
+                  "size": fx.get("size") if fx.get("size") in cap.SIZES else ""}
         elif kind == lay.FRAME:                  # a Short shows this region full-screen for d seconds
             default, shortest, longest = lay.FRAME_LIMITS
             try:

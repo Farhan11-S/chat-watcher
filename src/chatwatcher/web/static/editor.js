@@ -550,7 +550,7 @@
     if (f.type === "frame") return f.region === FULL ? "whole picture" : "show " + (f.region || "?");
     if (f.type === "text") return `“${f.text}”`;
     if (f.type === "spot") return "◯ " + (f.style || "spotlight");
-    if (f.type === "caption") return "Aa " + [f.fx || "pop", f.font, f.at].filter(Boolean).join(" · ");
+    if (f.type === "caption") return "Aa " + [f.fx || "pop", f.font, f.at, f.size].filter(Boolean).join(" · ");
     if (f.type === "overlay") return ({ sound: "♪ only · ", picture: "muted · " }[f.mode] || "")
                                      + (overlayOf(f.overlay) || { name: f.overlay + " (gone)" }).name;
     return "flash " + f.color;
@@ -1171,7 +1171,9 @@
     const stacked = { top: 0, bottom: 0 };
     const items = shown.map((c, n) => {      // captions.events: where each goes and how it looks
       const m = capMark(c.t0), fxName = m ? m.fx || "pop" : (bubble ? "pop" : "none");
-      const rows = wrapSub(c.text, L.max_line, L.max_lines), height = rows.length * size * C.line_h;
+      const k = (m && (C.sizes || {})[m.size]) || 1, sz = size * k;       // bigger text wraps sooner, so it still fits
+      const rows = wrapSub(c.text, Math.max(6, Math.floor(L.max_line / Math.max(k, 1))), L.max_lines);
+      const height = rows.length * sz * C.line_h;
       let edge = m && (m.at === "top" || m.at === "bottom") ? m.at : null;
       const xy = !edge && m && m.at ? capAnchor(m.at, c.t0) : null;
       if (!edge && !xy) edge = subStyle.position === "top" ? "top" : "bottom";
@@ -1181,17 +1183,18 @@
         stacked[edge] += height;
         x = W / 2; y = edge === "top" ? topEdge + below : bottomEdge - below; an = edge === "top" ? 8 : 2;
       } else {
-        const widest = Math.max(...rows.map(subWidth)) * C.char_w * size * (c.text.includes("*") ? C.hi_scale : 1);
-        const hw = Math.min(widest / 2 + size * 0.3, W / 2);
+        const widest = Math.max(...rows.map(subWidth)) * C.char_w * sz * (c.text.includes("*") ? C.hi_scale : 1);
+        const hw = Math.min(widest / 2 + sz * 0.3, W / 2);
         x = Math.min(Math.max(xy[0] * W, hw), W - hw);
         y = Math.min(Math.max(xy[1] * H, height / 2 + H * 0.04), H * 0.96 - height / 2);
         an = 5;
       }
       const col = cueColor(c), fill = bubble ? capDeep(col) : (col || "FFFFFF").toUpperCase();
-      return { c, fx: fxName, rows, x, y, an, size, fill, family: capFamily(m ? m.font : (bubble ? "round" : ""), c.text, bubble),
+      return { c, fx: fxName, rows, x, y, an, size: sz, fill, family: capFamily(m ? m.font : (bubble ? "round" : ""), c.text, bubble),
                seed: n + 1 + Math.round(c.t0 * 100) };
     });
-    const key = "cap|" + JSON.stringify(items.map(i => [i.c.id, i.c.text, i.fx, Math.round(i.x), Math.round(i.y), i.an, i.fill, i.family]))
+    const key = "cap|" + JSON.stringify(items.map(i => [i.c.id, i.c.text, i.fx, Math.round(i.x), Math.round(i.y), i.an, i.fill, i.family,
+                                                          Math.round(i.size)]))
                 + [subStyle.look, Math.round(size), box.left, box.top].join("|");
     if (key !== subKey) {
       subKey = key;
@@ -2240,6 +2243,9 @@
       acts.appendChild(labelled("effect", select(CI.fx.map(v => [v, FXT[v] || v]), f.fx || "pop", { capFx: "" }, "How they move", v => v)));
       acts.appendChild(labelled("font", select(Object.keys(CI.fonts).map(v => [v === "round" ? "" : v, FONTT[v] || v]), f.font || "",
                                                { capFont: "" }, "Their font", v => v)));
+      const SIZET = { small: "small: an aside, a whisper", big: "big: a shout, the punchline", huge: "huge: a scream, one word" };
+      acts.appendChild(labelled("size", select([["", "usual"]].concat(Object.keys(CI.sizes || {}).map(v => [v, SIZET[v] || v])),
+                                               f.size || "", { capSize: "" }, "Their size", v => v)));
       box.appendChild(el("small", "muted", "Where"));
       box.appendChild(regionChips(f.at || "", { chipFor: "capat" }, "their usual place",
                                   [["top", "top"], ["bottom", "bottom"], ["middle", "middle"], ["seam", "between the pictures"]]));
@@ -3563,6 +3569,7 @@
     } else if (t.matches("[data-text-color]")) editFx({ color: t.value });
     else if (t.matches("[data-cap-fx]")) editFx({ fx: t.value });
     else if (t.matches("[data-cap-font]")) editFx({ font: t.value });
+    else if (t.matches("[data-cap-size]")) editFx({ size: t.value });
     else if (t.matches("[data-spot-style]")) {
       const f = curFx(), S = D.spot_info, was = f.style || "spotlight", change = { style: t.value };
       if ((f.color || S.default_color[was]) === S.default_color[was]) change.color = S.default_color[t.value];

@@ -101,6 +101,23 @@ def test_effects_fonts_and_places_as_ass():
     assert any("\\fnBangers" in e and "\\fscx125" in e for e in ev)
 
 
+def test_caption_sizes():
+    fx = clean_effects([{"type": "caption", "t": 1, "size": "huge"}, {"type": "caption", "t": 2, "size": "gigantic"}],
+                       10, set())
+    assert [f["size"] for f in fx] == ["huge", ""]
+    style = {"look": "bubble", "size": "normal", "position": "bottom"}
+    text = "no no no no no no no"                       # fits one line at the usual size
+    marks = cap.placed([{"type": "caption", "t": 0.9, "d": 1, "fx": "none", "font": "", "at": "", "size": "huge"},
+                        {"type": "caption", "t": 2.9, "d": 1, "fx": "none", "font": "", "at": "", "size": "small"}],
+                       BOXES, STACK)
+    ev = _events([{"t0": 1, "t1": 2, "text": text, "color": None}, {"t0": 3, "t1": 4, "text": text, "color": None},
+                  {"t0": 5, "t1": 6, "text": text, "color": None}], marks, style)
+    front = [e for e in ev if e.startswith("Dialogue: 1,")]
+    fs = [int(re.search(r"\\fs(\d+)", e)[1]) for e in front]
+    assert abs(fs[0] - fs[2] * cap.SIZES["huge"]) <= 1 and abs(fs[1] - fs[2] * cap.SIZES["small"]) <= 1
+    assert "\\N" in front[0] and "\\N" not in front[2]          # huge text wraps so it still fits across
+
+
 def test_captions_at_an_edge_stack():
     style = {"look": "bubble", "size": "normal", "position": "bottom"}
     ev = _events([{"t0": 1, "t1": 3, "text": "first", "color": "FF8FC8"},
@@ -123,6 +140,11 @@ def test_caption_styles_from_claude():
                                                            ("pop", "", "")]
     assert out[0]["t"] == pytest.approx(talk[0].w0 - ae.CAPTION_LEAD) and out[0]["by"] == "claude"
     assert out[1]["t"] == 9.0 and out[1]["d"] == 2.0
+    assert out[0]["size"] == "" and out[0]["why"] == "she's furious"     # no size given: the why still lands
+    sized = ae.caption_effects(["9.0-11.0 | bounce | | | huge | the one word", "9.0-11.0 | pop | | | usual | plain",
+                                "9.0-11.0 | pop | | | tiny | not a size: kept as the why"], ps, segs, BOXES, 20.0)
+    assert [(f["size"], f["why"]) for f in sized] == [("huge", "the one word"), ("", "plain"),
+                                                      ("", "tiny | not a size: kept as the why")]
 
 
 def test_pieces_say_who_talks():

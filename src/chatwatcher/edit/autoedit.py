@@ -167,7 +167,8 @@ or short phrases from the lines to show bigger in the captions (the punchline wo
 captions: the subtitles are big captions, a few words at a time, in a round font in the \
 speaker's colour with a white outline; each one pops in. Style the stretches that need \
 more, like a clip channel does (often 3-8, at most {max_captions}): \
-"p7-p8 | shake | angry | face | why": pieces (or clip seconds, "12.4-13.1"), effect, font, where.
+"p7-p8 | shake | angry | face | big | why": pieces (or clip seconds, "12.4-13.1"), effect, \
+font, where, size.
 - effect: pop (the default), shake (rage, screaming, a jump scare), wave (letters bob: \
 sing-song, teasing, smug, drunk), wobble (rocks: confused, silly, unsure), bounce (drops in: \
 the punchline, a deadpan answer), grow (swells: a build-up, a slow realisation), none.
@@ -176,6 +177,9 @@ creepy whispers), loud (comic capitals: hype, shouting, a cheer).
 - where: "" (the usual place), top, bottom, middle, seam (on the line between a Short's two \
 pictures), or a region: on it, low (under the face of whoever says it, or on the thing in \
 the game she's talking about). In a collab, put each person's lines on their own face.
+- size: "" (the usual size), big (a shout, the punchline), huge (a scream, or the one or two \
+words that ARE the joke; never a long line), small (a mumbled aside, a whisper, a quiet \
+afterthought under the main line). Size is contrast: most lines stay the usual size.
 The plain pop is the base and the styles are accents: don't style every line, and keep \
 one place for a run of lines rather than jumping on every word.
 
@@ -213,7 +217,7 @@ def schema(max_sounds: int, max_hits: int, max_trans: int = 6, chat: bool = Fals
             "emphasis": {"type": "array", "maxItems": 12, "items": s},
             "captions": {"type": "array", "maxItems": MAX_CAPTIONS, "items": s,
                          "description": '"p7-p8 or 12.4-13.1 | pop|shake|wave|wobble|bounce|grow|none | '
-                                        'round|angry|scary|loud | where | why"'},
+                                        'round|angry|scary|loud | where | small|big|huge or empty | why"'},
             "overlays": {"type": "array", "maxItems": MAX_OVERLAYS if max_overlays is None else max_overlays,
                          "items": s, "description": '"clip s | overlay id | full|middle|region | why"'},
             "spots": {"type": "array", "maxItems": MAX_SPOTS, "items": s,
@@ -739,9 +743,12 @@ def caption_effects(items: list[str], ps: list[pc.Piece], segs: list[list[float]
         font = bits[2].lower() if len(bits) > 2 and bits[2].lower() in cap.FONTS else ""
         at = bits[3].strip().strip('"').lower() if len(bits) > 3 else ""
         at = at if at in cap.PLACES or at in boxes else ""
+        size = bits[4].lower() if len(bits) > 4 else ""        # an answer without a size: the why comes next
+        why = bits[5:] if size in (*cap.SIZES, "", "normal", "usual") else bits[4:]
         res.append({"id": "c" + secrets.token_hex(3), "type": cap.CAPTION, "t": round(t0, 3),
                     "d": round(min(t1 - t0, cap.D_LIMITS[2]), 3), "fx": fx, "font": "" if font == "round" else font,
-                    "at": at, "by": "claude", "why": " | ".join(bits[4:])[:300]})
+                    "at": at, "size": size if size in cap.SIZES else "", "by": "claude",
+                    "why": " | ".join(why)[:300]})
     return res[:limit]
 
 
@@ -994,7 +1001,7 @@ def _placed(fx: dict[str, Any]) -> str:
                 f"{(fx['x'] + fx['w']) * 100:.0f} y {fx['y'] * 100:.0f}-{(fx['y'] + fx['h']) * 100:.0f}")
     if kind == cap.CAPTION:
         return (f"- {t:.2f}–{t + fx['d']:.2f} s captions: {fx.get('fx') or 'pop'}, font {fx.get('font') or 'round'}, "
-                f"at {fx.get('at') or 'the usual place'}")
+                f"at {fx.get('at') or 'the usual place'}, size {fx.get('size') or 'usual'}")
     if kind == txt.TEXT:
         return (f"- {t:.2f}–{t + fx['d']:.2f} s text \"{fx.get('text')}\" ({fx.get('style') or 'pop'}) "
                 f"at {fx.get('at') or 'middle'}")
