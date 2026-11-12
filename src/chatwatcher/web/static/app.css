@@ -256,7 +256,7 @@ td.nowrap { white-space: nowrap; }
 .ed-is-short:not(.ed-regmode) .ed-top { grid-template-columns: auto minmax(0, 1fr); }
 .ed-is-short:not(.ed-regmode) .ed-player { height: min(72vh, 720px); aspect-ratio: 9 / 16; background: #000;
   border-radius: var(--radius); cursor: pointer; }
-.ed-is-short:not(.ed-regmode) .ed-player video { position: absolute; inset: 0; width: 100%; height: 100%;
+.ed-is-short:not(.ed-regmode) .ed-player > video { position: absolute; inset: 0; width: 100%; height: 100%;
   opacity: 0; }
 .ed-lines { flex: 1 1 0; min-height: 0; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
             background: var(--surface); font-size: .86rem; }
@@ -318,6 +318,8 @@ td.nowrap { white-space: nowrap; }
 .sound-row:last-child { border-bottom: 0; }
 .sound-play { display: grid; gap: .2rem; }
 .sound-play audio { width: 100%; height: 34px; }
+.overlay-preview { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 6px;
+  background: repeating-conic-gradient(#9a9a9a 0 25%, #6e6e6e 0 50%) 0 0 / 16px 16px; }
 .sound-fields { display: grid; gap: .3rem; min-width: 0; }
 .sound-fields input[type=text] { width: 100%; }
 .sound-fields .sound-name { font-weight: 600; }
@@ -358,12 +360,38 @@ td.nowrap { white-space: nowrap; }
 .ed-reg-row.on input { border-color: var(--series-2); }
 /* subtitles: the preview over the clip (like the render: bold white, black outline), the list, the bar */
 .ed-subs { position: absolute; pointer-events: none; overflow: hidden; }
+.ed-ovs { position: absolute; pointer-events: none; overflow: hidden; }
+.ed-ovs[hidden] { display: none; }
+.ed-ov { position: absolute; max-width: none; background: transparent; border-radius: 0; }
+.ed-txs { position: absolute; pointer-events: none; overflow: hidden; }
+.ed-txs[hidden] { display: none; }
+.ed-callout { position: absolute; white-space: nowrap; text-align: center; font-weight: 700; paint-order: stroke fill;
+  -webkit-font-smoothing: antialiased; transform-origin: center; }
+.ed-ov-handle { position: absolute; pointer-events: auto; cursor: move; touch-action: none;
+  outline: 2px dashed rgba(255, 255, 255, .9); outline-offset: -2px; box-shadow: inset 0 0 0 3px rgba(0, 0, 0, .35); }
+.ed-ov-handle[hidden] { display: none; }
+.ed-ov-handle.round { border-radius: 50%; }
+.ed-ov-handle > i { position: absolute; right: -1px; bottom: -1px; width: 14px; height: 14px; background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, .7); border-radius: 2px; cursor: nwse-resize; }
+.ed-ov-size { display: flex; align-items: center; gap: .4rem; margin: .3rem 0; }
+.ed-ov-size input[type="range"] { flex: 1; min-width: 6rem; }
+.ed-ov-pct { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; }
 .ed-voices { display: grid; gap: 6px; margin: 8px 0; }
 .ed-voices p { margin: 0; }
 .ed-voice { display: flex; align-items: center; gap: 6px; }
 .ed-voice input[type="color"] { width: 32px; height: 26px; padding: 0; border: 1px solid var(--border, #8884); border-radius: 4px; background: none; flex: none; }
 .ed-voice input[type="text"] { flex: 1; min-width: 0; }
 .ed-sub-who { display: block; margin: 6px 0; }
+/* caption styles (edit/captions.py): the fonts libass gets from static/fonts, and the bubble look's two copies */
+@font-face { font-family: "Fredoka"; src: url("fonts/Fredoka-Bold.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Rubik Wet Paint"; src: url("fonts/RubikWetPaint-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Creepster"; src: url("fonts/Creepster-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Bangers"; src: url("fonts/Bangers-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Rounded Mplus 1c ExtraBold"; src: url("fonts/MPLUSRounded1c-ExtraBold.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+.ed-cap { position: absolute; white-space: nowrap; text-align: center; font-weight: 700; paint-order: stroke fill;
+  -webkit-font-smoothing: antialiased; }
+.ed-cap > div { position: relative; paint-order: stroke fill; }   /* positioned too, so the front paints over the ring */
+.ed-cap > .ed-cap-back { position: absolute; inset: 0; }
 .ed-subs-text { position: absolute; left: 4%; right: 4%; text-align: center; color: #ffffff; font-weight: 700;
   paint-order: stroke fill; -webkit-font-smoothing: antialiased; }
 .ed-sub-row .ed-lx { cursor: text; border-radius: 4px; padding: 0 .15rem; outline: none; }
@@ -485,6 +513,18 @@ td.nowrap { white-space: nowrap; }
 .ed-tabs button[hidden] { display: none; }
 .ed-pane { display: flex; flex-direction: column; gap: .5rem; flex: 1 1 0; min-height: 0; overflow-y: auto; padding-top: .2rem; }
 .ed-pane[hidden] { display: none; }
+.ed-chat { display: grid; gap: .4rem; align-content: start; flex: 1 1 0; min-height: 6rem; overflow-y: auto; }
+.ed-chat-empty { margin: 0; font-size: .85rem; }
+.ed-bubble { white-space: pre-wrap; overflow-wrap: anywhere; padding: .4rem .6rem; border-radius: 10px; font-size: .88rem; }
+.ed-bubble.user { background: var(--info-bg); justify-self: end; max-width: 90%; }
+.ed-bubble.assistant { background: var(--surface-2); }
+.ed-bubble.assistant.applied { border-left: 3px solid var(--accent); }
+.ed-bubble.pending { color: var(--text-2); font-style: italic; }
+.ed-bubble.failed { background: var(--bad-bg); color: var(--bad); }
+.ed-bubble-meta { display: block; margin-top: .2rem; font-size: .72rem; color: var(--text-3); }
+.ed-chat-form textarea { width: 100%; padding: .4rem .5rem; border: 1px solid var(--border); border-radius: 8px;
+                         background: var(--surface); color: var(--text); resize: vertical; margin-bottom: .3rem; }
+.ed-direct p { margin: 0; }
 .ed-pane .ed-lines { flex: 1 1 0; }
 .ed-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .4rem; }
 .ed-form label { display: grid; gap: .15rem; }

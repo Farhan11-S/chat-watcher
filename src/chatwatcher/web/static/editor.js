@@ -27,12 +27,15 @@
   const CAM = ["punch", "push", "frame"];             // the Camera lane; shakes and flashes are on the Effects lane
   const laneOf = f => (CAM.includes(f.type) ? "cam" : "vfx");
   const HEIGHT = Y_RULER + ROW.ruler;
-  const VIS = ["punch", "push", "shake", "flash", "frame"], ZOOMS = ["punch", "push"];
-  const VLABEL = { punch: "Punch-in", push: "Push-in", shake: "Shake", flash: "Flash", frame: "Show a region" };
+  const VIS = ["punch", "push", "shake", "flash", "frame", "overlay", "text", "spot", "caption"], ZOOMS = ["punch", "push"];
+  const VLABEL = { punch: "Punch-in", push: "Push-in", shake: "Shake", flash: "Flash", frame: "Show a region",
+                   overlay: "Overlay", text: "Text", spot: "Spotlight", caption: "Caption style" };
   const STRENGTH = { 1: "light", 2: "normal", 3: "heavy" };
   const LENGTHS = { punch: [0.5, 0.8, 1, 1.5, 2, 3, 5], push: [1, 2, 3, 4, 6, 8, 12],
                     shake: [0.2, 0.4, 0.6, 1, 1.5, 2], flash: [0.1, 0.2, 0.3, 0.5, 0.8, 1.2],
-                    frame: [0.5, 1, 1.5, 2, 3, 4, 6, 10] };
+                    frame: [0.5, 1, 1.5, 2, 3, 4, 6, 10], overlay: [0.5, 1, 1.5, 2, 3, 5, 8],
+                    text: [0.5, 0.8, 1, 1.5, 2, 3, 4, 6], spot: [0.5, 1, 1.5, 2, 3, 4, 6],
+                    caption: [0.5, 1, 2, 3, 5, 8, 12, 20, 30] };
   const ZOOM_STEPS = { punch: [1.2, 1.4, 1.6, 2, 2.5, 3], push: [1.1, 1.2, 1.3, 1.5, 2] };
   const REGION_NAMES = ["face", "game", "chat"];
   const GAINS = [6, 3, 0, -3, -6, -10, -15, -20, -30];
@@ -48,7 +51,7 @@
   let snapOn = true, lastSound = null;
   let regionMode = false, regSel = null, regDrag = null, regTimer = null, previewUntil = null, stageOn = false;
   let txPoll = null;
-  let subs = [], subStyle = { on: true, size: "normal", position: "bottom", mode: "lines" }, selSub = null;
+  let subs = [], subStyle = { on: true, size: "normal", position: "bottom", mode: "lines", look: "classic" }, selSub = null;
   let subsMine = false;
   const ticked = new Set();     // lines ticked in the list, to give them a person at once
   let lastTick = null;          // the last one ticked: Shift+click ticks everything between        // false: the lines follow Whisper's words (saved as "auto"); true: you changed them
@@ -172,8 +175,11 @@
     return [{ src: [x0 / sw, y0 / sh, pw / sw, ph / sh], dst: [0, 0, 1, 1] }];
   }
   // A frame shot: the Short shows one region full-screen (frame_panels in edit/layout.py).
+  // "full" is the whole picture: fit + blur for a while (region_box in edit/layout.py).
+  const FULL = "full";
+  const frameBox = name => (name === FULL ? { x: 0, y: 0, w: 1, h: 1 } : D.regions[name]);
   function framePanels(name) {
-    const b = D.regions[name], [OW, OH] = D.layout_info.out, F = D.layout_info.frame;
+    const b = frameBox(name), [OW, OH] = D.layout_info.out, F = D.layout_info.frame;
     const sw = video.videoWidth || D.layout_info.src[0], sh = video.videoHeight || D.layout_info.src[1];
     const w = Math.min(b.w * F.margin, 1), h = Math.min(b.h * F.margin, 1), cx = b.x + b.w / 2, cy = b.y + b.h / 2;
     const grown = [Math.min(Math.max(cx - w / 2, 0), 1 - w), Math.min(Math.max(cy - h / 2, 0), 1 - h), w, h];
@@ -185,7 +191,7 @@
   }
   function shortPanels(t) {
     let on = null;
-    for (const f of fx) if (f.type === "frame" && active(f, t) && D.regions[f.region] && (!on || f.t >= on.t)) on = f;
+    for (const f of fx) if (f.type === "frame" && active(f, t) && frameBox(f.region) && (!on || f.t >= on.t)) on = f;
     return on ? framePanels(on.region) : panels();
   }
   function mapPoint(x, y, ps) {
@@ -301,6 +307,7 @@
     sctx.filter = blurAt(video.currentTime) ? `blur(${Math.round(cw / 60)}px)` : "none";
     sctx.drawImage(comp, (xc - h) * cw, (yc - h) * ch, 2 * h * cw, 2 * h * ch, 0, 0, cw, ch);
     sctx.filter = "none";
+    drawSpots(cw, ch, xc, yc, h, video.currentTime);
     for (const [rgb, alpha] of flashesAt(video.currentTime)) {
       sctx.fillStyle = `rgba(${rgb.join(",")},${alpha})`;
       sctx.fillRect(0, 0, cw, ch);
@@ -339,7 +346,8 @@
     const t = video.currentTime;
     const [xc, yc, h] = camera(t), fl = flashesAt(t);
     const show = !regionMode && video.videoWidth > 0 && video.readyState >= 2
-      && (h < 0.4995 || Math.abs(xc - 0.5) > 1e-4 || Math.abs(yc - 0.5) > 1e-4 || fl.length > 0 || blurAt(t));
+      && (h < 0.4995 || Math.abs(xc - 0.5) > 1e-4 || Math.abs(yc - 0.5) > 1e-4 || fl.length > 0 || blurAt(t)
+          || spotsAt(t).length > 0);
     if (show !== stageOn) { stage.hidden = !show; stageOn = show; }
     if (!show) return;
     const box = pictureBox(), dpr = window.devicePixelRatio || 1;
@@ -350,6 +358,7 @@
     sctx.filter = blurAt(t) ? `blur(${Math.round(cw / 80)}px)` : "none";
     sctx.drawImage(video, (xc - h) * vw, (yc - h) * vh, 2 * h * vw, 2 * h * vh, 0, 0, cw, ch);
     sctx.filter = "none";
+    drawSpots(cw, ch, xc, yc, h, t);
     for (const [rgb, alpha] of fl) {
       sctx.fillStyle = `rgba(${rgb.join(",")},${alpha})`;
       sctx.fillRect(0, 0, cw, ch);
@@ -538,7 +547,12 @@
   function visLabel(f) {
     if (ZOOMS.includes(f.type)) return `${f.type === "punch" ? "punch" : "push"} ${f.region || "centre"} ${nice(f.zoom)}×`;
     if (f.type === "shake") return "shake " + (STRENGTH[f.strength] || "");
-    if (f.type === "frame") return "show " + (f.region || "?");
+    if (f.type === "frame") return f.region === FULL ? "whole picture" : "show " + (f.region || "?");
+    if (f.type === "text") return `“${f.text}”`;
+    if (f.type === "spot") return "◯ " + (f.style || "spotlight");
+    if (f.type === "caption") return "Aa " + [f.fx || "pop", f.font, f.at].filter(Boolean).join(" · ");
+    if (f.type === "overlay") return ({ sound: "♪ only · ", picture: "muted · " }[f.mode] || "")
+                                     + (overlayOf(f.overlay) || { name: f.overlay + " (gone)" }).name;
     return "flash " + f.color;
   }
   // A colour per region, so the Camera lane shows at a glance what's on screen when.
@@ -685,9 +699,579 @@
   const subsAt = t => subs.filter(c => c.t0 <= t && t < c.t1).sort((a, b) => a.t0 - b.t0 || a.t1 - b.t1);
   // The lines over the video, styled like the render (bold white or the voice's colour,
   // black outline). Two at once stack like libass does: the later one further from the edge.
+  // Overlays: the transparent clip itself (VP9 with alpha) over the picture, kept in step with
+  // the playhead; placed like edit/overlays.py place() does for the render. The one you've
+  // picked shows even when the playhead isn't on it (dimmed, mid-way through), with a box you
+  // drag to move it, a corner to resize it, and the mouse wheel to resize it too.
+  const ovLayer = el("div", "ed-ovs");
+  subLayer.parentElement.insertBefore(ovLayer, subLayer);
+  const ovHandle = makeHandle(ovLayer);
+  const ovEls = new Map();
+  let ovDrag = null, ovWheelAt = 0, ovSizing = false;
+  const overlayOf = id => (D.overlays || []).find(o => o.id === id);
+  const ovPicture = f => f.mode !== "sound";
+  const ovSound = f => f.mode !== "picture";
+  function overlayAnchor(f, t) {     // where `at` puts its centre, before you moved it
+    const b = D.regions[f.at];
+    if (!b || f.at === "full" || f.at === "middle") return [0.5, 0.5];
+    const c = [b.x + b.w / 2, b.y + b.h / 2];
+    return isShort() ? (mapPoint(c[0], c[1], shortPanels(t)) || [0.5, 0.5]) : c;
+  }
+  function overlayCentre(f, t) {
+    const [x, y] = overlayAnchor(f, t);
+    return [x + (f.dx || 0), y + (f.dy || 0)];
+  }
+  function overlayEl(f) {
+    let v = ovEls.get(f.id);
+    if (!v || v.dataset.src !== f.overlay) {
+      if (v) v.remove();
+      v = document.createElement("video");
+      Object.assign(v, { muted: true, playsInline: true, preload: "auto", src: `/media/overlay/${f.overlay}` });
+      v.dataset.src = f.overlay;
+      v.className = "ed-ov";
+      v.addEventListener("loadeddata", () => { needsDraw = true; });    // now it can go to the right frame
+      v.addEventListener("seeked", () => { needsDraw = true; });
+      ovLayer.insertBefore(v, ovHandle);
+      ovEls.set(f.id, v);
+    }
+    return v;
+  }
+  function drawOverlays() {
+    const t = video.currentTime, box = viewBox();
+    const picked = curFx();
+    const sel = picked && picked.type === "overlay" && ovPicture(picked) && overlayOf(picked.overlay) ? picked : null;
+    const live = f => f.type === "overlay" && ovPicture(f) && overlayOf(f.overlay) && keptFx(f);
+    const on = regionMode || !video.videoWidth ? []
+      : fx.filter(f => live(f) && ((t >= f.t && t < f.t + f.d) || f === sel));
+    const soon = regionMode || !video.videoWidth ? []     // loaded a moment early, so they start on time
+      : fx.filter(f => live(f) && !on.includes(f) && f.t > t && f.t - t < 1.5);
+    const ids = new Set([...on, ...soon].map(f => f.id));
+    for (const [id, v] of ovEls) if (!ids.has(id)) { v.pause(); v.remove(); ovEls.delete(id); }
+    ovLayer.hidden = !on.length;
+    ovHandle.hidden = true;
+    for (const f of soon) {
+      const v = overlayEl(f);
+      v.style.visibility = "hidden";
+      if (!v.paused) v.pause();
+      if (v.readyState > 0 && v.currentTime > 0.05) v.currentTime = 0;
+    }
+    if (!on.length) return;
+    place(ovLayer, box);
+    for (const f of on) {
+      const ov = overlayOf(f.overlay), v = overlayEl(f);
+      const inside = t >= f.t && t < f.t + f.d;
+      const [cx, cy] = overlayCentre(f, t), w = (f.size || 1) * box.width, h = w / ov.aspect;
+      const r = { left: cx * box.width - w / 2, top: cy * box.height - h / 2, width: w, height: h };
+      Object.assign(v.style, { left: r.left + "px", top: r.top + "px", width: w + "px", height: h + "px",
+                               visibility: "visible", opacity: inside ? "" : ".55" });
+      const want = inside ? t - f.t : Math.min(ov.length, f.d) / 2;
+      if (v.readyState > 0 && Math.abs(v.currentTime - want) > 0.12 && !v.seeking) v.currentTime = want;
+      if (video.paused || !inside) { if (!v.paused) v.pause(); } else if (v.paused) v.play().catch(() => {});
+      if (f === sel) {       // the handle: the part of it that's on the picture
+        const l = Math.max(r.left, 0), tp = Math.max(r.top, 0);
+        const rr = Math.min(r.left + w, box.width), b = Math.min(r.top + h, box.height);
+        if (rr - l > 8 && b - tp > 8) {
+          ovHandle.hidden = false;
+          place(ovHandle, { left: l, top: tp, width: rr - l, height: b - tp });
+        }
+      }
+    }
+  }
+  // Moving and resizing the picked overlay or text on the picture: a box over it (in its
+  // layer, which sits on the picture) to drag, a corner to drag, the mouse wheel.
+  const OV_SNAP = 0.02;          // its centre snaps to the middle of the picture within this
+  const movable = f => !!f && (f.type === "overlay" || f.type === "text" || f.type === "spot");
+  const camPoint = ([xc, yc, h], px, py) => [xc - h + px * 2 * h, yc - h + py * 2 * h];   // view → picture
+  function makeHandle(layer) {
+    const h = el("div", "ed-ov-handle");
+    h.title = "Drag to move · drag the corner or scroll to resize · double-click to centre it again";
+    h.appendChild(el("i"));
+    h.hidden = true;
+    layer.appendChild(h);
+    const frac = ev => {
+      const r = layer.getBoundingClientRect();
+      return [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height, r];
+    };
+    h.addEventListener("pointerdown", ev => {
+      const f = curFx();
+      if (ev.button !== 0 || !movable(f)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      hold();
+      h.setPointerCapture(ev.pointerId);
+      const [px, py, r] = frac(ev), mode = ev.target.tagName === "I" ? "size" : "move";
+      if (f.type === "spot") {                 // its box is in the clip's frame: drag in the picture, map back
+        const cam = camera(video.currentTime), ob = spotBox(f, video.currentTime);
+        if (!ob) return;
+        pushUndo();
+        ovDrag = { spot: true, mode, cam, ob, p0: camPoint(cam, px, py), x0: f.x, y0: f.y, w0: f.w, h0: f.h, moved: false };
+        return;
+      }
+      const [cx, cy] = overlayCentre(f, video.currentTime);
+      const dist = Math.hypot((px - cx) * r.width, (py - cy) * r.height);
+      pushUndo();
+      ovDrag = { mode, px, py, dx: f.dx || 0, dy: f.dy || 0,
+                 size: fxSize(f), dist: Math.max(dist, 4), cx, cy, moved: false };
+    });
+    h.addEventListener("pointermove", ev => {
+      const f = curFx();
+      if (!ovDrag || !movable(f)) return;
+      const [px, py, r] = frac(ev), d = ovDrag;
+      d.moved = true;
+      if (d.spot) {
+        const [qx, qy] = camPoint(d.cam, px, py), kx = d.ob[2] / d.w0, ky = d.ob[3] / d.h0;
+        if (d.mode === "move") Object.assign(f, { x: r4(d.x0 + (qx - d.p0[0]) / kx), y: r4(d.y0 + (qy - d.p0[1]) / ky) });
+        else {
+          const lo = D.spot_info.min, w = Math.min(Math.max(2 * Math.abs(qx - (d.ob[0] + d.ob[2] / 2)) / kx, lo), 1.5);
+          const h = Math.min(Math.max(2 * Math.abs(qy - (d.ob[1] + d.ob[3] / 2)) / ky, lo), 1.5);
+          Object.assign(f, { w: r4(w), h: r4(h), x: r4(d.x0 + d.w0 / 2 - w / 2), y: r4(d.y0 + d.h0 / 2 - h / 2) });
+        }
+        f.by = "you";
+        needsDraw = true;
+        return;
+      }
+      if (d.mode === "move") {
+        const [ax, ay] = overlayAnchor(f, video.currentTime);
+        let x = ax + d.dx + px - d.px, y = ay + d.dy + py - d.py;
+        if (Math.abs(x - 0.5) < OV_SNAP) x = 0.5;
+        if (Math.abs(y - 0.5) < OV_SNAP) y = 0.5;
+        const [lo, hi] = D.overlay_info.offset;
+        f.dx = r4(Math.min(Math.max(x - ax, lo), hi));
+        f.dy = r4(Math.min(Math.max(y - ay, lo), hi));
+      } else {
+        const dist = Math.hypot((px - d.cx) * r.width, (py - d.cy) * r.height);
+        f.size = clampSize(f, d.size * dist / d.dist);
+      }
+      f.by = "you";
+      needsDraw = true;
+    });
+    const end = () => {
+      if (!ovDrag) return;
+      const moved = ovDrag.moved;
+      ovDrag = null;
+      if (moved) changed(); else undo.pop();
+    };
+    h.addEventListener("pointerup", end);
+    h.addEventListener("pointercancel", end);
+    h.addEventListener("dblclick", ev => { ev.stopPropagation(); if (curFx() && curFx().type !== "spot") editFx({ dx: 0, dy: 0 }); });
+    h.addEventListener("wheel", ev => {
+      const f = curFx();
+      if (!movable(f)) return;
+      ev.preventDefault();
+      if (performance.now() - ovWheelAt > 800) pushUndo();     // one undo step per burst of scrolling
+      ovWheelAt = performance.now();
+      const k = ev.deltaY < 0 ? 1.06 : 1 / 1.06;
+      if (f.type === "spot") {
+        const lo = D.spot_info.min, w = Math.min(Math.max(f.w * k, lo), 1.5), h = Math.min(Math.max(f.h * k, lo), 1.5);
+        Object.assign(f, { x: r4(f.x + f.w / 2 - w / 2), y: r4(f.y + f.h / 2 - h / 2), w: r4(w), h: r4(h), by: "you" });
+        changed();
+        return;
+      }
+      f.size = clampSize(f, fxSize(f) * k);
+      f.by = "you";
+      changed();
+    }, { passive: false });
+    return h;
+  }
+  const r4 = v => Math.round(v * 1e4) / 1e4;
+  // Sizes: an overlay's width, a text's font size, both as shares of the picture's width.
+  const sizeRange = f => (f.type === "text" ? D.text_info.size : D.overlay_info.size);
+  const fxSize = f => f.size || (f.type === "text" ? D.text_info.default_size[f.style || "pop"] : 1);
+  const clampSize = (f, v) => {
+    const [lo, hi] = sizeRange(f), k = f.type === "text" ? 1000 : 100;
+    return Math.round(Math.min(Math.max(v, lo), hi) * k) / k;
+  };
+
+  // Text callouts: drawn like edit/texts.py has libass draw them (the same size, outline,
+  // wrapping, tilt, and the spring/slam/fade in time), above the captions. The one you've
+  // picked shows even off its time (dimmed), with the same box as overlays to move it.
+  const txLayer = el("div", "ed-txs");
+  subLayer.parentElement.insertBefore(txLayer, subLayer.nextSibling);
+  const txHandle = makeHandle(txLayer);
+  const txEls = new Map();
+  const txStyle = f => f.style || "pop";
+  const txLine = f => (txStyle(f) === "label" ? D.text_info.label_line : D.text_info.line);
+  const txShown = f => (txStyle(f) === "stamp" ? f.text.toUpperCase() : f.text);
+  const txColor = f => D.text_info.colors[f.color] || D.text_info.colors[D.text_info.default_color[txStyle(f)]];
+  function txAnim(f, t) {        // [scale, opacity]: the \t and \fad tags of edit/texts.py events()
+    const I = D.text_info.intro_ms, u = (t - f.t) * 1000, left = (f.t + f.d - t) * 1000;
+    const O = Math.min(D.text_info.outro_ms, Math.round(f.d * 400));
+    let sc = 1, a = 1;
+    if (txStyle(f) === "pop") {
+      const h1 = Math.floor(I / 2);
+      if (u < h1) sc = 0.4 + 0.78 * u / h1; else if (u < I) sc = 1.18 - 0.18 * (u - h1) / (I - h1);
+    } else if (txStyle(f) === "stamp") {
+      const k = Math.floor(I * 2 / 3);
+      if (u < k) { sc = 2.6 - 1.6 * u / k; a = u / k; }
+    } else if (u < I) a = u / I;
+    if (O > 0 && left < O) a *= Math.max(0, left / O);
+    return [sc, a];
+  }
+  function textEl(f, box) {
+    const size = fxSize(f) * box.width, st = txStyle(f), col = txColor(f);
+    const key = [f.text, st, col, Math.round(size * 10)].join("|");
+    const rec = txEls.get(f.id);
+    if (rec && rec.key === key) return rec.el;
+    if (rec) rec.el.remove();
+    const e = el("div", "ed-callout");
+    Object.assign(e.style, {
+      fontFamily: `"${D.sub_layout.font}", "Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif`,
+      fontSize: size * ASS_TO_CSS + "px", lineHeight: size + "px", color: "#" + col,
+    });
+    if (st === "label") Object.assign(e.style, { background: "rgba(0,0,0,.85)", padding: size * 0.28 + "px" });
+    else Object.assign(e.style, { WebkitTextStroke: size * (st === "stamp" ? 0.28 : 0.22) + "px #000",
+                                  textShadow: `${size * 0.05}px ${size * 0.05}px 0 rgba(0,0,0,.5)` });
+    const hi = "#" + (col.toUpperCase() === D.sub_layout.highlight.toUpperCase() ? "FFFFFF" : D.sub_layout.highlight);
+    let on = false;
+    wrapSub(txShown(f), txLine(f), 2).forEach((line, k) => {
+      if (k) e.appendChild(el("br"));
+      const [pieces, after] = runsOf(line, on);
+      on = after;
+      for (const [text, h] of pieces) {
+        const sp = el("span", "", text);
+        if (h) sp.style.color = hi;
+        e.appendChild(sp);
+      }
+    });
+    txLayer.insertBefore(e, txHandle);
+    txEls.set(f.id, { el: e, key });
+    return e;
+  }
+  function drawTexts() {
+    const t = video.currentTime, box = viewBox(), picked = curFx();
+    const sel = picked && picked.type === "text" ? picked : null;
+    const on = regionMode || !video.videoWidth ? []
+      : fx.filter(f => f.type === "text" && f.text && keptFx(f) && ((t >= f.t && t < f.t + f.d) || f === sel));
+    const ids = new Set(on.map(f => f.id));
+    for (const [id, r] of txEls) if (!ids.has(id)) { r.el.remove(); txEls.delete(id); }
+    txLayer.hidden = !on.length;
+    txHandle.hidden = true;
+    if (!on.length) return;
+    place(txLayer, box);
+    for (const f of on) {
+      const e = textEl(f, box), inside = t >= f.t && t < f.t + f.d;
+      const [cx, cy] = overlayCentre(f, t), [sc, a] = inside ? txAnim(f, t) : [1, 0.55];
+      const tilt = txStyle(f) === "stamp" ? -D.text_info.tilt : 0;
+      Object.assign(e.style, { left: cx * box.width + "px", top: cy * box.height + "px", opacity: a,
+                               transform: `translate(-50%, -50%) rotate(${tilt}deg) scale(${sc})` });
+      if (f === sel) {
+        const w = e.offsetWidth, h = e.offsetHeight;
+        place(txHandle, { left: cx * box.width - w / 2, top: cy * box.height - h / 2, width: w, height: h });
+        txHandle.hidden = false;
+      }
+    }
+  }
+  function addText() {
+    const t = video.currentTime, st = "pop", [d] = D.visual.types.text;
+    const f = { id: "u" + Math.random().toString(36).slice(2, 8), type: "text", t: r3(t), d: r3(Math.min(d, D.duration - t)),
+                text: "TEXT", style: st, color: D.text_info.default_color[st], at: "middle", dx: 0, dy: 0,
+                size: D.text_info.default_size[st], by: "you", why: "" };
+    if (f.d < D.visual.types.text[1]) { flash("Too close to the end of the clip."); return; }
+    pushUndo();
+    fx.push(f);
+    selFx = f.id;
+    changed();
+    const input = $("[data-text-input]");
+    if (input) { input.focus(); input.select(); }
+  }
+  let txEditing = false;
+
+  // Spotlights: the rest of the picture dimmed round an ellipse, a ring round it, drawn on
+  // the stage after the zoom like the render lays edit/spots.py's mask() before it. The box
+  // is in the clip's frame (x, y, w, h), mapped through the Short's panels (spotBox).
+  const spLayer = el("div", "ed-ovs");
+  subLayer.parentElement.insertBefore(spLayer, ovLayer);
+  const spHandle = makeHandle(spLayer);
+  spHandle.classList.add("round");
+  spHandle.title = "Drag to move · drag the corner to make it wider or taller · scroll to resize";
+  function spotsAt(t) {
+    const picked = curFx();
+    return regionMode ? [] : fx.filter(f => f.type === "spot" && keptFx(f) && (active(f, t) || f === picked));
+  }
+  function spotBox(f, t) {       // map_box in edit/spots.py
+    if (!isShort()) return [f.x, f.y, f.w, f.h];
+    const cx = f.x + f.w / 2, cy = f.y + f.h / 2;
+    for (const p of [...shortPanels(t)].reverse()) {
+      if (p.blur) continue;
+      const [sx, sy, sw, sh] = p.src, [dx, dy, dw, dh] = p.dst;
+      if (sx <= cx && cx <= sx + sw && sy <= cy && cy <= sy + sh) {
+        const kx = dw / sw, ky = dh / sh, ox = dx + (cx - sx) * kx, oy = dy + (cy - sy) * ky;
+        return [ox - f.w * kx / 2, oy - f.h * ky / 2, f.w * kx, f.h * ky];
+      }
+    }
+    return null;
+  }
+  function spotAlpha(f, t) {
+    if (!active(f, t)) return 0.5;               // picked, but not at the playhead: shown faintly
+    const [fi, fo] = D.spot_info.fade;
+    return Math.max(0, Math.min(1, (t - f.t) / Math.min(fi, f.d / 2), (f.t + f.d - t) / Math.min(fo, f.d / 2)));
+  }
+  function drawSpots(cw, ch, xc, yc, h, t) {
+    const S = D.spot_info, side = Math.min(cw, ch) / (2 * h);
+    for (const f of spotsAt(t)) {
+      const b = spotBox(f, t);
+      if (!b) continue;
+      const cx = (b[0] + b[2] / 2 - (xc - h)) / (2 * h) * cw, cy = (b[1] + b[3] / 2 - (yc - h)) / (2 * h) * ch;
+      const rx = Math.max(b[2] / 2 / (2 * h) * cw, 2), ry = Math.max(b[3] / 2 / (2 * h) * ch, 2);
+      sctx.save();
+      sctx.globalAlpha = spotAlpha(f, t);
+      if (f.style !== "circle") {
+        sctx.save();
+        sctx.translate(cx, cy);
+        sctx.scale(rx, ry);
+        const g = sctx.createRadialGradient(0, 0, 1, 0, 0, 1 + S.feather * side / Math.min(rx, ry));
+        g.addColorStop(0, "rgba(0,0,0,0)");
+        g.addColorStop(1, `rgba(0,0,0,${S.dim})`);
+        sctx.fillStyle = g;
+        sctx.fillRect(-cx / rx, -cy / ry, cw / rx, ch / ry);
+        sctx.restore();
+      }
+      if (f.style !== "dim") {
+        sctx.beginPath();
+        sctx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+        sctx.lineWidth = Math.max(3, S.ring * side);
+        sctx.strokeStyle = "#" + (S.colors[f.color] || S.colors[S.default_color[f.style || "spotlight"]]);
+        sctx.stroke();
+      }
+      sctx.restore();
+    }
+  }
+  function drawSpotHandle() {
+    const f = curFx(), t = video.currentTime;
+    const b = f && f.type === "spot" && keptFx(f) && !regionMode && video.videoWidth ? spotBox(f, t) : null;
+    spLayer.hidden = !b;
+    spHandle.hidden = !b;
+    if (!b) return;
+    const box = viewBox(), [xc, yc, h] = camera(t);
+    place(spLayer, box);
+    const l = (b[0] - (xc - h)) / (2 * h) * box.width, tp = (b[1] - (yc - h)) / (2 * h) * box.height;
+    const r = l + b[2] / (2 * h) * box.width, bt = tp + b[3] / (2 * h) * box.height;
+    const cl = Math.max(l, 0), ct = Math.max(tp, 0), cr = Math.min(r, box.width), cb = Math.min(bt, box.height);
+    spHandle.classList.toggle("round", cl === l && ct === tp && cr === r && cb === bt);   // cut by the edge: a box
+    if (cr - cl < 8 || cb - ct < 8) { spHandle.hidden = true; return; }                // so its corner stays on screen
+    place(spHandle, { left: cl, top: ct, width: cr - cl, height: cb - ct });
+  }
+  function addSpot() {
+    const t = video.currentTime, [d] = D.visual.types.spot, st = "spotlight";
+    let box;
+    if (isShort()) {              // a circle 40% as wide as the Short, on its main (sharp) panel
+      const p = shortPanels(t).filter(q => !q.blur).sort((a, b) => b.dst[2] * b.dst[3] - a.dst[2] * a.dst[3])[0];
+      const [OW, OH] = D.layout_info.out, [sx, sy, sw, sh] = p.src, [, , dw, dh] = p.dst;
+      const w = 0.4 * sw / dw, h = 0.4 * OW / OH * sh / dh;
+      box = { x: sx + sw / 2 - w / 2, y: sy + sh / 2 - h / 2, w, h };
+    } else {
+      const h = 0.3, w = h * (video.videoHeight || 9) / (video.videoWidth || 16);
+      box = { x: 0.5 - w / 2, y: 0.5 - h / 2, w, h };
+    }
+    const f = { id: "u" + Math.random().toString(36).slice(2, 8), type: "spot", t: r3(t), d: r3(Math.min(d, D.duration - t)),
+                style: st, color: D.spot_info.default_color[st], ...Object.fromEntries(Object.entries(box).map(([k, v]) => [k, r4(v)])),
+                by: "you", why: "" };
+    if (f.d < D.visual.types.spot[1]) { flash("Too close to the end of the clip."); return; }
+    pushUndo();
+    fx.push(f);
+    selFx = f.id;
+    changed();
+  }
+  function setSpotRegion(name) {   // round a drawn region, with some room
+    const b = D.regions[name], pad = 0.15;
+    if (!b) return;
+    editFx({ x: r4(b.x - b.w * pad), y: r4(b.y - b.h * pad), w: r4(b.w * (1 + 2 * pad)), h: r4(b.h * (1 + 2 * pad)) });
+  }
+  function ovSize(at, ov) {     // default_size in edit/overlays.py: "full" covers the picture
+    if (at !== "full") return 0.5;
+    const [W, H] = isShort() ? [9, 16] : [video.videoWidth || 16, video.videoHeight || 9];
+    return Math.round(Math.min(Math.max(1, H / W * ov.aspect), 2.5) * 100) / 100;
+  }
+  let lastOverlay = "";
+  try { lastOverlay = localStorage.getItem("cw-ed-overlay") || ""; } catch (e) {}
+  function addOverlay() {
+    const list = D.overlays || [];
+    if (!list.length) { flash("No overlays yet: add green-screen clips on the Library page (Overlays)."); return; }
+    const ov = overlayOf(lastOverlay) || list[0], t = video.currentTime;
+    const f = { id: "u" + Math.random().toString(36).slice(2, 8), type: "overlay", overlay: ov.id, t: r3(t),
+                d: r3(Math.min(ov.length, D.duration - t)), at: "full", dx: 0, dy: 0, size: ovSize("full", ov), gain: 0,
+                mode: "both", by: "you", why: "" };
+    if (f.d < 0.1) { flash("Too close to the end of the clip."); return; }
+    pushUndo();
+    fx.push(f);
+    selFx = f.id;
+    if (ov.sound) buffer("ov:" + ov.id).catch(() => {});
+    changed();
+  }
+  function setOverlay(id) {
+    const ov = overlayOf(id), f = curFx();
+    if (!ov || !f) return;
+    lastOverlay = id;
+    try { localStorage.setItem("cw-ed-overlay", id); } catch (e) {}
+    editFx({ overlay: id, d: r3(Math.min(ov.length, D.duration - f.t)), size: ovSize(f.at || "full", ov) });
+    if (ov.sound) buffer("ov:" + id).catch(() => {});
+  }
+
+  // ── caption styles (edit/captions.py): the bubble look, and the effect / font / place a
+  // caption style gives the captions that start while it lasts. Built when what's on screen
+  // changes; moved every frame (capAnim) the way libass's \t tags move them in the render.
+  const CAPI = () => (D && D.sub_layout && D.sub_layout.captions) || null;
+  const capMark = t0 => {        // the latest caption style covering a caption's start (captions.mark_for)
+    let on = null;
+    for (const f of fx) if (f.type === "caption" && f.t - 0.02 <= t0 && t0 < f.t + f.d && (!on || f.t >= on.t)) on = f;
+    return on;
+  };
+  const capStyled = shown => !!CAPI() && (subStyle.look === "bubble" || shown.some(c => capMark(c.t0)));
+  function hlsOf(rgb) {
+    const [r, g, b] = [0, 2, 4].map(i => parseInt(rgb.slice(i, i + 2), 16) / 255);
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+    if (mx === mn) return [0, l, 0];
+    const d = mx - mn, s = l <= 0.5 ? d / (mx + mn) : d / (2 - mx - mn);
+    const h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return [h / 6, l, s];
+  }
+  function rgbOf(h, l, s) {
+    const hex = v => Math.round(v * 255).toString(16).padStart(2, "0").toUpperCase();
+    if (!s) return hex(l) + hex(l) + hex(l);
+    const q = l <= 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    const f = t => { t = ((t % 1) + 1) % 1; return t < 1 / 6 ? p + (q - p) * 6 * t : t < 0.5 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p; };
+    return hex(f(h + 1 / 3)) + hex(f(h)) + hex(f(h - 1 / 3));
+  }
+  function capDeep(rgb) {        // captions.deep: a voice's pastel as a fill inside a white outline
+    const C = CAPI();
+    if (!rgb || !/^[0-9A-Fa-f]{6}$/.test(rgb)) return C.default_fill;
+    const [h, l, s] = hlsOf(rgb);
+    return s < 0.12 ? C.default_fill : rgbOf(h, Math.min(l, 0.38), Math.max(s, 0.6));
+  }
+  const capRing = fill => { const [h, l, s] = hlsOf(fill); return rgbOf(h, l * 0.38, s); };
+  const capAccent = fill => { const h = hlsOf(fill)[0]; return h < 0.05 || h > 0.85 ? "2F6BE6" : "E62E6B"; };
+  function capFamily(key, text, bubble) {      // captions.font_for
+    const C = CAPI(), fall = `"${D.sub_layout.font}", "Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif`;
+    if (!key && !bubble) return fall;
+    if (subWidth(text) !== text.replace(/\*/g, "").length) return `"${C.cjk_font}", ${fall}`;
+    return `"${C.fonts[key || "round"] || C.fonts.round}", ${fall}`;
+  }
+  function capSeam(t) {
+    if (!isShort()) return 0.5;
+    const ys = new Set();
+    for (const p of shortPanels(t)) if (!p.blur) { ys.add(+p.dst[1].toFixed(4)); ys.add(+(p.dst[1] + p.dst[3]).toFixed(4)); }
+    const inner = [...ys].filter(y => y > 0.12 && y < 0.88);
+    return inner.length ? inner.reduce((a, b) => (Math.abs(b - 0.5) < Math.abs(a - 0.5) ? b : a)) : 0.5;
+  }
+  function capAnchor(at, t) {    // captions.anchor
+    if (at === "middle") return [0.5, 0.5];
+    if (at === "seam") return [0.5, capSeam(t)];
+    const b = at && !CAPI().places.includes(at) ? D.regions[at] : null;
+    if (!b) return null;
+    const cx = b.x + b.w / 2, low = b.y + b.h * CAPI().low;
+    if (!isShort()) return [cx, low];
+    const ps = shortPanels(t);
+    return mapPoint(cx, low, ps) || mapPoint(cx, b.y + b.h / 2, ps);
+  }
+  let capRecs = [];
+  function drawCaptions(shown, box, titled) {
+    const C = CAPI(), L = D.sub_layout, bubble = subStyle.look === "bubble", W = box.width, H = box.height;
+    const size = L.sizes[subStyle.size] * (L.vertical ? W : H) * (bubble ? C.bubble_scale : 1);
+    const topEdge = H * (titled ? L.top_title : L.top), bottomEdge = H * (1 - L.bottom);
+    const stacked = { top: 0, bottom: 0 };
+    const items = shown.map((c, n) => {      // captions.events: where each goes and how it looks
+      const m = capMark(c.t0), fxName = m ? m.fx || "pop" : (bubble ? "pop" : "none");
+      const rows = wrapSub(c.text, L.max_line, L.max_lines), height = rows.length * size * C.line_h;
+      let edge = m && (m.at === "top" || m.at === "bottom") ? m.at : null;
+      const xy = !edge && m && m.at ? capAnchor(m.at, c.t0) : null;
+      if (!edge && !xy) edge = subStyle.position === "top" ? "top" : "bottom";
+      let x, y, an;
+      if (edge) {
+        const below = stacked[edge];
+        stacked[edge] += height;
+        x = W / 2; y = edge === "top" ? topEdge + below : bottomEdge - below; an = edge === "top" ? 8 : 2;
+      } else {
+        const widest = Math.max(...rows.map(subWidth)) * C.char_w * size * (c.text.includes("*") ? C.hi_scale : 1);
+        const hw = Math.min(widest / 2 + size * 0.3, W / 2);
+        x = Math.min(Math.max(xy[0] * W, hw), W - hw);
+        y = Math.min(Math.max(xy[1] * H, height / 2 + H * 0.04), H * 0.96 - height / 2);
+        an = 5;
+      }
+      const col = cueColor(c), fill = bubble ? capDeep(col) : (col || "FFFFFF").toUpperCase();
+      return { c, fx: fxName, rows, x, y, an, size, fill, family: capFamily(m ? m.font : (bubble ? "round" : ""), c.text, bubble),
+               seed: n + 1 + Math.round(c.t0 * 100) };
+    });
+    const key = "cap|" + JSON.stringify(items.map(i => [i.c.id, i.c.text, i.fx, Math.round(i.x), Math.round(i.y), i.an, i.fill, i.family]))
+                + [subStyle.look, Math.round(size), box.left, box.top].join("|");
+    if (key !== subKey) {
+      subKey = key;
+      subLayer.hidden = !items.length;
+      subLayer.textContent = "";
+      capRecs = [];
+      if (items.length) place(subLayer, box);
+      for (const it of items) {
+        const wrap = el("div", "ed-cap"), letters = [];
+        Object.assign(wrap.style, { left: it.x + "px", top: it.y + "px", fontFamily: it.family,
+                                    fontSize: it.size * ASS_TO_CSS + "px", lineHeight: it.size + "px",
+                                    transformOrigin: { 2: "50% 100%", 8: "50% 0", 5: "50% 50%" }[it.an] });
+        const layers = bubble
+          ? [[capRing(it.fill), capRing(it.fill), `${it.size * C.outer * 2}px #${capRing(it.fill)}`, ""],
+             [it.fill, capAccent(it.fill), `${it.size * C.inner * 2}px #ffffff`, ""]]
+          : [[it.fill, it.fill.toUpperCase() === L.highlight.toUpperCase() ? "FFFFFF" : L.highlight,
+              `${it.size * C.classic_bord * 2}px #000`, `${it.size * 0.045}px ${it.size * 0.045}px 0 rgba(0,0,0,.5)`]];
+        layers.forEach(([fill, hi, stroke, shadow], k) => {
+          const copy = el("div", k === 0 && layers.length > 1 ? "ed-cap-back" : "");
+          Object.assign(copy.style, { color: "#" + fill, WebkitTextStroke: stroke, textShadow: shadow });
+          let on = false, i = 0;
+          it.rows.forEach((row, r) => {
+            if (r) copy.appendChild(el("br"));
+            const [pieces, after] = runsOf(row, on);
+            on = after;
+            for (const [text, h] of pieces) {
+              const add = (t, parent) => {
+                const sp = el("span", "", t);
+                if (h) Object.assign(sp.style, { color: "#" + hi, fontSize: C.hi_scale + "em" });
+                parent.appendChild(sp);
+                return sp;
+              };
+              if (it.fx === "wave") for (const ch of text) { const sp = add(ch, copy); Object.assign(sp.style, { display: "inline-block", whiteSpace: "pre" }); (letters[i] = letters[i] || []).push(sp); i++; }
+              else add(text, copy);
+            }
+          });
+          wrap.appendChild(copy);
+        });
+        subLayer.appendChild(wrap);
+        capRecs.push({ el: wrap, letters, fx: it.fx, t0: it.c.t0, t1: it.c.t1, size: it.size, seed: it.seed,
+                       anchor: { 2: "translate(-50%, -100%)", 8: "translate(-50%, 0)", 5: "translate(-50%, -50%)" }[it.an] });
+      }
+    }
+    capAnim(video.currentTime);
+  }
+  function capAnim(t) {          // the \t / \move / shake steps of captions.events, at time t
+    const C = CAPI(), P = C.pop_ms, h = P / 2;
+    for (const r of capRecs) {
+      const u = Math.max(0, (t - r.t0) * 1000), dur = (r.t1 - r.t0) * 1000;
+      let sx = 1, sy = 1, dx = 0, dy = 0, rot = 0;
+      if (["pop", "shake", "wave", "wobble", "grow"].includes(r.fx) && u < P) sx = sy = u < h ? 0.4 + 0.75 * u / h : 1.15 - 0.15 * (u - h) / h;
+      if (r.fx === "grow" && u >= P) sx = sy = 1 + (C.grow_to - 1) * Math.min(1, (u - P) / Math.max(1, dur - P));
+      if (r.fx === "bounce") {
+        const B = C.bounce_ms;
+        if (u < B) dy = -r.size * 1.2 * (1 - u / B);
+        else if (u < B + 60) { const k = (u - B) / 60; sx = 1 + 0.25 * k; sy = 1 - 0.22 * k; }
+        else if (u < B + 170) { const k = (u - B - 60) / 110; sx = 1.25 - 0.25 * k; sy = 0.78 + 0.22 * k; }
+      }
+      if (r.fx === "shake" && u >= P) {
+        const [step, amp, tilt] = C.shake, k = Math.floor((u - P) / step);
+        const j = n => { const v = Math.sin(r.seed * 12.9898 + k * 78.233 + n * 37.719) * 43758.5453; return (v - Math.floor(v)) * 2 - 1; };
+        dx = j(1) * amp * r.size; dy = j(2) * amp * r.size; rot = -j(3) * tilt;
+      }
+      if (r.fx === "wobble") rot = -C.wobble[0] * Math.sin(2 * Math.PI * u / C.wobble[1]);
+      r.el.style.transform = `${r.anchor} translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${sx}, ${sy})`;
+      if (r.fx === "wave") {
+        const [amp, per, ph] = C.wave;
+        r.letters.forEach((ls, i) => {
+          const off = -amp * r.size * Math.sin(2 * Math.PI * u / per - i * ph);
+          for (const l of ls) l.style.transform = `translateY(${off}px)`;
+        });
+      }
+    }
+  }
+
   function drawSubPreview() {
     const shown = !regionMode && subStyle.on && video.videoWidth ? subsAt(video.currentTime) : [];
     const box = viewBox(), L = D.sub_layout, titled = isShort() && !!layout.title;
+    if (shown.length && capStyled(shown)) { drawCaptions(shown, box, titled); return; }
+    capRecs = [];
     const key = shown.length ? [shown.map(c => `${c.id}:${c.text}:${cueColor(c) || ""}`).join(","), subStyle.size,
                                 subStyle.position, Math.round(box.width), Math.round(box.height), box.left, titled].join("|") : "";
     if (key === subKey) return;
@@ -735,16 +1319,20 @@
     if (actx.state === "suspended") actx.resume();
     return actx;
   }
-  function buffer(id) {
+  function buffer(id) {          // a library sound, or "ov:<id>": an overlay's own sound
     if (!buffers.has(id)) {
       const a = audio();
       if (!a) return Promise.reject(new Error("no audio"));
-      buffers.set(id, fetch(`/media/sound/${id}`).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+      const url = id.startsWith("ov:") ? `/media/overlay/${id.slice(3)}/sound` : `/media/sound/${id}`;
+      buffers.set(id, fetch(url).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
         .then(b => a.decodeAudioData(b)).catch(e => { buffers.delete(id); throw e; }));
     }
     return buffers.get(id);
   }
-  const preload = () => fx.forEach(f => { if (f.type === "sfx") buffer(f.sound).catch(() => {}); });
+  const preload = () => fx.forEach(f => {
+    if (f.type === "sfx") buffer(f.sound).catch(() => {});
+    else if (f.type === "overlay" && (overlayOf(f.overlay) || {}).sound) buffer("ov:" + f.overlay).catch(() => {});
+  });
   async function playSound(id, gainDb) {
     const a = audio();
     if (!a) return;
@@ -760,6 +1348,10 @@
     src.start();
   }
   function stopSounds() { for (const s of playing) { try { s.stop(); } catch (e) {} } playing.clear(); duckUntil = 0; }
+  function fireOverlay(f) {
+    const ov = overlayOf(f.overlay);
+    if (ov && ov.sound && ovSound(f)) playSound("ov:" + f.overlay, (f.gain || 0) + (ov.gain || 0));
+  }
   function fire(f) {
     const snd = sound(f.sound);
     if (!snd) return;
@@ -847,7 +1439,7 @@
       if (video.seeking) prevT = armFrom;
       else {
         if (!video.paused && prevT !== null && t > prevT && t - prevT < 0.5)
-          for (const f of fx) if (f.type === "sfx" && f.t > prevT && f.t <= t) fire(f);
+          for (const f of fx) if (f.t > prevT && f.t <= t) { if (f.type === "sfx") fire(f); else if (f.type === "overlay") fireOverlay(f); }
         prevT = t;
         armFrom = null;
       }
@@ -856,7 +1448,10 @@
       if (!video.paused || video.seeking || needsDraw || drag) {
         if (!video.paused && !drag) follow(t);
         drawStage();
+        drawSpotHandle();
+        drawOverlays();
         drawSubPreview();
+        drawTexts();
         draw();
         paintTime(t);
         paintLine(t);
@@ -1032,13 +1627,13 @@
     if (type === "frame") {
       if (kind !== "short") { flash("Frame shots are for Shorts: switch to the Short first."); return; }
       const names = Object.keys(D.regions);
-      if (!names.length) { flash("Draw a region first (⋯ More → ▢ Draw regions): a frame shot shows one full-screen."); return; }
-      f.region = names.find(n => n !== (layout && layout.bottom)) || names[0];
+      f.region = names.find(n => n !== (layout && layout.bottom)) || FULL;
     } else if (ZOOMS.includes(type)) {
       const names = Object.keys(D.regions);
       f.region = names.includes("face") ? "face" : names[0] || "";
       f.zoom = type === "punch" ? (f.region ? Math.min(fitZoom(f.region), 2.5) : 1.5) : 1.25;
     } else if (type === "shake") f.strength = 2;
+    else if (type === "caption") Object.assign(f, { fx: "pop", font: "", at: "" });
     else f.color = "white";
     pushUndo();
     fx.push(f);
@@ -1064,43 +1659,116 @@
     changed();
     fxStatus(`Removed ${n} of Claude's effects. Ctrl+Z brings them back.`, "");
   }
+  // Claude remade the edit on the server: load it, with the edit before it on the undo stack.
+  async function takeAiEdit(d) {
+    const fresh = await fetchEdit(kind);
+    if (fresh.ok === false) throw new Error(fresh.error || "Couldn't reload the edit.");
+    pushUndo();
+    D = fresh;
+    segs = clone(fresh.segments);
+    fx = cloneFx(fresh.effects || []);
+    source = fresh.source;
+    subs = cloneFx(fresh.subs || []);
+    subStyle = { ...fresh.subs_style };
+    subsMine = fresh.subs_source === "saved";
+    if (fresh.layout) layout = { ...fresh.layout };
+    sel = 0; selFx = null; selSub = null; subKey = ""; listFor = null; dirty = false;
+    D.saved = true;
+    setSaved("Saved");
+    paintKind();
+    paintAll();
+    showRender(d.render);
+    preload();
+  }
   async function autoEdit() {
     const b = $('[data-ed-act="autoedit"]');
-    if (segs.length > 1 && !confirm("✨ AI edit replaces your cut, Claude's effects and the subtitles with a new edit (your own effects stay; Ctrl+Z brings everything back). Go on?")) return;
+    if (segs.length > 1 && !confirm("✨ AI edit replaces your cut, Claude's effects and the subtitles with a new edit, and starts a new conversation in ✨ Direct (your own effects stay; Ctrl+Z brings everything back). Go on?")) return;
     b.disabled = true;
     clearTimeout(saveTimer);
     fxStatus("Claude is editing the whole clip: cuts, hook, camera and effects… (usually 30–90 s)", "busy");
     try {
       const d = await post(`/moment/${pk}/autoedit`, { ...body(), intensity: $("[data-ed-intensity]").value });
-      const fresh = await fetchEdit(kind);
-      if (fresh.ok === false) throw new Error(fresh.error || "Couldn't reload the edit.");
-      pushUndo();
-      D = fresh;
-      segs = clone(fresh.segments);
-      fx = cloneFx(fresh.effects || []);
-      source = fresh.source;
-      subs = cloneFx(fresh.subs || []);
-      subStyle = { ...fresh.subs_style };
-      subsMine = fresh.subs_source === "saved";
-      if (fresh.layout) layout = { ...fresh.layout };
-      sel = 0; selFx = null; selSub = null; subKey = ""; listFor = null; dirty = false;
-      D.saved = true;
-      setSaved("Saved");
-      paintKind();
-      paintAll();
-      showRender(d.render);
-      preload();
+      await takeAiEdit(d);
+      paintChat(d.messages, true);
       const c = d.counts || {};
       const bits = [`cut ${d.cut_s.toFixed(0)} s (kept ${d.kept} of ${d.pieces} pieces)`,
                     d.cold_open && "opens on a teaser", `${c.camera || 0} camera moves`,
                     c.sounds && `${c.sounds} sounds`, c.hits && `${c.hits} shakes/flashes`].filter(Boolean);
-      fxStatus(`Claude's edit: ${bits.concat(c.volume ? [`${c.volume} volume change${c.volume > 1 ? "s" : ""}`] : []).join(", ")}. ${d.note || ""} ${(d.warnings || []).join(" ")} Ctrl+Z undoes.`, "ok");
+      fxStatus(`Claude's edit: ${bits.concat(c.volume ? [`${c.volume} volume change${c.volume > 1 ? "s" : ""}`] : []).join(", ")}. ${d.note || ""} ${(d.warnings || []).join(" ")} Tell it what to change in ✨ Direct. Ctrl+Z undoes.`, "ok");
+      showTab("ai");
     } catch (e) {
       fxStatus(e.message, "err");
     } finally {
       b.disabled = false;
     }
   }
+
+  // ✨ Direct: a conversation with the AI edit's Claude session about this edit (long and
+  // short apart). It remembers the clip and its own answers; each message also tells it
+  // the edit as it is now. When it changes the edit, Ctrl+Z brings yours back.
+  let chatBusy = false, chatNew = false;
+  function paintChat(messages, started = false) {
+    const log = $("[data-ed-chat]");
+    log.textContent = "";
+    if (started) chatNew = false;
+    if (!messages || !messages.length || chatNew) {
+      log.appendChild(el("p", "faint ed-chat-empty", chatNew
+        ? "New session: your next message starts a new AI edit from the whole clip, with your words as its direction."
+        : "No conversation yet. Press ✨ AI edit, or write how you want this clip cut and Claude makes the edit."));
+      return;
+    }
+    for (const m of messages) {
+      const b = el("div", "ed-bubble " + m.role + (m.applied ? " applied" : ""));
+      b.appendChild(el("span", "", m.text));
+      if (m.role === "assistant") b.appendChild(el("small", "ed-bubble-meta",
+        (m.applied ? "changed the edit · " : "answered · ") + (m.model || "").replace(/^claude-/, "")));
+      log.appendChild(b);
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+  async function loadChat() {
+    try {
+      const d = await (await fetch(`/api/moment/${pk}/direct?kind=${kind}`, { cache: "no-store" })).json();
+      chatNew = false;
+      paintChat(d.messages);
+    } catch (e) { /* the pane says there's no conversation */ }
+  }
+  async function sendChat() {
+    const box = $("[data-ed-chat-text]"), send = $("[data-ed-chat-send]");
+    const message = box.value.trim();
+    if (!message || chatBusy) return;
+    chatBusy = true; send.disabled = true; box.value = "";
+    clearTimeout(saveTimer);
+    const log = $("[data-ed-chat]");
+    if (chatNew || log.querySelector(".ed-chat-empty")) log.textContent = "";
+    log.appendChild(el("div", "ed-bubble user", message));
+    const wait = el("div", "ed-bubble assistant pending", "Claude is working on it… (usually 20–90 s)");
+    log.appendChild(wait);
+    log.scrollTop = log.scrollHeight;
+    try {
+      const d = await post(`/moment/${pk}/direct`, { ...body(), intensity: $("[data-ed-intensity]").value,
+                                                     message, new: chatNew });
+      if (d.applied) await takeAiEdit(d);
+      paintChat(d.messages, true);
+      if (d.applied) fxStatus("Claude changed the edit. Ctrl+Z undoes.", "ok");
+    } catch (e) {
+      wait.remove();
+      log.appendChild(el("div", "ed-bubble failed", e.message));
+      box.value = message;
+    } finally {
+      chatBusy = false; send.disabled = false;
+    }
+  }
+  function newChat() {
+    if (chatBusy) return;
+    chatNew = true;
+    paintChat([]);
+    $("[data-ed-chat-text]").focus();
+  }
+  $("[data-ed-chat-form]").addEventListener("submit", ev => { ev.preventDefault(); sendChat(); });
+  $("[data-ed-chat-text]").addEventListener("keydown", ev => {
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); sendChat(); }
+  });
   // subtitles
   const subIndex = id => subs.findIndex(c => c.id === id);
   function subsChanged() { subsMine = true; listFor = null; subKey = ""; changed(); }
@@ -1403,7 +2071,8 @@
     }
     const shown = segShots(s)[0];
     box.appendChild(el("small", "muted", "On screen in this segment"));
-    box.appendChild(regionChips(shown ? shown.region : "", { chipFor: "seg" }, kind === "short" ? "the layout" : "whole frame"));
+    box.appendChild(regionChips(shown ? shown.region : "", { chipFor: "seg" }, kind === "short" ? "the layout" : "whole frame",
+                                kind === "short" ? [[FULL, "whole picture (fit + blur)"]] : []));
     acts.append(gl, btn("▶ Play", "Play this segment (P)", { edAct: "play-seg" }),
       btn("↑ Earlier", "Play this segment earlier in the edit", { edAct: "up" }),
       btn("↓ Later", "Play this segment later in the edit", { edAct: "down" }));
@@ -1451,9 +2120,9 @@
     selFx = null;
     changed();
   }
-  function regionChips(current, data, none) {
+  function regionChips(current, data, none, extra = []) {
     const box = el("div", "ed-region-chips");
-    const opts = (none ? [["", none]] : []).concat(Object.keys(D.regions).map(n => [n, n]));
+    const opts = (none ? [["", none]] : []).concat(extra, Object.keys(D.regions).map(n => [n, n]));
     for (const [val, text] of opts) {
       const b = btn(text, val ? `Show ${val}` : none, { ...data, chipRegion: val });
       b.className = "chip ed-rchip" + (String(current || "") === val ? " current" : "");
@@ -1522,8 +2191,58 @@
       if (f.region && D.regions[f.region])
         acts.appendChild(btn("⤢ fill", `Zoom so ${f.region} fills the frame (${nice(fitZoom(f.region))}×)`, { visFit: "" }));
     } else if (f.type === "frame") {
-      const names = Object.keys(D.regions);
-      box.appendChild(regionChips(f.region || "", { chipFor: "vis" }, ""));
+      box.appendChild(regionChips(f.region || "", { chipFor: "vis" }, "", [[FULL, "whole picture (fit + blur)"]]));
+    } else if (f.type === "overlay") {
+      const ov = overlayOf(f.overlay);
+      acts.appendChild(labelled("overlay", select((D.overlays || []).map(o => [o.id, o.name]), f.overlay, { visOverlay: "" },
+                                                  "Which overlay", v => v + " (gone)")));
+      acts.appendChild(labelled("plays", select([["both", "picture + sound"], ["sound", "sound only"], ["picture", "picture only"]],
+                                                f.mode || "both", { visMode: "" }, "Show its picture, play its sound, or both")));
+      if (ov && ov.sound && ovSound(f))
+        acts.appendChild(labelled("volume", select([6, 3, 0, -3, -6, -10, -15, -20].map(v => [v, (v > 0 ? "+" : "") + v + " dB"]),
+                                                   f.gain || 0, { visGain: "" }, "Its sound's volume")));
+      if (ovPicture(f)) placeControls(box, acts, f, [["full", "whole picture"], ["middle", "middle"]],
+                                      "How wide, as a share of the picture (over 100% spills off the sides)");
+      if (ov && ov.description) box.appendChild(el("p", "faint ed-why", ov.description));
+    } else if (f.type === "spot") {
+      acts.appendChild(labelled("style", select([["spotlight", "spotlight: dim the rest + ring"], ["circle", "circle: just a ring"],
+                                                 ["dim", "dim the rest"]], f.style || "spotlight", { spotStyle: "" }, "How it points")));
+      if (f.style !== "dim")
+        acts.appendChild(labelled("ring", select(Object.keys(D.spot_info.colors).map(c => [c, c]), f.color || "",
+                                                 { spotColor: "" }, "The ring's colour", v => v)));
+      if (Object.keys(D.regions).length) {
+        box.appendChild(el("small", "muted", "Put it round"));
+        box.appendChild(regionChips("", { chipFor: "spot" }, ""));
+      }
+      box.appendChild(el("p", "faint ed-why", "Drag it on the picture to move it; drag its corner to make it wider or taller; "
+                         + "scroll over it to resize."));
+      if (isShort() && !spotBox(f, f.t + f.d / 2))
+        box.appendChild(el("p", "ed-warn", "What it's round isn't in the Short's picture here, so it won't show: move it, "
+                           + "or add a frame shot on that region."));
+    } else if (f.type === "text") {
+      const input = el("input");
+      Object.assign(input, { type: "text", value: f.text, maxLength: D.text_info.max, className: "ed-sub-input" });
+      input.dataset.textInput = "";
+      input.setAttribute("aria-label", "What it says");
+      input.title = "*stars* around a word make it yellow · ← → ↑ ↓ point at things · no emoji (the render can't draw them)";
+      box.appendChild(input);
+      acts.appendChild(labelled("style", select([["pop", "pop: springs in"], ["stamp", "stamp: slams in, CAPS"],
+                                                 ["label", "label: small, on a box"]], txStyle(f), { textStyle: "" }, "How it shows")));
+      acts.appendChild(labelled("colour", select(Object.keys(D.text_info.colors).map(c => [c, c]), f.color || "",
+                                                 { textColor: "" }, "Its colour", v => v)));
+      placeControls(box, acts, f, [["middle", "middle of the picture"]], "Font size, as a share of the picture's width");
+    } else if (f.type === "caption") {
+      const CI = CAPI() || { fx: ["pop"], fonts: { round: "" } };
+      const FXT = { pop: "pop: springs in", shake: "shake: anger, screams", wave: "wave: letters bob", wobble: "wobble: rocks",
+                    bounce: "bounce: drops in", grow: "grow: swells", none: "none: just appears" };
+      const FONTT = { round: "round", angry: "angry: dripping paint", scary: "scary: horror", loud: "loud: comic capitals" };
+      box.appendChild(el("p", "faint ed-why", "The captions that start while this lasts get this effect, font and place."));
+      acts.appendChild(labelled("effect", select(CI.fx.map(v => [v, FXT[v] || v]), f.fx || "pop", { capFx: "" }, "How they move", v => v)));
+      acts.appendChild(labelled("font", select(Object.keys(CI.fonts).map(v => [v === "round" ? "" : v, FONTT[v] || v]), f.font || "",
+                                               { capFont: "" }, "Their font", v => v)));
+      box.appendChild(el("small", "muted", "Where"));
+      box.appendChild(regionChips(f.at || "", { chipFor: "capat" }, "their usual place",
+                                  [["top", "top"], ["bottom", "bottom"], ["middle", "middle"], ["seam", "between the pictures"]]));
     } else if (f.type === "shake") {
       acts.appendChild(labelled("strength", select([[1, "light"], [2, "normal"], [3, "heavy"]], f.strength, { visStrength: "" }, "How strong")));
     } else {
@@ -1537,6 +2256,24 @@
     box.appendChild(more);
     if (ZOOMS.includes(f.type) && !Object.keys(D.regions).length)
       box.appendChild(el("p", "faint ed-why", "No regions for this channel yet, so it zooms on the centre. ⋯ More → ▢ Draw regions lets you draw her face once."));
+  }
+
+  // Where an overlay or text sits: the region it follows, its size, how to move it.
+  function placeControls(box, acts, f, extra, sizeTitle) {
+    box.appendChild(el("small", "muted", "Follows"));
+    box.appendChild(regionChips(f.at || "middle", { chipFor: "ovat" }, "", extra));
+    const sz = el("label", "muted ed-ov-size");
+    sz.title = sizeTitle;
+    const range = el("input"), [lo, hi] = sizeRange(f), text = f.type === "text";
+    Object.assign(range, { type: "range", min: lo * 100, max: hi * 100, step: text ? 0.5 : 1, value: fxSize(f) * 100 });
+    range.dataset.visSize = "";
+    range.setAttribute("aria-label", text ? "Text size" : "Overlay size");
+    sz.append(el("small", "", "size "), range, el("small", "ed-ov-pct", Math.round(fxSize(f) * 100) + "%"));
+    box.appendChild(sz);
+    const moved = f.dx || f.dy;
+    box.appendChild(el("p", "faint ed-why", "Drag it on the picture to move it; drag its corner or scroll over it to resize."
+                       + (moved ? " Double-click it to put it back in the middle of what it follows." : "")));
+    if (moved) acts.appendChild(btn("⌖ re-centre", "Put it back in the middle of what it follows", { visRecentre: "" }));
   }
 
   function paintSubPanel() {
@@ -1683,6 +2420,7 @@
     $("[data-sub-on]").checked = subStyle.on;
     $("[data-sub-size]").value = subStyle.size;
     $("[data-sub-pos]").value = subStyle.position;
+    if ($("[data-sub-look]")) $("[data-sub-look]").value = subStyle.look || "classic";
     $("[data-sub-mode]").value = subStyle.mode || "lines";
     $('[data-ed-act="sub-rebuild"]').disabled = !D.subs_auto.length;
     const pb = $('[data-ed-act="sub-polish"]');
@@ -1795,9 +2533,8 @@
     paintAll();
     showRender(d.render);
     if (d.render.state === "queued" || d.render.state === "running") pollRender();
-    setSaved(d.saved ? "Saved" : k === "short"
-      ? `New Short from ${d.source === "short" ? "Claude's short cut" : d.source === "long" ? "Claude's cut" : "the whole clip"}, with your edit's effects and subtitles`
-      : (source === "long" ? "Claude's cut, snapped to pauses" : ""));
+    setSaved(d.saved ? "Saved" : k === "short" ? "New Short from the whole clip, with your edit's effects and subtitles" : "");
+    loadChat();
     if (segs[0]) seek(segs[0][0]);
     needsDraw = true;
   }
@@ -1806,6 +2543,27 @@
   });
   root.addEventListener("input", ev => {
     const t = ev.target;
+    if (t.matches("[data-vis-size]")) {          // live while you drag the slider; saved on release
+      const f = curFx();
+      if (!f) return;
+      hold();
+      if (!ovSizing) { pushUndo(); ovSizing = true; }
+      f.size = clampSize(f, +t.value / 100);
+      f.by = "you";
+      const pct = t.parentElement.querySelector(".ed-ov-pct");
+      if (pct) pct.textContent = Math.round(f.size * 100) + "%";
+      needsDraw = true;
+      return;
+    }
+    if (t.matches("[data-text-input]")) {        // live while you type; saved when you leave the box
+      const f = curFx();
+      if (!f || f.type !== "text") return;
+      if (!txEditing) { pushUndo(); txEditing = true; }
+      f.text = t.value.slice(0, D.text_info.max);
+      f.by = "you";
+      needsDraw = true;
+      return;
+    }
     if (!t.matches("[data-lay]") || t.tagName === "SELECT" || !layout) return;
     hold();
     if (!layEditing) { pushUndo(); layEditing = true; }
@@ -2699,12 +3457,19 @@
     if (ds.transStyle !== undefined) setTransition(ds.transStyle);
     else if (ds.chipRegion !== undefined) {
       if (ds.chipFor === "seg") setSegRegion(ds.chipRegion);
-      else {
+      else if (ds.chipFor === "spot") setSpotRegion(ds.chipRegion);
+      else if (ds.chipFor === "capat") editFx({ at: ds.chipRegion });
+      else if (ds.chipFor === "ovat") {
+        const f = curFx(), ov = f && overlayOf(f.overlay);
+        if (f) editFx(ov && (ds.chipRegion === "full") !== (f.at === "full")
+          ? { at: ds.chipRegion, size: ovSize(ds.chipRegion, ov), dx: 0, dy: 0 } : { at: ds.chipRegion, dx: 0, dy: 0 });
+      } else {
         const f = curFx(), change = { region: ds.chipRegion };
         if (f && f.type === "punch" && ds.chipRegion && D.regions[ds.chipRegion]) change.zoom = Math.min(fitZoom(ds.chipRegion), 2.5);
         if (f) editFx(change);
       }
-    } else if (ds.edKind) switchKind(ds.edKind);
+    } else if (ds.visRecentre !== undefined) editFx({ dx: 0, dy: 0 });
+    else if (ds.edKind) switchKind(ds.edKind);
     else if (ds.layType) { if (layout && layout.type !== ds.layType) setLayout({ type: ds.layType }); }
     else if (ds.layCentre) {
       const b = D.regions[ds.layCentre];
@@ -2753,7 +3518,7 @@
         toggle, add, split, undo: doUndo, render, watch: toggleWatch,
         "play-seg": () => playEdit(sel, true),
         up: () => move(-1), down: () => move(1), delete: del,
-        "add-fx": addFx, autoedit: autoEdit, "clear-claude": clearClaude, whole: startOver,
+        "add-fx": addFx, "add-overlay": addOverlay, "add-text": addText, "add-spot": addSpot, autoedit: autoEdit, "clear-claude": clearClaude, whole: startOver, "chat-new": newChat,
         "fx-play": previewFx, regions: () => toggleRegions(), transcribe,
         "sub-add": addSub, "sub-rebuild": rebuildSubs, "lines-edit": linesToSubs, "sub-polish": polishSubs, "names-save": saveNames,
       })[ds.edAct]?.();
@@ -2782,6 +3547,28 @@
     } else if (t.matches("[data-vis-zoom]")) editFx({ zoom: +t.value });
     else if (t.matches("[data-vis-strength]")) editFx({ strength: +t.value });
     else if (t.matches("[data-vis-color]")) editFx({ color: t.value });
+    else if (t.matches("[data-vis-overlay]")) setOverlay(t.value);
+    else if (t.matches("[data-vis-size]")) { ovSizing = false; changed(); }
+    else if (t.matches("[data-vis-mode]")) editFx({ mode: t.value });
+    else if (t.matches("[data-text-input]")) {
+      const f = curFx();
+      txEditing = false;
+      if (f && !f.text.trim()) { f.text = "TEXT"; t.value = f.text; }
+      changed();
+    } else if (t.matches("[data-text-style]")) {
+      const f = curFx(), was = txStyle(f), TI = D.text_info, change = { style: t.value };
+      if ((f.color || TI.default_color[was]) === TI.default_color[was]) change.color = TI.default_color[t.value];
+      if (!f.size || f.size === TI.default_size[was]) change.size = TI.default_size[t.value];
+      editFx(change);
+    } else if (t.matches("[data-text-color]")) editFx({ color: t.value });
+    else if (t.matches("[data-cap-fx]")) editFx({ fx: t.value });
+    else if (t.matches("[data-cap-font]")) editFx({ font: t.value });
+    else if (t.matches("[data-spot-style]")) {
+      const f = curFx(), S = D.spot_info, was = f.style || "spotlight", change = { style: t.value };
+      if ((f.color || S.default_color[was]) === S.default_color[was]) change.color = S.default_color[t.value];
+      editFx(change);
+    } else if (t.matches("[data-spot-color]")) editFx({ color: t.value });
+    else if (t.matches("[data-vis-gain]")) editFx({ gain: +t.value });
     else if (t.matches("[data-reg-name]")) renameRegion(t.dataset.regName, t.value);
     else if (t.matches("[data-sub-input]")) setSubText(t.dataset.subInput, t.value);
     else if (t.matches("[data-sub-voice]")) setSubVoice(t.dataset.subVoice, t.value === "" ? null : +t.value);
@@ -2790,6 +3577,7 @@
     else if (t.matches("[data-sub-on]")) setSubStyle({ on: t.checked });
     else if (t.matches("[data-sub-size]")) setSubStyle({ size: t.value });
     else if (t.matches("[data-sub-pos]")) setSubStyle({ position: t.value });
+    else if (t.matches("[data-sub-look]")) setSubStyle({ look: t.value });
     else if (t.matches("[data-sub-mode]")) setSubMode(t.value);
     else if (t.matches("[data-ed-snap]")) {
       snapOn = t.checked;
@@ -2824,7 +3612,7 @@
       ",": () => { video.pause(); seek(video.currentTime - f); },
       ".": () => { video.pause(); seek(video.currentTime + f); },
       i: () => setEdge(0, video.currentTime), o: () => setEdge(1, video.currentTime),
-      s: split, p: () => playEdit(sel, true), f: addFx, z: () => addVis("punch"), x: () => addVis("shake"),
+      s: split, p: () => playEdit(sel, true), f: addFx, z: () => addVis("punch"), x: () => addVis("shake"), o: addOverlay, t: addText, c: addSpot,
       "[": () => selectSeg(sel - 1), "]": () => selectSeg(sel + 1),
       Delete: del, Backspace: del,
       Enter: () => (editPlay ? (video.pause(), stopEditPlay()) : ev.shiftKey ? playEdit(0) : playFromHere()),
@@ -2853,6 +3641,7 @@
     apply(d);
     $("[data-ed-loading]").remove();
     paintLanes();
+    loadChat();
     paintTranscript();
     paintNames();
     if (d.transcript.state === "queued" || d.transcript.state === "running") pollTranscript();

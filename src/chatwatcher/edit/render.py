@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from chatwatcher.clip.media import MediaError, _exe, probe
 from chatwatcher.config import EditConfig
@@ -136,6 +136,8 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
            visuals: list[Visual] | None = None, subs: list[dict] | None = None,
            sub_style: dict | None = None, size: tuple[int, int] = (0, 0), font: str | None = None,
            intro: Path | None = None, intro_s: float = 0.0, layout: str | list[str] | None = None, title: str = "",
+           overlays: list[list[Any]] | None = None, texts: list[list[Any]] | None = None,
+           spots: list[list[Any]] | None = None, captions: list[list[Any]] | None = None,
            on_progress: Callable[[float], None] | None = None) -> Rendered:
     """segments: [[start, end, gain_db], …] in src time, in play order. sounds: effects
     placed on the edit's timeline (ignored if the clip has no audio). visuals: zooms,
@@ -146,7 +148,18 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
     must already be placed after it. layout: an ffmpeg graph from [0:v] to [base] that
     builds a Short's picture (edit.layout.graph); size is then the Short's, the visuals are
     in its frame, and title shows in its top band. layout and visuals may instead be lists
-    with one entry per segment (a Short whose picture changes between parts)."""
+    with one entry per segment (a Short whose picture changes between parts). overlays:
+    green-screen overlays (edit.overlays.Placed, src time) per segment, laid over the
+    picture after its zooms and under the subtitles; their sound comes in with `sounds`.
+    texts: text callouts (edit.texts.Placed, src time) per segment, drawn with the subtitles.
+    spots: spotlights (edit.spots.Placed, src time) per segment, laid over the picture
+    before its zooms (so a zoom goes into them too). captions: caption styles
+    (edit.captions.Mark, src time) per segment; with them or the bubble look, edit.captions
+    draws the subtitles."""
+    from chatwatcher.edit import captions as cap
+    from chatwatcher.edit import overlays as ovl
+    from chatwatcher.edit import spots as spt
+    from chatwatcher.edit import texts as txt
     from chatwatcher.subs import lines
     if not segments:
         raise MediaError("nothing to render")
@@ -155,6 +168,10 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
     tmp = dest.parent / f".render_{dest.stem}"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
+    fonts = tmp / "fonts"                 # the caption fonts, for libass (relative: no escaping in the filter)
+    fonts.mkdir()
+    for f in cap.font_files():
+        (fonts / f.name).symlink_to(f)
     fade = cfg.fade_ms / 1000
     try:
         # Whole frames per segment, and audio cut to exactly the same length, so sound and
@@ -192,18 +209,50 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                     "-pix_fmt", "yuv420p"]
             vf = video_filter(local(seg_visuals, s, length), fps, length)
             shown = lines.local(subs or [], s, length)
-            if shown or title:       # relative name: ffmpeg runs in tmp, so no path escaping in the filter
+            ass = ""
+            callouts = txt.events(txt.local(texts[i], s, length), *size) if texts and i < len(texts) else []
+            marks = captions[i] if captions and i < len(captions) else []
+            if shown and cap.styled(sub_style or {}, marks):
+                w, h = size if size[0] and size[1] else (1280, 720)
+                callouts = cap.events(cap.local(subs or [], s, length, marks), sub_style or {}, w, h,
+                                      title=bool(title), font=font or lines.FONT) + callouts
+                shown = []
+            if shown or title or callouts:   # relative name: ffmpeg runs in tmp, so no path escaping in the filter
                 (tmp / f"part{i:03d}.ass").write_text(
-                    lines.ass(shown, sub_style or {}, *size, font=font or lines.FONT, title=title, title_until=length),
+                    lines.ass(shown, sub_style or {}, *size, font=font or lines.FONT, title=title, title_until=length,
+                              extra=callouts),
                     encoding="utf-8")
-                vf = (vf + "," if vf else "") + f"ass=part{i:03d}.ass"
+                ass = f"ass=part{i:03d}.ass:fontsdir=fonts"
+            ov_items = ovl.local(overlays[i], s, length) if overlays and i < len(overlays) else []
+            sp_items = spt.local(spots[i], s, length) if spots and i < len(spots) else []
+            # Inputs after the clip's: the overlays, then the spotlights' pictures (looped).
+            for k in reversed(range(len(sp_items))):
+                mask = spt.write_mask(sp_items[k][0], *size, tmp / f"part{i:03d}_spot{k}.png")
+                args[6:6] = ["-loop", "1", "-framerate", f"{fps:.6g}", "-i", str(mask)]
+            for p, _a, _d, skip in reversed(ov_items):
+                args[6:6] = (["-ss", f"{skip:.3f}"] if skip > 0.01 else []) + ["-c:v", "libvpx-vp9", "-i", str(p.file)]
             script = tmp / f"part{i:03d}.vf"      # in a file: the expressions can be longer than a command line allows
-            if seg_layout:
+            if ov_items or sp_items:
+                graph, cur = [seg_layout or "[0:v]null[base]"], "[base]"
+                if sp_items:
+                    spf, cur = spt.filter_graph(cur, sp_items, 1 + len(ov_items))
+                    graph.append(spf)
+                graph.append(f"{cur}{vf or 'null'}[m]")
+                cur = "[m]"
+                if ov_items:
+                    ovf, cur = ovl.filter_graph(cur, ov_items, 1, *size)
+                    graph.append(ovf)
+                graph.append(f"{cur}{ass or 'null'}[v]")
+                script.write_text(";".join(graph), encoding="utf-8")
+                args[args.index("0:v:0")] = "[v]"
+                args += ["-/filter_complex", str(script)]
+            elif seg_layout:
+                vf = ",".join(x for x in (vf, ass) if x)
                 script.write_text(f"{seg_layout};[base]{vf or 'null'}[v]", encoding="utf-8")
                 args[args.index("0:v:0")] = "[v]"
                 args += ["-/filter_complex", str(script)]
-            elif vf:
-                script.write_text(vf, encoding="utf-8")
+            elif vf or ass:
+                script.write_text(",".join(x for x in (vf, ass) if x), encoding="utf-8")
                 args += ["-/vf", str(script)]
             if has_audio:
                 f = min(fade, length / 3)

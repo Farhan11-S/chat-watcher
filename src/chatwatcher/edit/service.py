@@ -31,7 +31,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from chatwatcher.config import Config
+from chatwatcher.edit import captions as cap
 from chatwatcher.edit import layout as lay
+from chatwatcher.edit import overlays as ovl
+from chatwatcher.edit import spots as spt
+from chatwatcher.edit import texts as txt
 from chatwatcher.edit import motion, regions
 from chatwatcher.edit.audio import analyse
 
@@ -175,6 +179,8 @@ def _short_regions(conn: sqlite3.Connection, moment_pk: int, effects: list[dict[
     """The boxes a Short depends on: those its zooms aim at, and its stack panels."""
     have = regions.get(conn, regions.scope_for(conn, moment_pk)[0])
     names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lay.FRAME) and fx.get("region")}
+    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION)
+              and fx.get("at") and fx.get("at") not in (*ovl.PLACES, *cap.PLACES)}
     names |= lay.used_regions(layout)
     return {n: have[n] for n in sorted(names) if n in have}
 
@@ -226,8 +232,23 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
         "kind": kind, "duration": clip.duration_s, "fps": clip.fps, **wf.to_json(),
         "segments": segments, "source": source, "saved": bool(row),
         "effects": _effects_to_clip(_effects(base), clip), "sounds": sounds,
+        "overlays": [{"id": o["id"], "name": o["name"], "description": o["description"], "length": o["duration_s"],
+                      "aspect": o["width"] / o["height"], "gain": o["gain_db"], "sound": bool(o["sound"])}
+                     for o in ovl.list_overlays(conn)],
+        "overlay_info": {"places": ovl.PLACES, "size": ovl.SIZE_RANGE, "offset": ovl.OFFSET_RANGE, "out": list(_size(clip)) if kind == "long"
+                         else [lay.OUT_W, lay.OUT_H]},
         "regions": regions.get(conn, scope), "region_scope": scope_label,
-        "visual": {"types": motion.TYPES | {lay.FRAME: lay.FRAME_LIMITS}, "transitions": motion.TRANSITIONS,
+        "text_info": {"styles": txt.STYLES, "colors": txt.COLORS, "default_color": txt.DEFAULT_COLOR,
+                      "size": txt.SIZE_RANGE, "line": txt.LINE, "label_line": txt.LABEL_LINE, "max": txt.MAX_CHARS, "tilt": txt.STAMP_TILT,
+                      "intro_ms": txt.INTRO_MS, "outro_ms": txt.OUTRO_MS,
+                      "default_size": {st: txt.default_size(st, kind == "short") for st in txt.STYLES}},
+        "spot_info": {"styles": spt.STYLES, "colors": {k: "%02X%02X%02X" % v for k, v in spt.COLORS.items()},
+                      "default_color": spt.DEFAULT_COLOR, "dim": spt.DIM, "feather": spt.FEATHER, "ring": spt.RING,
+                      "fade": [spt.FADE_IN, spt.FADE_OUT], "min": spt.MIN_SIZE},
+        "visual": {"types": motion.TYPES | {lay.FRAME: lay.FRAME_LIMITS, ovl.OVERLAY: (1.0, 0.1, ovl.MAX_SECONDS),
+                                            txt.TEXT: txt.D_LIMITS, spt.SPOT: spt.D_LIMITS,
+                                            cap.CAPTION: cap.D_LIMITS},
+                   "transitions": motion.TRANSITIONS,
                    "transition_d": motion.TRANSITION_D, "zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP,
                    "flash": motion.FLASH, "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]},
         "beats": beats, "lines": transcript_lines(clip.folder),
@@ -266,7 +287,8 @@ def _sub_default(cfg: Config | None, clip: ClipRef) -> dict[str, Any]:
         karaoke = json.loads(meta.read_text(encoding="utf-8")).get("stream_type") == "karaoke" if meta.is_file() else False
     except (OSError, json.JSONDecodeError):
         karaoke = False
-    return {"on": sc.on and not karaoke, "size": sc.size, "position": sc.position, "mode": "lines", "emphasis": []}
+    return {"on": sc.on and not karaoke, "size": sc.size, "position": sc.position, "mode": "lines", "look": "classic",
+            "emphasis": []}
 
 
 def current_subs(cfg: Config | None, row: sqlite3.Row | None, clip: ClipRef,
@@ -329,7 +351,7 @@ def subtitles(cfg: Config, conn: sqlite3.Connection, moment_pk: int, clip: ClipR
             "sub_words": [[round(a, 3), round(b, 3)] for a, b, _ in lines.words_of(words)] if words else [],
             "sub_language": (words or {}).get("language"),
             "sub_layout": {**lines.frame_rules(w, h), "sizes": lines.SIZES, "highlight": lines.HIGHLIGHT,
-                           "font": cfg.subtitles.font}}
+                           "font": cfg.subtitles.font, "captions": cap.info()}}
 
 
 def transcript_state(cfg: Config, conn: sqlite3.Connection, moment_pk: int, clip: ClipRef) -> dict[str, Any]:
@@ -426,8 +448,10 @@ def clean_segments(raw: Any, duration: float) -> list[Segment]:
     return out
 
 
-def clean_effects(raw: Any, duration: float, sounds: set[str]) -> list[dict[str, Any]]:
-    """Check effects from the browser or from Claude (clip time). Raises EditError(kind='invalid')."""
+def clean_effects(raw: Any, duration: float, sounds: set[str],
+                  overlays: set[str] | None = None) -> list[dict[str, Any]]:
+    """Check effects from the browser or from Claude (clip time). Raises EditError(kind='invalid').
+    overlays: the overlay library's ids (None: any id)."""
     if raw is None:
         return []
     if not isinstance(raw, list):
@@ -437,8 +461,10 @@ def clean_effects(raw: Any, duration: float, sounds: set[str]) -> list[dict[str,
     out, ids = [], set()
     for i, fx in enumerate(raw, 1):
         kind = fx.get("type", "sfx") if isinstance(fx, dict) else None
-        if kind != "sfx" and kind not in motion.TYPES and kind not in (lay.FRAME, "transition"):
-            raise EditError(f"Effect {i} isn't a sound, zoom, shake or flash.", "invalid")
+        if kind != "sfx" and kind not in motion.TYPES and kind not in (lay.FRAME, "transition", ovl.OVERLAY, txt.TEXT,
+                                                                         spt.SPOT, cap.CAPTION):
+            raise EditError(f"Effect {i} isn't a sound, zoom, shake, flash, overlay, text, spotlight or caption style.",
+                            "invalid")
         try:
             t = float(fx["t"])
         except (KeyError, TypeError, ValueError):
@@ -473,6 +499,73 @@ def clean_effects(raw: Any, duration: float, sounds: set[str]) -> list[dict[str,
             if not math.isfinite(d):
                 raise EditError(f"Effect {i} has a bad length.", "invalid")
             e |= {"style": style, "d": round(min(max(d, motion.TRANSITION_D[0]), motion.TRANSITION_D[1]), 3)}
+        elif kind == ovl.OVERLAY:                # a green-screen clip over the picture, with its sound
+            oid = str(fx.get("overlay") or "")
+            if not ovl.valid_id(oid) or (overlays is not None and oid not in overlays):
+                raise EditError(f"Effect {i} uses an overlay that isn't in your library ({oid or 'none'}).", "invalid")
+            try:
+                d, size, gain = float(fx.get("d", 1.0)), float(fx.get("size", 1.0)), float(fx.get("gain", 0))
+                dx, dy = float(fx.get("dx") or 0), float(fx.get("dy") or 0)
+            except (TypeError, ValueError):
+                raise EditError(f"Effect {i} has a bad length, size, position or volume.", "invalid")
+            if not all(math.isfinite(v) for v in (d, size, gain, dx, dy)):
+                raise EditError(f"Effect {i} has a bad length, size, position or volume.", "invalid")
+            at = str(fx.get("at") or "full")
+            at = at if at in ovl.PLACES else (regions.normal_name(at) or "full")
+            lo, hi = ovl.OFFSET_RANGE
+            e |= {"overlay": oid, "d": round(min(max(d, 0.1), ovl.MAX_SECONDS), 3), "at": at,
+                  "dx": round(min(max(dx, lo), hi), 4), "dy": round(min(max(dy, lo), hi), 4),
+                  "size": round(min(max(size, ovl.SIZE_RANGE[0]), ovl.SIZE_RANGE[1]), 2),
+                  "gain": round(min(max(gain, ovl.GAIN_RANGE[0]), ovl.GAIN_RANGE[1]), 1),
+                  "mode": fx.get("mode") if fx.get("mode") in ovl.MODES else "both"}
+        elif kind == spt.SPOT:                   # a spotlight on something in the clip's frame
+            default, shortest, longest = spt.D_LIMITS
+            try:
+                d = float(fx.get("d", default))
+                x, y, w, h = (float(fx[k]) for k in ("x", "y", "w", "h"))
+            except (KeyError, TypeError, ValueError):
+                raise EditError(f"Effect {i} is a spotlight without a place (x, y, w, h).", "invalid")
+            if not all(math.isfinite(v) for v in (d, x, y, w, h)):
+                raise EditError(f"Effect {i} has a bad length or place.", "invalid")
+            w, h = min(max(w, spt.MIN_SIZE), 1.5), min(max(h, spt.MIN_SIZE), 1.5)
+            style = fx.get("style") if fx.get("style") in spt.STYLES else "spotlight"
+            e |= {"d": round(min(max(d, shortest), longest), 3), "style": style,
+                  "color": fx.get("color") if fx.get("color") in spt.COLORS else spt.DEFAULT_COLOR[style],
+                  "x": round(min(max(x, -w / 2), 1 - w / 2), 4), "y": round(min(max(y, -h / 2), 1 - h / 2), 4),
+                  "w": round(w, 4), "h": round(h, 4)}
+        elif kind == txt.TEXT:                   # a text callout over the picture
+            text = txt.clean_text(fx.get("text") or "")
+            if not text:
+                raise EditError(f"Effect {i} is a text with nothing to say.", "invalid")
+            default, shortest, longest = txt.D_LIMITS
+            try:
+                d, dx, dy = float(fx.get("d", default)), float(fx.get("dx") or 0), float(fx.get("dy") or 0)
+                size = None if fx.get("size") is None else float(fx["size"])
+            except (TypeError, ValueError):
+                raise EditError(f"Effect {i} has a bad length, size or position.", "invalid")
+            if not all(math.isfinite(v) for v in (d, dx, dy, size if size is not None else 0)):
+                raise EditError(f"Effect {i} has a bad length, size or position.", "invalid")
+            style = fx.get("style") if fx.get("style") in txt.STYLES else "pop"
+            at = str(fx.get("at") or "middle")
+            at = at if at in ovl.PLACES else (regions.normal_name(at) or "middle")
+            lo, hi = ovl.OFFSET_RANGE
+            e |= {"text": text, "style": style, "d": round(min(max(d, shortest), longest), 3),
+                  "color": fx.get("color") if fx.get("color") in txt.COLORS else txt.DEFAULT_COLOR[style],
+                  "at": at, "dx": round(min(max(dx, lo), hi), 4), "dy": round(min(max(dy, lo), hi), 4)}
+            if size is not None:
+                e["size"] = round(min(max(size, txt.SIZE_RANGE[0]), txt.SIZE_RANGE[1]), 3)
+        elif kind == cap.CAPTION:                # how the captions starting in [t, t + d) look
+            default, shortest, longest = cap.D_LIMITS
+            try:
+                d = float(fx.get("d", default))
+            except (TypeError, ValueError):
+                raise EditError(f"Effect {i} has a bad length.", "invalid")
+            if not math.isfinite(d):
+                raise EditError(f"Effect {i} has a bad length.", "invalid")
+            at = str(fx.get("at") or "")
+            at = at if at in ("", *cap.PLACES) else (regions.normal_name(at) or "")
+            e |= {"d": round(min(max(d, shortest), longest), 3), "fx": fx.get("fx") if fx.get("fx") in cap.FX else "pop",
+                  "font": fx.get("font") if fx.get("font") in cap.FONTS else "", "at": at}
         elif kind == lay.FRAME:                  # a Short shows this region full-screen for d seconds
             default, shortest, longest = lay.FRAME_LIMITS
             try:
@@ -510,6 +603,8 @@ def _used_regions(conn: sqlite3.Connection, moment_pk: int,
                   effects: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     """The boxes of the regions these effects aim at (as they are now)."""
     names = {fx.get("region") for fx in effects if fx.get("type") in motion.ZOOMS and fx.get("region")}
+    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION)
+              and fx.get("at") and fx.get("at") not in (*ovl.PLACES, *cap.PLACES)}
     if not names:
         return {}
     have = regions.get(conn, regions.scope_for(conn, moment_pk)[0])
@@ -549,7 +644,8 @@ def save(cfg: Config, conn: sqlite3.Connection, moment_pk: int, raw: Any, source
     existing = _stored(conn, moment_pk, kind)
     if effects is not None:
         known = {r["id"] for r in conn.execute("SELECT id FROM sounds")}
-        fx = [f | {"t": round(f["t"] + clip.zero_s, 3)} for f in clean_effects(effects, clip.duration_s, known)]
+        ovs = {r["id"] for r in conn.execute("SELECT id FROM overlays")}
+        fx = [f | {"t": round(f["t"] + clip.zero_s, 3)} for f in clean_effects(effects, clip.duration_s, known, ovs)]
     else:
         fx = _effects(existing if existing is not None or kind == "long" else _stored(conn, moment_pk, "long"))
     conn.execute(
@@ -649,13 +745,20 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         title = layout["title"]
         # Frame shots: the picture moves to another region for a while, so the cut is split
         # where they start and end, and each part gets its own picture and zoom targets.
-        frames = [f for f in clip_fx if f.get("type") == lay.FRAME and boxes.get(f.get("region") or "")]
+        frames = [f for f in clip_fx if f.get("type") == lay.FRAME and lay.region_box(f.get("region") or "", boxes)]
         segs = split_at(segs, [t for f in frames for t in (f["t"], f["t"] + f["d"])], clip.fps)
-        graph, pictures, no_region = [], [], set()
+        graph, pictures, no_region, ov_lists, ov_missing, text_lists, spot_lists = [], [], set(), [], set(), [], []
+        cap_lists = []
         for s, e, _g in segs:
             fr = lay.frame_at((s + e) / 2, frames)
-            pk = lay.frame_panels(boxes[fr["region"]], sw, sh) if fr else ps
+            pk = lay.frame_panels(lay.region_box(fr["region"], boxes), sw, sh) if fr else ps
             graph.append(lay.graph(pk, sw, sh))
+            placed, gone = ovl.placed(cfg, conn, clip_fx, boxes, pk)
+            ov_lists.append(placed)
+            text_lists.append(txt.placed(clip_fx, boxes, pk))
+            spot_lists.append(spt.placed(clip_fx, pk))
+            cap_lists.append(cap.placed(clip_fx, boxes, pk))
+            ov_missing |= gone
             pics, missing = short_visuals(clip_fx, boxes, pk)
             pictures.append(pics)
             no_region |= missing
@@ -664,6 +767,11 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         boxes = _used_regions(conn, moment_pk, stream_fx)
         pictures, no_region = visuals(clip_fx, boxes)
         pictures = [list(pictures) for _ in segs]          # one list per segment, for the transitions
+        placed, ov_missing = ovl.placed(cfg, conn, clip_fx, boxes, None)
+        ov_lists = [placed] * len(segs)
+        text_lists = [txt.placed(clip_fx, boxes, None)] * len(segs)
+        spot_lists = [spt.placed(clip_fx, None)] * len(segs)
+        cap_lists = [cap.placed(clip_fx, boxes, None)] * len(segs)
         size = (clip.width, clip.height)
     for k, v in motion.transitions(segs, clip_fx):
         pictures[k].append(v)
@@ -691,6 +799,14 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
             continue
         for at in place(fx["t"], segs, clip.fps):
             sound_cues.append(SoundCue(at + intro_s, sound_path(cfg, snd), fx["gain"], fx["duck"], snd["duration_s"]))
+    for fx in clip_fx:                                     # an overlay's own sound
+        ov = (ovl.get_overlay(conn, fx.get("overlay") or "")
+              if fx.get("type") == ovl.OVERLAY and fx.get("mode") != "picture" else None)
+        snd_file = ovl.sound_path(cfg, ov) if ov else None
+        if snd_file and snd_file.is_file():
+            for at in place(fx["t"], segs, clip.fps):
+                sound_cues.append(SoundCue(at + intro_s, snd_file, fx.get("gain", 0) + ov["gain_db"], 0.0,
+                                           min(fx["d"], ov["duration_s"])))
 
     last = [0.0]
 
@@ -709,7 +825,8 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         r = render(cfg.edit, clip.path, segs, clip.out_path(kind), fps=clip.fps, has_audio=clip.has_audio,
                    sounds=sound_cues, visuals=pictures, subs=cues if sub_style["on"] else [],
                    sub_style=sub_style, size=size, font=cfg.subtitles.font,
-                   intro=intro, intro_s=intro_s, layout=graph, title=title, on_progress=progress)
+                   intro=intro, intro_s=intro_s, layout=graph, title=title, overlays=ov_lists, texts=text_lists, spots=spot_lists,
+                   captions=cap_lists, on_progress=progress)
     finally:
         conn.execute(f"UPDATE {table} SET render_progress = NULL WHERE moment_id = ?", (moment_pk,))
     # The subtitles as a .srt on the edit's timeline (for YouTube's CC), burned in or not.
@@ -724,8 +841,8 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
     stream_subs, _ = _subs_rendered(cfg, row, clip, kind)
     info = {"segments": stream, "effects": stream_fx, "regions": boxes, "subs": stream_subs, "subs_style": sub_style,
             "duration_s": round(r.duration_s, 2), "size_bytes": r.size_bytes, "sounds": len(sound_cues),
-            "visuals": sum(f.get("type") in (*motion.TYPES, lay.FRAME, "transition") for f in clip_fx if any(s <= f["t"] < e for s, e, _ in segs)), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
-            "missing": sorted(missing), "missing_regions": sorted(no_region),
+            "visuals": sum(f.get("type") in (*motion.TYPES, lay.FRAME, "transition", ovl.OVERLAY, txt.TEXT, spt.SPOT, cap.CAPTION) for f in clip_fx if any(s <= f["t"] < e for s, e, _ in segs)), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
+            "missing": sorted(missing | ov_missing), "missing_regions": sorted(no_region),
             "intro": intro_key, "intro_s": round(intro_s, 3)}
     if short:
         info |= {"layout": layout, "size": list(size)}

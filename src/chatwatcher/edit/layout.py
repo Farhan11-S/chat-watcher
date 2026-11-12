@@ -11,7 +11,8 @@ Any layout can have a title in the top band (burned in with the subtitles).
 A "frame" effect (FRAME) overrides the layout for a while: the Short then shows one region
 full-screen (frame_panels): a narrow one (her face, a plugin window) as a tight crop, a wide
 one (the game) across the middle over a blurred copy. That's how the camera moves to
-something the layout doesn't show.
+something the layout doesn't show. Its region can be FULL, the whole picture: the fit + blur
+view for a while (everyone's facecams and the game at once, a desktop).
 
 panels() turns a layout into rectangles of the clip and where each goes on the Short's
 1080×1920 frame. The renderer makes an ffmpeg graph from them (graph()), and editor.js
@@ -135,6 +136,8 @@ def panels(layout: dict[str, Any], boxes: dict[str, dict[str, float]], sw: int, 
 
 
 FRAME = "frame"
+FULL = "full"                       # a frame shot on the whole picture: fit + blur for a while
+FULL_BOX = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 FRAME_LIMITS = (2.0, 0.3, 15.0)     # default, shortest and longest frame shot, seconds
 FRAME_MARGIN = 1.25                 # room around the region
 FRAME_WIDE = 1.6                    # wider than this × the Short's shape: across the middle instead
@@ -153,6 +156,11 @@ def frame_panels(box: dict[str, float], sw: int, sh: int) -> list[Panel]:
     dh = min(0.6, OUT_W / (src[2] * sw) * (src[3] * sh) / OUT_H)
     return [Panel(_fit(grown, aspect, sw, sh), (0.0, 0.0, 1.0, 1.0), blur=True),
             Panel(src, (0.0, (1 - dh) / 2, 1.0, dh))]
+
+
+def region_box(name: str, boxes: dict[str, dict[str, float]]) -> dict[str, float] | None:
+    """A frame shot's region: a drawn box, or FULL (the whole picture), or None."""
+    return FULL_BOX if name == FULL else boxes.get(name)
 
 
 def frame_at(t: float, frames: list[dict[str, Any]]) -> dict[str, Any] | None:

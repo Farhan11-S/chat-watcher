@@ -131,7 +131,7 @@ def test_editor_subtitles_follow_words_until_you_edit(site):  # noqa: F811
     m = mid(conn)
     folder = Path(conn.execute("SELECT folder FROM clips WHERE moment_id = ?", (m,)).fetchone()[0])
     d = client.get(f"/api/moment/{m}/edit").json()
-    assert d["subs"] == [] and d["subs_source"] == "none" and d["subs_style"] == {"on": True, "size": "normal", "position": "bottom", "mode": "lines", "emphasis": []}
+    assert d["subs"] == [] and d["subs_source"] == "none" and d["subs_style"] == {"on": True, "size": "normal", "position": "bottom", "mode": "lines", "look": "classic", "emphasis": []}
     (folder / "words.json").write_text(json.dumps(words(("Good thing I put a limiter in there.", 2.0, 0.25),
                                                          ("Are you deaf?", 6.0, 0.3))), encoding="utf-8")
     d = client.get(f"/api/moment/{m}/edit").json()
@@ -153,7 +153,7 @@ def test_editor_subtitles_follow_words_until_you_edit(site):  # noqa: F811
     client.post(f"/moment/{m}/edit", json=seg | {"subs": mine})
     d = client.get(f"/api/moment/{m}/edit").json()
     assert d["subs_source"] == "saved" and d["subs"][1]["text"] == "Are you *deaf*?!" and d["subs"][1]["by"] == "you"
-    assert d["subs_style"] == {"on": True, "size": "large", "position": "top", "mode": "lines", "emphasis": []}
+    assert d["subs_style"] == {"on": True, "size": "large", "position": "top", "mode": "lines", "look": "classic", "emphasis": []}
     assert client.get(f"/api/moment/{m}/render").json()["render"]["state"] == "stale"
     client.post(f"/moment/{m}/edit", json=seg | {"subs": "auto"})
     assert client.get(f"/api/moment/{m}/edit").json()["subs_source"] == "auto"

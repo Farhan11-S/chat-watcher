@@ -65,6 +65,8 @@ class VoicesIn(BaseModel):
 
 class AutoEditIn(EditIn):
     intensity: str = "normal"
+    message: str = ""         # the director's words to the AI edit's session
+    new: bool = False         # start a new session
 
 
 class IntroIn(BaseModel):
@@ -78,12 +80,13 @@ class ThumbIn(BaseModel):
 
 
 def _redirect(url: str, msg: str | None = None, error: str | None = None) -> RedirectResponse:
+    url, hash_, frag = url.partition("#")           # the message goes before "#…", or the page never sees it
     sep = "&" if "?" in url else "?"
     if msg:
         url += f"{sep}msg={quote(msg)}"
     elif error:
         url += f"{sep}error={quote(error)}"
-    return RedirectResponse(url, status_code=303)
+    return RedirectResponse(url + hash_ + frag, status_code=303)
 
 
 def external_worker_running(cfg: Config) -> bool:
@@ -432,26 +435,48 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
             state["worker"].poke()
         return JSONResponse({"ok": True, "render": with_worker(render_state(conn, pk, cfg=cfg, kind=body.kind))})
 
-    @app.post("/moment/{pk}/autoedit")
-    def edit_auto(pk: int, body: AutoEditIn, conn=Depends(get_conn)):
-        """Save the edit, then have Claude cut the clip, plan the camera, place effects and
-        set word-by-word captions and a Short's hook title (30-90 s; the page waits)."""
-        from chatwatcher.edit.autoedit import AutoEditError, auto_edit
+    def run_direct(pk: int, body: AutoEditIn, conn: Any, new: bool) -> JSONResponse:
+        from chatwatcher.edit.autoedit import AutoEditError
+        from chatwatcher.edit.direct import direct
         from chatwatcher.edit.service import EditError, render_state
         try:
-            save_body(conn, pk, body)
-            r = auto_edit(cfg, conn, pk, kind=body.kind, intensity=body.intensity,
-                          runner=deps.claude if deps else None)
+            if body.segments is not None:          # the page sends its edit; a bare message keeps the saved one
+                save_body(conn, pk, body)
+            t = direct(cfg, conn, pk, body.message, kind=body.kind, new=new, intensity=body.intensity,
+                       runner=deps.claude if deps else None)
         except (EditError, MediaError) as e:
             return edit_error(e)
         except AutoEditError as e:
             return JSONResponse({"ok": False, "error": str(e), "kind": e.kind},
                                 status_code=503 if e.kind in ("usage_limit", "timeout") else 400)
-        p = r.plan
-        return JSONResponse({"ok": True, "segments": r.segments, "note": r.note, "hook_title": r.hook_title,
-                             "cut_s": p.cut_s, "kept": p.pieces_kept, "pieces": p.pieces_total,
-                             "cold_open": p.cold_open, "warnings": p.warnings, "counts": r.counts, "model": r.model,
-                             "render": with_worker(render_state(conn, pk, cfg=cfg, kind=body.kind))})
+        out: dict[str, Any] = {"ok": True, "applied": t.result is not None, "reply": t.reply, "fresh": t.fresh,
+                               "messages": t.messages,
+                               "render": with_worker(render_state(conn, pk, cfg=cfg, kind=body.kind))}
+        if t.result is not None:
+            r, p = t.result, t.result.plan
+            out |= {"segments": r.segments, "note": r.note, "hook_title": r.hook_title, "cut_s": p.cut_s,
+                    "kept": p.pieces_kept, "pieces": p.pieces_total, "cold_open": p.cold_open,
+                    "warnings": p.warnings, "counts": r.counts, "model": r.model}
+        return JSONResponse(out)
+
+    @app.post("/moment/{pk}/autoedit")
+    def edit_auto(pk: int, body: AutoEditIn, conn=Depends(get_conn)):
+        """Save the edit, then start a new AI edit session: Claude cuts the clip, plans the
+        camera, places effects and sets word-by-word captions and a Short's hook title
+        (30-90 s; the page waits). Directing it goes on at /direct."""
+        return run_direct(pk, body, conn, new=True)
+
+    @app.post("/moment/{pk}/direct")
+    def edit_direct(pk: int, body: AutoEditIn, conn=Depends(get_conn)):
+        """Save the edit, then send the director's message to the AI edit's session (or
+        start one: body.new, or none yet). Claude answers, and may remake the edit."""
+        return run_direct(pk, body, conn, new=body.new)
+
+    @app.get("/api/moment/{pk}/direct")
+    def api_direct(pk: int, kind: str = "long", conn=Depends(get_conn)):
+        from chatwatcher.edit.direct import thread
+        session, messages = thread(conn, pk, kind_ok(kind))
+        return JSONResponse({"ok": True, "session": bool(session), "messages": messages})
 
     @app.post("/moment/{pk}/subs/polish")
     def subs_polish(pk: int, body: EditIn, conn=Depends(get_conn)):
@@ -838,7 +863,13 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
                               "UNION ALL SELECT effects_json FROM shorts WHERE effects_json != '[]'"):
             for fx in json.loads(r["effects_json"]):
                 used[fx.get("sound", "")] = used.get(fx.get("sound", ""), 0) + 1
-        return render(request, "sounds.html", sounds=rows, used=used, pack=sounds.starter_status(conn))
+        from chatwatcher.edit import overlays
+        for r in conn.execute("SELECT effects_json FROM edits WHERE effects_json != '[]' "
+                              "UNION ALL SELECT effects_json FROM shorts WHERE effects_json != '[]'"):
+            for oid in {fx.get("overlay") for fx in json.loads(r["effects_json"]) if fx.get("overlay")}:
+                used[oid] = used.get(oid, 0) + 1
+        return render(request, "sounds.html", sounds=rows, used=used, pack=sounds.starter_status(conn),
+                      overlays=overlays.list_overlays(conn))
 
     @app.post("/sounds/upload")
     def sounds_upload(files: list[UploadFile] = File(...), description: str = Form(""), tags: str = Form(""),
@@ -910,6 +941,76 @@ def create_app(cfg: Config, *, start_worker: bool = False, deps: Deps | None = N
         s = sounds.get_sound(conn, sound_id) if sounds.valid_id(sound_id) else None
         p = sounds.sound_path(cfg, s) if s else None
         if not p or not p.is_file() or p.parent != sounds.sounds_dir(cfg):
+            raise HTTPException(404)
+        return FileResponse(p, media_type="audio/flac")
+
+    @app.post("/overlays/upload")
+    def overlays_upload(files: list[UploadFile] = File(...), description: str = Form(""), tags: str = Form(""),
+                        source: str = Form(""), conn=Depends(get_conn)):
+        from chatwatcher.edit import overlays
+        tmp_dir = overlays.overlays_dir(cfg) / ".upload"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        added, failed = [], []
+        for f in files:
+            if not f.filename:
+                continue
+            tmp = tmp_dir / f"in_{time.time_ns()}{Path(f.filename).suffix[:10]}"
+            try:
+                size = 0
+                with open(tmp, "wb") as out:
+                    while chunk := f.file.read(1 << 20):
+                        size += len(chunk)
+                        if size > overlays.MAX_UPLOAD_BYTES:
+                            raise overlays.OverlayError("bigger than 80 MB")
+                        out.write(chunk)
+                o = overlays.import_overlay(cfg, conn, tmp, original=f.filename, description=description,
+                                            tags=tags, source=source)
+                added.append(o["id"])
+            except (overlays.OverlayError, MediaError) as e:
+                failed.append(f"{f.filename}: {e}")
+            finally:
+                tmp.unlink(missing_ok=True)
+        if not added and not failed:
+            return _redirect("/sounds#overlays", error="Pick one or more green-screen clips first.")
+        msg = f"Added {len(added)} overlay(s): {', '.join(added)}." if added else ""
+        if added and not description:
+            msg += " Give each one a description, so Claude knows when to use it."
+        if failed:
+            return _redirect("/sounds#overlays", error=(msg + "\nCouldn't add: " + "; ".join(failed)).strip())
+        return _redirect("/sounds#overlays", msg=msg.strip())
+
+    @app.post("/overlays/{oid}/save")
+    def overlays_save(oid: str, name: str = Form(""), description: str = Form(""), tags: str = Form(""),
+                      source: str = Form(""), gain_db: float = Form(0.0), conn=Depends(get_conn)):
+        from chatwatcher.edit import overlays
+        try:
+            overlays.update_overlay(conn, oid, name=name, description=description, tags=tags, source=source,
+                                    gain_db=gain_db)
+        except overlays.OverlayError as e:
+            return _redirect("/sounds#overlays", error=str(e))
+        return _redirect(f"/sounds#o-{oid}", msg=f"Saved {oid}.")
+
+    @app.post("/overlays/{oid}/delete")
+    def overlays_delete(oid: str, conn=Depends(get_conn)):
+        from chatwatcher.edit import overlays
+        overlays.delete_overlay(cfg, conn, oid)
+        return _redirect("/sounds#overlays", msg=f"Deleted {oid}.")
+
+    @app.get("/media/overlay/{oid}")
+    def media_overlay(oid: str, conn=Depends(get_conn)):
+        from chatwatcher.edit import overlays
+        o = overlays.get_overlay(conn, oid)
+        p = overlays.video_path(cfg, o) if o else None
+        if not p or not p.is_file() or p.parent != overlays.overlays_dir(cfg):
+            raise HTTPException(404)
+        return FileResponse(p, media_type="video/webm")
+
+    @app.get("/media/overlay/{oid}/sound")
+    def media_overlay_sound(oid: str, conn=Depends(get_conn)):
+        from chatwatcher.edit import overlays
+        o = overlays.get_overlay(conn, oid)
+        p = overlays.sound_path(cfg, o) if o else None
+        if not p or not p.is_file() or p.parent != overlays.overlays_dir(cfg):
             raise HTTPException(404)
         return FileResponse(p, media_type="audio/flac")
 

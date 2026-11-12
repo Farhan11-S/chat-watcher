@@ -426,6 +426,44 @@ MIGRATIONS: list[str] = [
     ALTER TABLE vtubers ADD COLUMN status TEXT NOT NULL DEFAULT '';
     ALTER TABLE vtubers ADD COLUMN profile_url TEXT NOT NULL DEFAULT '';
     """,
+    # 20 — directing the AI edit: one Claude session per clip edit (long / short), and its
+    # messages. Replaces the Q&A of 6 (Ask Claude was removed).
+    """
+    DROP TABLE moment_chats;
+    CREATE TABLE edit_chats (
+        id          INTEGER PRIMARY KEY,
+        moment_id   INTEGER NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+        kind        TEXT NOT NULL CHECK (kind IN ('long', 'short')),
+        session_id  TEXT NOT NULL,                  -- the claude CLI session it belongs to
+        role        TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        text        TEXT NOT NULL,
+        applied     INTEGER NOT NULL DEFAULT 0,     -- assistant: it changed the edit
+        model       TEXT,
+        usage_json  TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_edit_chats ON edit_chats(moment_id, kind, id);
+    """,
+    # 21 — green-screen overlays (meme clips like the LoL "?" ping spam): keyed to a
+    # transparent video when added, placed on an edit like a sound
+    """
+    CREATE TABLE overlays (
+        id           TEXT PRIMARY KEY,                -- short name Claude uses, e.g. 'question_pings'
+        name         TEXT NOT NULL,
+        description  TEXT NOT NULL DEFAULT '',        -- when to use it (Claude reads this)
+        tags         TEXT NOT NULL DEFAULT '',
+        source       TEXT NOT NULL DEFAULT '',        -- where it's from, and its license
+        file         TEXT NOT NULL,                   -- under data/overlays/: VP9 with transparency
+        sound        TEXT,                            -- its sound, levelled (NULL when silent)
+        duration_s   REAL NOT NULL,
+        width        INTEGER NOT NULL,
+        height       INTEGER NOT NULL,
+        key_color    TEXT NOT NULL DEFAULT '',        -- RRGGBB that was made transparent
+        gain_db      REAL NOT NULL DEFAULT 0,         -- its sound's volume when placed
+        original     TEXT,
+        added_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

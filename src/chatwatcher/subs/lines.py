@@ -36,6 +36,7 @@ SHORT_LINES = 4
 SHORT_CUE = 44
 WORD_CUE = 14         # "words" mode: one to three words at a time, like clip channels
 MODES = ("lines", "words")
+LOOKS = ("classic", "bubble")   # bubble: round font, the voice's colour, white outline (edit.captions)
 MAX_EMPHASIS = 12
 TITLE_SIZE = 0.075     # the Short's title, as a fraction of the width
 TITLE_LINE = 20
@@ -183,6 +184,7 @@ def clean_style(raw: Any, default: dict[str, Any]) -> dict[str, Any]:
             "size": raw.get("size") if raw.get("size") in SIZES else default["size"],
             "position": raw.get("position") if raw.get("position") in POSITIONS else default["position"],
             "mode": raw.get("mode") if raw.get("mode") in MODES else default.get("mode", "lines"),
+            "look": raw.get("look") if raw.get("look") in LOOKS else default.get("look", "classic"),
             "emphasis": emphasis_terms(raw.get("emphasis"))}
 
 
@@ -313,11 +315,12 @@ def _ass_text(text: str, max_line: int = MAX_LINE, max_lines: int = 2, color: st
 
 
 def ass(cues: list[Shown], style: dict[str, Any], width_px: int, height_px: int,
-        font: str = FONT, title: str = "", title_until: float = 0.0) -> str:
+        font: str = FONT, title: str = "", title_until: float = 0.0, extra: list[str] | None = None) -> str:
     """An ASS subtitle file for libass, sized for this video: bold white (or the voice's
     colour) with a thick black outline, bottom or top centre. Cues that overlap (two voices
     at once) are stacked by libass, the later one further from the edge. title: a Short's
-    title in the top band, shown from 0 to title_until."""
+    title in the top band, shown from 0 to title_until. extra: more Dialogue lines, the
+    text callouts (edit.texts.events), with the Callout and Label styles."""
     w, h = width_px or 1280, height_px or 720
     rules = frame_rules(w, h)
     base = w if rules["vertical"] else h
@@ -335,7 +338,11 @@ def ass(cues: list[Shown], style: dict[str, Any], width_px: int, height_px: int,
             f"Style: Clip,{font},{size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
             f"{outline:.1f},{shadow:.1f},{align},{side},{side},{margin},1\n"
             f"Style: Title,{font},{tsize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
-            f"{max(1.0, tsize * 0.12):.1f},{max(0.0, tsize * 0.05):.1f},8,{side},{side},{round(h * 0.06)},1\n\n[Events]\n"
+            f"{max(1.0, tsize * 0.12):.1f},{max(0.0, tsize * 0.05):.1f},8,{side},{side},{round(h * 0.06)},1\n"
+            f"Style: Callout,{font},{size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
+            f"{outline:.1f},{shadow:.1f},5,0,0,0,1\n"
+            f"Style: Label,{font},{size},&H00FFFFFF,&H000000FF,&H26000000,&H26000000,-1,0,0,0,100,100,0,0,3,"
+            f"{outline:.1f},0,5,0,0,0,1\n\n[Events]\n"
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
     body = ""
     if title and title_until > 0:
@@ -343,6 +350,7 @@ def ass(cues: list[Shown], style: dict[str, Any], width_px: int, height_px: int,
     body += "".join(f"Dialogue: 0,{_ass_time(a)},{_ass_time(b)},Clip,,0,0,0,,"
                     f"{_ass_text(t, rules['max_line'], rules['max_lines'], _who(rest).get('color') or 'FFFFFF')}\n"
                     for a, b, t, *rest in cues)
+    body += "".join(line + "\n" for line in extra or [])
     return head + body
 
 

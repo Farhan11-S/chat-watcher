@@ -67,6 +67,8 @@ def _env(cfg: ClaudeConfig) -> dict[str, str]:
 
 
 def classify(message: str) -> str:
+    if "No conversation found" in message:
+        return "no_session"
     if _LIMIT.search(message):
         return "usage_limit"
     if _AUTH.search(message):
@@ -85,9 +87,12 @@ class ClaudeRunner:
 
     def command(self, schema: dict[str, Any] | None, *, system: str, allow_read: bool = False,
                 read_dir: Path | None = None, model: str | None = None, effort: str | None = None,
-                tools: list[str] | None = None, images: bool = False) -> list[str]:
+                tools: list[str] | None = None, images: bool = False,
+                session: str | None = None, resume: bool = False) -> list[str]:
         """schema=None: plain-text answer. tools: extra built-in tools (e.g. WebSearch).
-        images: the prompt goes in as a stream-json message that can carry images."""
+        images: the prompt goes in as a stream-json message that can carry images.
+        session: keep the conversation under this id (a uuid) so a later call can go on
+        with it; resume=True goes on with that conversation instead of starting it."""
         allowed = list(tools or []) + (["Read"] if allow_read else [])
         cmd = [self.exe, "-p"]
         cmd += (["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
@@ -100,8 +105,10 @@ class ClaudeRunner:
             "--system-prompt", system,
             "--tools", ",".join(allowed),
             "--restricted", "--strict-mcp-config", "--disable-slash-commands",
-            "--no-session-persistence", "--permission-mode", "dontAsk",
+            "--permission-mode", "dontAsk",
         ]
+        cmd += (["--resume" if resume else "--session-id", session] if session
+                else ["--no-session-persistence"])
         if allowed:
             cmd += ["--allowedTools", ",".join(allowed)]
         if allow_read and read_dir:
@@ -147,12 +154,14 @@ class ClaudeRunner:
 
     def run(self, prompt: str, schema: dict[str, Any], *, system: str, cwd: Path,
             allow_read: bool = False, model: str | None = None,
-            effort: str | None = None, images: list[bytes] | None = None) -> ClaudeResult:
+            effort: str | None = None, images: list[bytes] | None = None,
+            session: str | None = None, resume: bool = False) -> ClaudeResult:
         """One structured answer matching `schema`. model/effort override the config.
-        images: JPEGs shown to Claude before the prompt text."""
+        images: JPEGs shown to Claude before the prompt text. session / resume: see command()
+        (a resumed session must run in the same cwd)."""
         cmd = self.command(schema, system=system, allow_read=allow_read,
                            read_dir=cwd if allow_read else None, model=model, effort=effort,
-                           images=bool(images))
+                           images=bool(images), session=session, resume=resume)
         out = self._invoke(cmd, image_message(prompt, images) if images else prompt, cwd)
         data = out.get("structured_output")
         if data is None:

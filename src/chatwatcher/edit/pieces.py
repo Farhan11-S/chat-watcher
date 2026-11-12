@@ -40,6 +40,7 @@ class Piece:
     chat: float = 0.0           # chat messages per second here, over the clip's average
     voice: float = 0.0          # quiet: seconds of voice with no words (a laugh, a scream, mumbling)
     pauses: list[tuple[float, float]] = field(default_factory=list)   # talk: gaps between its words ≥ MIN_QUIET
+    who: str = ""               # talk, in a collab: who says it (see name_voices)
 
     @property
     def length(self) -> float:
@@ -57,7 +58,7 @@ class Piece:
             extra.append(f"chat ×{self.chat:.1f}")
         tail = (" · " + " · ".join(extra)) if extra else ""
         if self.kind == "talk":
-            return f'{span} "{self.text}"{tail}'
+            return f'{span} {self.who + ": " if self.who else ""}"{self.text}"{tail}'
         return f"{span} quiet {self.length:.1f}s{tail}"
 
 
@@ -88,6 +89,25 @@ def _talk_groups(words: list[tuple[float, float, str]]) -> list[list[tuple[float
     if cur:
         groups.append(cur)
     return groups
+
+
+def name_voices(ps: list[Piece], words_data: dict[str, Any] | None, names: dict[str, dict[str, str]]) -> None:
+    """With two or more voices (subs.speakers), mark each talk piece with who says it (names:
+    the clip's people, {"0": {"name": …}}; "person 2" when unnamed)."""
+    said = [(float(w[0]), w[4]) for line in (words_data or {}).get("lines") or [] for w in line.get("words") or []
+            if len(w) > 4 and isinstance(w[4], int) and not isinstance(w[4], bool) and str(w[2]).strip()]
+    if len({v for _, v in said}) < 2:
+        return
+    for p in ps:
+        if p.kind != "talk":
+            continue
+        who: list[str] = []
+        for a, v in said:
+            if p.w0 - 0.01 <= a <= p.w1:
+                name = (names.get(str(v)) or {}).get("name") or f"person {v + 1}"
+                if name not in who:
+                    who.append(name)
+        p.who = " + ".join(who)
 
 
 def chat_times(chat_text: str) -> list[float]:

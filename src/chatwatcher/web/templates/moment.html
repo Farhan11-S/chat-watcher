@@ -72,6 +72,21 @@
         <button type="button" role="tab" data-ed-tab="text">Transcript</button>
         <button type="button" role="tab" data-ed-tab="caps">Captions</button>
         <button type="button" role="tab" data-ed-tab="lay" data-ed-tab-short hidden>Layout</button>
+        <button type="button" role="tab" data-ed-tab="ai" title="Talk to the AI edit about this edit">✨ Direct</button>
+      </div>
+      <div class="ed-pane ed-direct" data-ed-pane="ai" hidden>
+        <div class="ed-chat" data-ed-chat aria-live="polite"></div>
+        <form class="ed-chat-form" data-ed-chat-form>
+          <textarea data-ed-chat-text rows="2" maxlength="2000" aria-label="Your direction to the AI edit"
+                    placeholder="e.g. Open on the scream. Fewer zooms on the game. Why did you cut the joke at 0:41?"></textarea>
+          <div class="actions">
+            <button class="primary small" data-ed-chat-send>Send</button>
+            <button type="button" class="small" data-ed-act="chat-new" title="Forget this conversation: your next message starts a new AI edit">New session</button>
+          </div>
+        </form>
+        <p class="faint"><small>The AI edit remembers this clip and what it did, and sees your changes by hand. Ask for a
+          change and it remakes the edit (Ctrl+Z undoes); ask a question and it just answers. One Claude call per message.
+          Enter sends, Shift+Enter starts a new line.</small></p>
       </div>
       <div class="ed-pane" data-ed-pane="sel">
         <div class="ed-selected" data-ed-selected></div>
@@ -90,6 +105,8 @@
             <select data-sub-size aria-label="Caption size"><option value="small">small</option><option value="normal">normal</option><option value="large">large</option></select></label>
           <label><small>Place</small>
             <select data-sub-pos aria-label="Caption position"><option value="top">near the top</option><option value="bottom">at the bottom</option></select></label>
+          <label title="Bubble: a round font in the speaker's colour with a white outline, each caption springs in (what ✨ AI edit uses). Classic: bold white with a black outline."><small>Look</small>
+            <select data-sub-look aria-label="Caption look"><option value="bubble">bubble</option><option value="classic">classic</option></select></label>
         </div>
         <div class="actions">
           <button type="button" class="small" data-ed-act="sub-polish" title="Claude fixes misheard words and names, punctuation and filler, translates (it keeps the highlighted words AI edit picked). Your own lines stay. One Claude call.">✨ Fix the words</button>
@@ -146,13 +163,17 @@
         <div class="ed-menu-list">
           <button type="button" class="small" data-ed-act="split" title="Split the selected segment at the playhead (S)">✂ Cut here (S)</button>
           <button type="button" class="small" data-ed-act="add" title="A new segment at the playhead">Segment</button>
-          <button type="button" class="small" data-ed-add="frame" title="Short only: show one region full-screen for a while">Camera: show a region</button>
+          <button type="button" class="small" data-ed-add="frame" title="Short only: show one region full-screen, or the whole picture (fit + blur), for a while">Camera: show a region</button>
           <button type="button" class="small" data-ed-add="punch" title="Instant zoom on a region (Z)">Camera: punch-in (Z)</button>
           <button type="button" class="small" data-ed-add="push" title="Slow zoom towards a region">Camera: push-in</button>
           <button type="button" class="small" data-ed-act="add-fx" title="A sound effect at the playhead (F)">Sound (F)</button>
           <button type="button" class="small" data-ed-add="shake" title="Camera shake on an impact or a scream (X)">Shake (X)</button>
           <button type="button" class="small" data-ed-add="flash" title="A quick white, red or black flash">Flash</button>
+          <button type="button" class="small" data-ed-act="add-overlay" title="A green-screen overlay from your Library at the playhead, with its sound (O)">Overlay (O)</button>
+          <button type="button" class="small" data-ed-act="add-text" title="Big text over the picture at the playhead: NO NO NO, ← that was the backup, ×3 (T)">Text (T)</button>
+          <button type="button" class="small" data-ed-act="add-spot" title="Point at something: dim the rest and ring it, or the red circle (C)">Spotlight (C)</button>
           <button type="button" class="small" data-ed-act="sub-add" title="A new caption at the playhead">Caption</button>
+          <button type="button" class="small" data-ed-add="caption" title="Style the captions from the playhead on: shake, wave, bounce…, an angry or scary font, a place (on her face, between the pictures)">Caption style</button>
         </div>
       </details>
       <button type="button" class="small" data-ed-act="undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
@@ -167,7 +188,7 @@
         <div class="ed-menu-list"><small>
           <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> 0.1 s (<kbd>Shift</kbd> 1 s)<br>
           <kbd>I</kbd>/<kbd>O</kbd> segment start/end here · <kbd>S</kbd> cut here<br>
-          <kbd>F</kbd> sound · <kbd>Z</kbd> punch-in · <kbd>X</kbd> shake<br>
+          <kbd>F</kbd> sound · <kbd>O</kbd> overlay · <kbd>T</kbd> text · <kbd>C</kbd> spotlight · <kbd>Z</kbd> punch-in · <kbd>X</kbd> shake<br>
           <kbd>[</kbd><kbd>]</kbd> previous/next segment · <kbd>Del</kbd> delete<br>
           <kbd>Enter</kbd> play edit from here (<kbd>Shift</kbd> from the start) · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</small></div>
       </details>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Sounds · chat-watcher{% endblock %}
+{% block title %}Library · chat-watcher{% endblock %}
 {% block autorefresh %}0{% endblock %}
 {% block content %}
 <div class="card">
@@ -82,5 +82,61 @@
     </form>
     {% endfor %}
   </div>
+</div>
+
+<div class="card" id="overlays">
+  <h2>Overlays <small class="muted">· green-screen clips ({{ overlays | length }})</small></h2>
+  <p class="muted" style="margin:.2rem 0 .8rem">Meme effects that play over the picture with their sound: the LoL "?" ping spam,
+    an explosion, a "WASTED" banner. Upload the green-screen (or blue-screen) clip as it is: the screen colour is found from
+    the corners and made see-through, once. Place them in the editor (＋ Add → Overlay); Claude's ✨ AI edit picks from
+    these too, by their <b>description</b>.</p>
+  <form method="post" action="/overlays/upload" enctype="multipart/form-data" class="sound-upload">
+    <label class="sound-files">
+      <span>Green-screen clips <small class="muted">· mp4, webm, mov · under 15 s each · takes a few seconds each</small></span>
+      <input type="file" name="files" multiple required accept="video/*,.mp4,.webm,.mov,.mkv">
+    </label>
+    <label><span>Description <small class="muted">(optional, for all of them; you can edit each one after)</small></span>
+      <input type="text" name="description" maxlength="500" placeholder="e.g. question-mark pings: someone says something dumb or makes a bad call"></label>
+    <div class="grid-2">
+      <label><span>Tags</span><input type="text" name="tags" maxlength="200" placeholder="lol, ping, meme"></label>
+      <label><span>Source and license</span><input type="text" name="source" maxlength="300" placeholder="e.g. youtube.com/watch?v=… · free to use"></label>
+    </div>
+    <div class="actions"><button class="primary">Add overlays</button></div>
+  </form>
+  {% if overlays %}
+  <div class="sound-list" style="margin-top:.8rem">
+    {% for o in overlays %}
+    <form class="sound-row" id="o-{{ o.id }}" method="post" action="/overlays/{{ o.id }}/save">
+      <div class="sound-play">
+        <video class="overlay-preview" src="/media/overlay/{{ o.id }}" muted loop autoplay playsinline
+               aria-label="{{ o.name }} (see-through)"></video>
+        <small class="muted"><span class="mono">{{ o.id }}</span> · {{ '%.1f' | format(o.duration_s) }} s
+          · keyed #{{ o.key_color }}{% if not o.sound %} · no sound{% endif %}
+          {% if used.get(o.id) %}· in {{ used[o.id] }} edit{{ 's' if used[o.id] != 1 }}{% endif %}</small>
+        {% if o.sound %}<audio controls preload="none" src="/media/overlay/{{ o.id }}/sound"></audio>{% endif %}
+      </div>
+      <div class="sound-fields">
+        <input type="text" name="name" value="{{ o.name }}" maxlength="80" aria-label="Name" class="sound-name">
+        <input type="text" name="description" value="{{ o.description }}" maxlength="500" aria-label="Description"
+               placeholder="When to use it (Claude reads this)" class="{{ 'missing' if not o.description }}">
+        <div class="sound-meta">
+          <input type="text" name="tags" value="{{ o.tags }}" maxlength="200" aria-label="Tags" placeholder="tags">
+          <input type="text" name="source" value="{{ o.source }}" maxlength="300" aria-label="Source and license" placeholder="source · license">
+          <label class="muted" title="Its sound's volume when it's placed. 0 = about as loud as her voice."><small>volume</small>
+            <select name="gain_db">
+              {% for g in [6, 3, 0, -3, -6, -10, -15, -20] %}<option value="{{ g }}" {{ 'selected' if g == o.gain_db }}>{{ '+' if g > 0 }}{{ g }} dB</option>{% endfor %}
+              {% if o.gain_db not in [6, 3, 0, -3, -6, -10, -15, -20] %}<option value="{{ o.gain_db }}" selected>{{ o.gain_db }} dB</option>{% endif %}
+            </select></label>
+        </div>
+      </div>
+      <div class="sound-actions">
+        <button class="small">Save</button>
+        <button class="small danger" formaction="/overlays/{{ o.id }}/delete"
+                onclick="return confirm('Delete {{ o.name | e }}? Edits that use it keep their markers but render without it.')">Delete</button>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
