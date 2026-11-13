@@ -164,6 +164,9 @@ class Worker:
         if out.status == "error":
             log.warning("✗ %s: %s", label, out.message.splitlines()[0][:300])
             jobs.finish(conn, job["id"], ok=False, message=out.message)
+            if stage in jobs.VIDEO_STAGES:     # an extra you asked for: the stream itself is fine
+                self._settle(conn, video)
+                return
             set_video_status(conn, vid, "error", f"{stage}: {out.message[:500]}")
             return
 
@@ -187,6 +190,9 @@ class Worker:
                                 (video["id"],)).fetchone()
             set_video_status(conn, vid, "processing" if busy else "done")
             return
+        if stage in jobs.VIDEO_STAGES:     # asked for on the stream page, outside the pipeline
+            self._settle(conn, video)
+            return
         nxt = None if out.details.get("stop") else jobs.next_stage(stage)
 
         def skipped(s: str) -> bool:      # transcribe only ever follows a clip download
@@ -203,6 +209,14 @@ class Worker:
             set_video_status(conn, vid, "processing")
         else:
             set_video_status(conn, vid, "done")
+
+    @staticmethod
+    def _settle(conn: sqlite3.Connection, video: sqlite3.Row) -> None:
+        """After an on-demand stage: the stream goes back to what it was before the job
+        (still processing if the pipeline has work queued for it)."""
+        busy = conn.execute("SELECT 1 FROM jobs WHERE video_id = ? AND status IN ('pending', 'running')",
+                            (video["id"],)).fetchone()
+        set_video_status(conn, video["video_id"], "processing" if busy else video["status"], video["error"])
 
 
 def _fmt_delta(d) -> str:

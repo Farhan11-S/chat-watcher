@@ -267,6 +267,25 @@ def _ingest_captions(cfg: Config, yt: YtDlp, video_id: str, info: dict[str, Any]
     result.caption_segments = len(segments)
 
 
+def refresh_captions(cfg: Config, conn: sqlite3.Connection, video_id: str, *,
+                     ytdlp: YtDlp | None = None, on_step: StepFn | None = None) -> int:
+    """Ask YouTube for the captions again, for a stream ingested before they existed
+    (auto-captions appear hours after a stream ends). Returns the number of caption
+    segments saved (0 = still none). Raises YtDlpError when YouTube can't be reached."""
+    yt = ytdlp or YtDlp(cfg.youtube)
+    files = vod_files(cfg, video_id)
+    result = IngestResult(video_id=video_id, title="", channel=None, live_status=None,
+                          duration_s=None, files=files)
+    try:
+        _ingest_captions(cfg, yt, video_id, yt.info(video_id), files, False, result,
+                         on_step or (lambda _m: None))
+    finally:
+        shutil.rmtree(files.downloads, ignore_errors=True)
+    if result.caption_lang and result.caption_segments:
+        store.upsert_video(conn, video_id, caption_lang=result.caption_lang)
+    return result.caption_segments if result.caption_lang else 0
+
+
 def _save_heatmap(info: dict[str, Any], files: VodFiles) -> int:
     points = [
         [p["start_time"], p["end_time"], p["value"]]

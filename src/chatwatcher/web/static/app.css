@@ -522,3 +522,9 @@ input.hex:invalid, input.hex.bad { outline: 2px solid var(--bad); }
 .brand-colours input[type=color] { width: 2.2rem; height: 1.6rem; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: none; }
 .brand-preview img:first-child { display: block; width: 100%; height: auto; border-radius: 8px; }
 .brand-logo { border-radius: 50%; }
+
+/* Stream page: compilation ideas (compile/) */
+.compilation { border-top: 1px solid var(--border); padding: .8rem 0 .2rem; }
+.compilation > p { margin: .4rem 0; }
+.pieces { margin: .3rem 0 .4rem; padding-left: 1.5rem; display: grid; gap: .2rem; }
+.pieces a { font-variant-numeric: tabular-nums; white-space: nowrap; margin-right: .3rem; }

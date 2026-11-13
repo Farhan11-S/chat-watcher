@@ -334,6 +334,14 @@
 
   // [data-seek="12.5"] jumps the clip player to that time.
   document.addEventListener("click", ev => {
+    // [data-stream-seek]: a stream time. Plays in the stream page's player; without one the link opens YouTube.
+    const st = ev.target.closest("[data-stream-seek]");
+    if (st && window.cwSeek && !ev.ctrlKey && !ev.metaKey) {
+      ev.preventDefault();
+      window.cwSeek(parseFloat(st.dataset.streamSeek));
+      const frame = document.querySelector(".yt-frame");
+      if (frame) frame.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
     const el = ev.target.closest("[data-seek]");
     if (el) {
       const v = document.querySelector("video");

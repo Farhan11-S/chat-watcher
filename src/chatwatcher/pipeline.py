@@ -74,7 +74,7 @@ def run_stage(cfg: Config, conn: sqlite3.Connection, video_id: str, stage: str, 
         return {"clip": _clip, "transcribe": _transcribe, "analyze": _analyze, "upload": _upload}[stage](
             cfg, conn, video_id, attempt, deps, say, rank=row["rank"], **_opts(stage, params))
     fn = {"ingest": _ingest, "score": _score, "clip": _clip, "transcribe": _transcribe, "frames": _frames,
-          "analyze": _analyze, "upload": _upload}[stage]
+          "analyze": _analyze, "upload": _upload, "compile": _compile}[stage]
     return fn(cfg, conn, video_id, attempt, deps, say, **_opts(stage, params))
 
 
@@ -252,6 +252,27 @@ def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
     if errors and not done and attempt < 3:
         return StageOutcome("retry", msg, timedelta(minutes=30))
     return StageOutcome("done" if (done or not errors) else "error", msg)
+
+
+def _compile(cfg, conn, video_id, attempt, deps, say) -> StageOutcome:
+    """One Claude call over the whole stream: compilation candidates (compile/). Asked for
+    on the stream page. A failed call is not repeated by itself: each try reads the whole
+    stream again."""
+    from chatwatcher.compile.service import CompileError, compile_video
+    if not cfg.claude.enabled:
+        return StageOutcome("skip", "claude.enabled is false")
+    try:
+        run = compile_video(cfg, conn, video_id, runner=deps.claude, ytdlp=deps.ytdlp, on_step=say)
+    except CompileError as e:
+        if e.kind in ("auth", "missing") and attempt < 48:
+            return StageOutcome("retry", str(e), timedelta(hours=1))   # nothing was sent yet
+        if e.kind == "usage_limit" and attempt < 6:
+            return StageOutcome("retry", str(e), usage_reset_delay(str(e)))
+        return StageOutcome("error", str(e))
+    n = len(run.candidates)
+    read = f"Claude read {run.input_tokens:,} tokens" if run.input_tokens else \
+        f"about {run.size.get('est_tokens', 0):,} tokens sent"
+    return StageOutcome("done", f"{n} compilation idea{'s' * (n != 1)} ({read}, {run.size.get('chars', 0):,} characters)")
 
 
 def _upload(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,

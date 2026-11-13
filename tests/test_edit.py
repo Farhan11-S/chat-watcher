@@ -160,7 +160,7 @@ def test_migration_keeps_jobs(tmp_path):
         conn.executescript(f"BEGIN; {db.MIGRATIONS[version - 1]}; PRAGMA user_version = {version}; COMMIT;")
     v = conn.execute("INSERT INTO videos (video_id) VALUES ('abcdefghijk')").lastrowid
     conn.execute("INSERT INTO jobs (video_id, stage, status, message, params_json) VALUES (?, 'clip', 'error', 'x', '{}')", (v,))
-    assert db.migrate(conn) == [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    assert db.migrate(conn) == list(range(8, db.SCHEMA_VERSION + 1))
     j = conn.execute("SELECT * FROM jobs").fetchone()
     assert (j["stage"], j["status"], j["message"], j["params_json"]) == ("clip", "error", "x", "{}")
     m = conn.execute("INSERT INTO moments (video_id, rank, score, start_s, end_s, peak_s) VALUES (?,1,1,0,30,10)",

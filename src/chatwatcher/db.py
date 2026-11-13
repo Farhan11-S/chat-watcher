@@ -464,6 +464,58 @@ MIGRATIONS: list[str] = [
         added_at     TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    # 22 — compilations: what one Claude read of a whole stream found (compile/), and a
+    # 'compile' job to run it (jobs rebuilt, as in 8)
+    """
+    CREATE TABLE compile_runs (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        model       TEXT,
+        input_json  TEXT NOT NULL,              -- size of what was sent: chars, est_tokens, lines
+        usage_json  TEXT,                       -- tokens the CLI reported
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_compile_runs_video ON compile_runs(video_id);
+    CREATE TABLE compilations (
+        id            INTEGER PRIMARY KEY,
+        run_id        INTEGER NOT NULL REFERENCES compile_runs(id) ON DELETE CASCADE,
+        video_id      INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        position      INTEGER NOT NULL,         -- 1 = best
+        title         TEXT NOT NULL,
+        kind          TEXT NOT NULL CHECK (kind IN ('recurring', 'callback', 'other')),
+        reason        TEXT NOT NULL DEFAULT '',
+        rating        INTEGER NOT NULL,         -- 1-10
+        segments_json TEXT NOT NULL             -- play order: [{start, end, role, note}], stream seconds
+    );
+    CREATE INDEX idx_compilations_video ON compilations(video_id);
+    CREATE TABLE jobs_new (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id   INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        stage       TEXT NOT NULL
+                    CHECK (stage IN ('ingest','score','clip','transcribe','frames','analyze','digest','upload',
+                                     'render','intro','short','compile')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        run_after   TEXT NOT NULL DEFAULT (datetime('now')),
+        error       TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at  TEXT,
+        finished_at TEXT,
+        message     TEXT,
+        params_json TEXT
+    );
+    INSERT INTO jobs_new (id, video_id, moment_id, stage, status, attempts, run_after, error,
+                          created_at, updated_at, started_at, finished_at, message, params_json)
+        SELECT id, video_id, moment_id, stage, status, attempts, run_after, error,
+               created_at, updated_at, started_at, finished_at, message, params_json FROM jobs;
+    DROP TABLE jobs;
+    ALTER TABLE jobs_new RENAME TO jobs;
+    CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
+    CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

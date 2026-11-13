@@ -113,6 +113,54 @@
 </div>
 {% endif %}
 
+{% if compile is defined and cfg.claude.enabled %}
+{% set run = compile.run %}{% set cjob = compile.job %}
+{% set cbusy = cjob and cjob.status in ('pending', 'running') %}
+<div class="card" id="compilations">
+  <div class="card-head">
+    <h2>Compilation ideas{% if run and run.candidates %} <span class="count">{{ run.candidates | length }}</span>{% endif %}</h2>
+    <form method="post" action="/video/{{ video.video_id }}/compile" class="inline"
+          {% if run %}onsubmit="return confirm('Claude will read the whole stream again and the ideas below are replaced. Continue?')"{% endif %}>
+      <button class="{{ 'small' if run else 'primary' }}" {{ 'disabled' if cbusy }}
+              title="One Claude call for the whole stream">{{ 'Look again' if run else '✨ Find compilation ideas' }}</button></form>
+  </div>
+  <p class="muted"><small>Claude reads the whole stream once, start to finish (what was said, and what chat typed), and looks for
+    things that keep happening and jokes that come back much later: pieces from different parts of the stream that make one video.</small></p>
+  {% if cbusy %}
+  <p><span class="pill {{ cjob.status }}">{{ 'reading the stream…' if cjob.status == 'running' else 'waiting in the queue' }}</span>
+    {% if cjob.status == 'pending' and cjob.message %}<small class="muted">{{ cjob.message.splitlines()[0][:200] }}</small>{% endif %}</p>
+  {% elif cjob and cjob.status == 'error' %}
+  <p class="bad">{{ (cjob.error or cjob.message or 'It failed.').splitlines()[0][:400] }}</p>
+  {% elif not run and not compile.has_captions %}
+  <p class="faint"><small>No captions are saved for this stream yet. Pressing the button asks YouTube for them first.</small></p>
+  {% endif %}
+  {% if run %}
+  {% for c in run.candidates %}
+  <div class="compilation">
+    <div class="claude">{{ rating(c.rating) }}
+      <span><b>{{ c.title }}</b><br>
+        <small><span class="tag">{{ {'recurring': 'keeps happening', 'callback': 'setup and payoff', 'other': 'other'}[c.kind] }}</span>
+          <span class="muted">{{ c.segments | length }} pieces · {{ c.length_s | ts }} in total</span></small></span></div>
+    <p class="muted">{{ c.reason }}</p>
+    <ol class="pieces">
+      {% for s in c.segments %}
+      <li><a href="https://youtu.be/{{ video.video_id }}?t={{ s.start | int }}" target="_blank" rel="noopener"
+             data-stream-seek="{{ s.start }}" title="Play from here">▶ {{ s.start | ts }}–{{ s.end | ts }}</a>
+        {% if s.role != 'beat' %}<span class="tag">{{ s.role }}</span>{% endif %}
+        <span>{{ s.note }}</span></li>
+      {% endfor %}
+    </ol>
+  </div>
+  {% else %}
+  <p class="empty">Claude found nothing in this stream worth a compilation.</p>
+  {% endfor %}
+  <p class="faint"><small>Found {{ run.created_at | when }}{% if run.model %} by {{ run.model }}{% endif %}
+    {%- set read = (run.usage.input or 0) + (run.usage.cache_read or 0) + (run.usage.cache_write or 0) %}
+    · Claude read {{ '{:,}'.format(read or run.input.est_tokens) }}{{ '' if read else ' (estimated)' }} tokens in one call</small></p>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if chart %}
 <div class="card">
   <div class="card-head">

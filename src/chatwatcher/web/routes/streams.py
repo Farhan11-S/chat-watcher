@@ -87,7 +87,8 @@ def router(ctx: Ctx) -> APIRouter:
         kept_all = sum(1 for m in d["moments"] if m["status"] == "approved")
         return render(request, "video.html", **d, chart=chart, heat=heat, kept=kept,
                       kept_all=kept_all, review=_review_items(d["moments"]),
-                      auto_upload=prefs.auto_upload(cfg, conn))
+                      auto_upload=prefs.auto_upload(cfg, conn),
+                      compile=_compile_state(conn, d["video"]["id"], files.transcript.is_file()))
 
     @r.post("/video/{video_id}/{action}")
     def video_action(video_id: str, action: str, stream_type: str = Form("auto"), kept_only: str = Form(""),
@@ -129,6 +130,16 @@ def router(ctx: Ctx) -> APIRouter:
                 return redirect(back, msg="Upload of the kept clips queued.")
             jobs.enqueue(conn, v["id"], "upload")
             return redirect(back, msg="Upload queued.")
+        if action == "compile":
+            if not cfg.claude.enabled:
+                return redirect(back + "#compilations", error="Claude is switched off (claude.enabled = false in config.toml).")
+            if not vod_files(cfg, video_id).info.is_file():
+                return redirect(back + "#compilations", error="This stream hasn't been fetched yet.")
+            if jobs.enqueue(conn, v["id"], "compile") is None:
+                return redirect(back + "#compilations", error="Claude is already reading this stream.")
+            ctx.poke()
+            return redirect(back + "#compilations",
+                            msg="Queued. Claude reads the whole stream once; this takes a few minutes.")
         if action == "rescore":
             from chatwatcher.scoring.service import ScoreError, score_video
             if stream_type in discover.STREAM_TYPES:
@@ -144,6 +155,14 @@ def router(ctx: Ctx) -> APIRouter:
         raise HTTPException(400)
 
     return r
+
+
+def _compile_state(conn, video_pk: int, has_captions: bool) -> dict[str, Any]:
+    """The stream page's Compilation ideas card: the last run's candidates and the job."""
+    from chatwatcher.compile.service import load
+    job = conn.execute("SELECT status, message, error, run_after FROM jobs WHERE video_id = ? AND stage = 'compile'",
+                       (video_pk,)).fetchone()
+    return {"run": load(conn, video_pk), "job": dict(job) if job else None, "has_captions": has_captions}
 
 
 def _review_items(moments: list[dict[str, Any]]) -> list[dict[str, Any]]:

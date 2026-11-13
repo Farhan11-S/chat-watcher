@@ -24,9 +24,10 @@ no build step. Read only the feature you are changing; the map below says where 
 | Scoring moments | `scoring/` — `features.py`, `lexicons.py`, `presets.py`, `moments.py`, `service.py` |
 | Downloading clips | `clip/` — `download.py`, `media.py` (ffmpeg/ffprobe), `package.py`, `preview.py`, `service.py` |
 | Claude's analysis of a clip | `analyze/` — `claude_runner.py` (`claude -p`), `prompts.py`, `sheet.py` (contact sheet), `service.py` |
+| Compilation ideas: one Claude call reads a whole stream | `compile/` — `chat.py` (thin the chat), `prompt.py` (timeline, token budget, schema), `parse.py` (check the answer), `service.py` (run, store, load); the on-demand `compile` job (`jobs.VIDEO_STAGES`) |
 | Transcripts and subtitles | `subs/` — `transcribe.py` (Whisper), `align.py`, `lines.py`, `polish.py`, `names.py`, `speakers.py` (VTubers, colours) |
-| The clip editor and renders | `edit/` — `service.py` (load/save/render state), `render.py`, `pieces.py`, `audio.py`, `captions.py`, `layout.py` (Shorts), `motion.py`, `spots.py`, `texts.py`, `regions.py`, `proxy.py` |
-| AI edit and Direct | `edit/autoedit.py`, `edit/direct.py` |
+| The clip editor and renders | `edit/` — `service.py` (re-exports only), `clipref.py` (clip + edit rows, file names), `validate.py` (checking segments and effects), `substate.py` (subtitles as the editor sees them), `editstore.py` (load/save, tables `edits` and `shorts`), `rendering.py` (render a saved edit), `render.py` (ffmpeg graph), `pieces.py`, `audio.py`, `captions.py`, `layout.py` (Shorts), `motion.py`, `spots.py`, `texts.py`, `regions.py`, `proxy.py` |
+| AI edit and Direct | `edit/autoedit/` — `prompt.py` (system prompt, answer schema), `plan.py` (reading Claude's answer), `assemble.py` (the cut), `camera.py` (shots), `effects.py` (sounds, overlays, texts, spots), `run.py` (gather, ask, apply); `edit/direct.py` |
 | Sound and overlay library | `edit/sounds.py`, `edit/overlays.py` |
 | Brand, intro, thumbnail | `brand/` — `brand.py`, `intro.py`, `thumb.py`, `art.py`, `sfx.py`, `service.py` |
 | Google Drive upload | `upload/drive.py`, `upload/login.py` |
@@ -41,7 +42,7 @@ the worker status and the Drive cache. Never use module globals for these: tests
 
 | Page / URLs | Routes | Template | Script |
 |---|---|---|---|
-| `/`, `/add`, `/video/…` | `routes/streams.py` | `home.html`, `video.html` | `app.js` |
+| `/`, `/add`, `/video/…` (stream page: review, Compilation ideas) | `routes/streams.py` | `home.html`, `video.html` | `app.js` |
 | `/clips`, `/moment/{pk}`, keep/skip, re-cut | `routes/clips.py` | `clips.html`, `moment.html` | `app.js` |
 | Editor API (`/api/moment/…`, `/moment/{pk}/edit`, `render`, `autoedit`, `direct`, `subs`, …) | `routes/editor.py` | `moment.html` | `editor/main.js` (modules, below), `editor.css` |
 | `/brand`, intro and thumbnail endpoints | `routes/brand.py` | `brand.html`, `moment.html` | `maker.js` |

@@ -12,6 +12,9 @@ from typing import Any
 STAGES = ("ingest", "score", "clip", "transcribe", "frames", "analyze", "upload")
 # Only ever run for one moment, when you ask on the dashboard; never part of the pipeline.
 MOMENT_STAGES = ("render", "intro", "short")
+# Run for a whole stream, only when you ask on its page; never part of the pipeline.
+# compile = one Claude call over the whole stream, looking for compilation material.
+VIDEO_STAGES = ("compile",)
 
 
 def sql_time(dt: datetime) -> str:
@@ -31,7 +34,7 @@ def enqueue(conn: sqlite3.Connection, video_pk: int, stage: str, *, moment_pk: i
     the job id, or None if it was running.
 
     params: options for this run only (e.g. which Claude model); re-queueing replaces them."""
-    if stage not in STAGES + MOMENT_STAGES:
+    if stage not in STAGES + MOMENT_STAGES + VIDEO_STAGES:
         raise ValueError(f"Unknown stage {stage!r}")
     if moment_pk is not None and stage not in ("clip", "transcribe", "analyze", "upload", *MOMENT_STAGES):
         raise ValueError("Only clip, transcribe, analyze, upload, render, intro and short can run for a single moment")
@@ -123,5 +126,7 @@ def list_jobs(conn: sqlite3.Connection, *, include_done: bool = False, limit: in
 
 
 def next_stage(stage: str) -> str | None:
+    if stage not in STAGES:          # on-demand stages lead nowhere
+        return None
     i = STAGES.index(stage)
     return STAGES[i + 1] if i + 1 < len(STAGES) else None
