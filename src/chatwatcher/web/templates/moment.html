@@ -246,47 +246,59 @@
   <div data-in-state></div>
 </div>
 
-<div class="card maker" id="thumb" data-thumb="{{ moment.id }}">
+</div>
+
+<div class="card maker th-maker" id="thumb" data-thumb="{{ moment.id }}">
   <div class="maker-head">
     <h2>Thumbnail</h2>
     <div class="ed-kinds" role="tablist" aria-label="Which picture">
       <button type="button" class="small on" role="tab" aria-selected="true" data-th-shape="wide"
               title="The video's thumbnail: thumbnail.jpg, 1280×720">Video 16:9</button>
       <button type="button" class="small" role="tab" aria-selected="false" data-th-shape="tall"
-              title="The Short's cover: short_cover.jpg, 1080×1920, in the Short's layout">Short 9:16</button>
+              title="The Short's cover: short_cover.jpg, 1080×1920">Short 9:16</button>
     </div>
+    <button type="button" class="small primary" data-th-act="ai"
+            title="Claude composes 3 different versions from this clip's frames, her cut-out, words, arrows and your stickers (one Claude call, about a minute). Pick one, then change anything.">✨ Claude's versions</button>
     <span class="spacer"></span>
     <small class="muted" data-th-saved></small>
   </div>
-  <div class="thumb-view" data-th-view>
-    <img data-th-img alt="Thumbnail preview" width="1280" height="720">
-    <span class="thumb-busy" data-th-busy hidden>drawing…</span>
-  </div>
-  <p class="faint maker-help"><small data-th-help>Click the picture to centre the zoom there.</small></p>
-  <label class="thumb-text"><span><small>Text · <code>*stars*</code> make a word {{ 'yellow' }} · Enter starts a new line</small></span>
-    <textarea data-th-text rows="2" maxlength="120" aria-label="Thumbnail text"></textarea></label>
-  <div class="actions">
-    <small class="muted">Frame <span class="mono" data-th-t></span></small>
-    <button type="button" class="small" data-th-act="playhead" title="Use the frame at the editor's playhead">Use playhead frame</button>
-    <button type="button" class="small" data-th-act="claude" title="Claude's frame and text, zoomed on the face box">Claude's pick</button>
-  </div>
-  <div class="actions">
-    <label class="muted thumb-zoom"><small>zoom <span data-th-zoomv></span></small>
-      <input type="range" min="1" max="3" step="0.05" data-th-zoom aria-label="Zoom"></label>
-    <label class="muted"><small>style</small>
-      <select data-th-style aria-label="Style"><option value="band">band</option><option value="shade">shade</option><option value="clean">clean</option></select></label>
-    <label class="muted" data-th-only="wide"><small>text on the</small>
-      <select data-th-side aria-label="Text side"><option value="auto">free side</option><option value="left">left</option><option value="right">right</option></select></label>
-    <label class="muted" data-th-only="tall" hidden><small>text at the</small>
-      <select data-th-place aria-label="Text position"><option value="top">top</option><option value="middle">middle</option><option value="bottom">bottom (above YouTube's title)</option></select></label>
-    <label class="muted"><input type="checkbox" data-th-logo> <small>badge</small></label>
-    <label class="muted"><input type="checkbox" data-th-tilt> <small>tilt</small></label>
+  <div class="th-ai" data-th-ai hidden></div>
+  <div class="th-body">
+    <div class="th-left">
+      <div class="th-stage" data-th-stage tabindex="0" aria-label="Thumbnail: drag layers to move them">
+        <img class="th-bgimg" data-th-bg alt="" hidden draggable="false">
+        <div class="th-sel" data-th-sel hidden>
+          <i data-h="nw"></i><i data-h="ne"></i><i data-h="sw"></i><i data-h="se"></i>
+          <i data-h="side" class="e"></i><i data-h="side" class="w"></i><i data-h="rot" class="rot"></i>
+        </div>
+        <div class="th-guides" data-th-guides></div>
+        <span class="thumb-busy" data-th-busy hidden>drawing…</span>
+      </div>
+      <p class="faint maker-help"><small><span data-th-help></span> Drag to move (it snaps to the middle and thirds; Shift: free) ·
+        corners resize · the top knob turns · a text's side handles set where it wraps · Del removes · Ctrl+Z undoes.</small></p>
+      <div class="actions th-add">
+        <small class="muted">Add</small>
+        <button type="button" class="small" data-th-add="text">Text</button>
+        <button type="button" class="small" data-th-add="cutout" title="Her, cut out of the frame at the editor's playhead">Cut-out</button>
+        <button type="button" class="small" data-th-add="frame" title="The frame at the editor's playhead, as a picture in the picture">Frame</button>
+        <button type="button" class="small" data-th-add="arrow">Arrow</button>
+        <button type="button" class="small" data-th-add="ring">Ring</button>
+        <button type="button" class="small" data-th-add="emoji">Emoji</button>
+        <button type="button" class="small" data-th-add="burst">Burst</button>
+        <button type="button" class="small" data-th-add="logo">Logo</button>
+        <select data-th-sticker aria-label="Add a sticker from the library"></select>
+      </div>
+    </div>
+    <div class="th-side">
+      <div class="th-layers" data-th-layers></div>
+      <div class="th-props" data-th-props></div>
+    </div>
   </div>
   <div class="actions maker-go">
     <button type="button" class="primary" data-th-act="save" data-th-save>Save thumbnail.jpg</button>
+    <button type="button" class="small" data-th-act="check" title="The picture exactly as it will be saved, in a new tab">Check the final picture</button>
     <span data-th-links></span>
   </div>
-</div>
 </div>
 </details>
 {% endif %}
@@ -372,4 +384,4 @@
   </div>
 </div>
 {% endblock %}
-{% block scripts %}{% if clip and clip.exists %}<script type="module" src="{{ asset('editor/main.js') }}"></script><script src="{{ asset('maker.js') }}"></script>{% endif %}{% endblock %}
+{% block scripts %}{% if clip and clip.exists %}<script type="module" src="{{ asset('editor/main.js') }}"></script><script src="{{ asset('maker.js') }}"></script><script src="{{ asset('thumb.js') }}"></script>{% endif %}{% endblock %}

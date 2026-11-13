@@ -226,3 +226,68 @@ def fingerprint(cfg: Config, b: Brand) -> str:
             st = Path(p).stat()
             parts.append([str(p), st.st_size, int(st.st_mtime)])
     return hashlib.sha1(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:16]
+
+
+# ── stickers ─────────────────────────────────────────────────────────────────
+# Pictures you put on thumbnails (a reaction face, a "?!", a game item): PNGs in
+# data/brand/stickers/, transparent edges trimmed. Claude can place them by name.
+
+STICKER_SUFFIXES = {".png", ".webp", ".jpg", ".jpeg", ".svg"}
+STICKER_PX = 1024
+MAX_STICKERS = 60
+
+
+def sticker_dir(cfg: Config) -> Path:
+    return brand_dir(cfg) / "stickers"
+
+
+def list_stickers(cfg: Config) -> list[str]:
+    d = sticker_dir(cfg)
+    return sorted(p.name for p in d.glob("*.png")) if d.is_dir() else []
+
+
+def sticker_name(original: str) -> str:
+    stem = re.sub(r"[^\w\-]+", "_", Path(original).stem, flags=re.UNICODE).strip("_").lower()[:40]
+    return (stem or "sticker") + ".png"
+
+
+def import_sticker(cfg: Config, src: Path, original: str = "") -> str:
+    """A picture → data/brand/stickers/<name>.png (RGBA, trimmed, at most 1024 px). Returns its name."""
+    from PIL import Image, UnidentifiedImageError
+    from chatwatcher.clip.media import _exe
+    suffix = Path(original or src.name).suffix.lower()
+    if suffix not in STICKER_SUFFIXES:
+        raise BrandError("A sticker must be a .png, .webp, .jpg or .svg file.")
+    if src.stat().st_size > MAX_LOGO_BYTES:
+        raise BrandError("That sticker is bigger than 10 MB.")
+    if len(list_stickers(cfg)) >= MAX_STICKERS:
+        raise BrandError(f"The library holds {MAX_STICKERS} stickers; remove one first.")
+    out_dir = sticker_dir(cfg)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    raster = src
+    if suffix == ".svg":
+        raster = out_dir / ".svg.png"
+        r = subprocess.run([_exe("ffmpeg"), "-v", "error", "-y", "-width", str(STICKER_PX), "-keep_ar", "1",
+                            "-i", str(src), "-frames:v", "1", str(raster)], capture_output=True, text=True, timeout=60)
+        if r.returncode != 0 or not raster.is_file():
+            raise BrandError("Couldn't draw that SVG.")
+    try:
+        img = Image.open(raster).convert("RGBA")
+    except (UnidentifiedImageError, OSError) as e:
+        raise BrandError(f"That isn't a picture this app can read ({e}).")
+    finally:
+        if raster != src:
+            raster.unlink(missing_ok=True)
+    box = img.getchannel("A").getbbox()
+    if box is None:
+        raise BrandError("That picture is completely transparent.")
+    img = img.crop(box)
+    img.thumbnail((STICKER_PX, STICKER_PX), Image.LANCZOS)
+    name = sticker_name(original or src.name)
+    img.save(out_dir / name)
+    return name
+
+
+def remove_sticker(cfg: Config, name: str) -> None:
+    if name in list_stickers(cfg):
+        (sticker_dir(cfg) / name).unlink(missing_ok=True)

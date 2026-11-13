@@ -522,6 +522,10 @@ input.hex:invalid, input.hex.bad { outline: 2px solid var(--bad); }
 .brand-colours input[type=color] { width: 2.2rem; height: 1.6rem; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: none; }
 .brand-preview img:first-child { display: block; width: 100%; height: auto; border-radius: 8px; }
 .brand-logo { border-radius: 50%; }
+.sticker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: .6rem; margin: .5rem 0; }
+.sticker-grid figure { margin: 0; text-align: center; }
+.sticker-grid img { width: 100%; aspect-ratio: 1; object-fit: contain; background: repeating-conic-gradient(var(--surface-2) 0 25%, transparent 0 50%) 0 0 / 16px 16px; border-radius: 6px; }
+.sticker-grid figcaption { display: flex; align-items: center; justify-content: center; gap: .2rem; overflow: hidden; }
 
 /* Stream page: compilation ideas (compile/) */
 .compilation { border-top: 1px solid var(--border); padding: .8rem 0 .2rem; }

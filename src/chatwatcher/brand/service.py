@@ -18,8 +18,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from chatwatcher.brand import brand as br
+from chatwatcher.brand import canvas as cv
+from chatwatcher.brand import cutout as co
 from chatwatcher.brand import intro as it
+from chatwatcher.brand import layers as L
 from chatwatcher.brand import thumb as th
+from chatwatcher.brand import thumbai as ta
 from chatwatcher.config import Config
 from chatwatcher.edit import regions
 from chatwatcher.edit import service as es
@@ -222,14 +226,26 @@ def intro_for_edit(cfg: Config, conn: sqlite3.Connection, pk: int, clip: es.Clip
 
 
 # ── thumbnail ────────────────────────────────────────────────────────────────
+# A thumbnail is layers (brand.layers), drawn by brand.canvas. Saved in `thumbs` with
+# times in stream time: layers_json (thumbnail.jpg), short_layers_json (short_cover.jpg),
+# ideas_json (Claude's versions, brand.thumbai, made by the 'thumb' job). Cut-outs and the
+# versions' pictures are kept in the clip's thumbs/ folder.
+
+THUMBS_DIR = "thumbs"
 
 _frames: OrderedDict[tuple[str, float, float], bytes] = OrderedDict()
 _frames_lock = threading.Lock()
 
 
+class ThumbAIError(Exception):
+    def __init__(self, message: str, kind: str = "error"):
+        super().__init__(message)
+        self.kind = kind
+
+
 def frame_at(path: Path, t: float):
-    """One frame of the clip as a picture (the last few are kept, so moving the text or
-    zoom doesn't decode the video again)."""
+    """One frame of the clip as a picture (the last few are kept, so moving a layer
+    doesn't decode the video again)."""
     from PIL import Image
     from chatwatcher.clip.media import MediaError, _exe
     key = (str(path), path.stat().st_mtime, round(t, 2))
@@ -243,42 +259,13 @@ def frame_at(path: Path, t: float):
         raise MediaError("Couldn't read that frame of the clip.")
     with _frames_lock:
         _frames[key] = r.stdout
-        while len(_frames) > 6:
+        while len(_frames) > 8:
             _frames.popitem(last=False)
     return Image.open(io.BytesIO(r.stdout))
 
 
 def _thumb_row(conn: sqlite3.Connection, pk: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM thumbs WHERE moment_id = ?", (pk,)).fetchone()
-
-
-def thumb_defaults(conn: sqlite3.Connection, pk: int, clip: es.ClipRef, shape: str = "wide") -> dict[str, Any]:
-    """Claude's frame and text; the thumbnail zoomed on the channel's face box if there is
-    one, the Short's cover as the Short shows it."""
-    a = es.latest_analysis(conn, pk)
-    pick = (a.get("thumbnail") or {})
-    want = pick.get("frame_file") or ""
-    t = None
-    row = conn.execute("SELECT frames_json FROM clips WHERE moment_id = ?", (pk,)).fetchone()
-    for f in json.loads(row["frames_json"] or "[]") if row else []:
-        if f.get("file") == want:
-            t = float(f.get("clip_s", 0))
-    if t is None:
-        prev = conn.execute("SELECT frames_json FROM previews WHERE moment_id = ?", (pk,)).fetchone()
-        for f in json.loads(prev["frames_json"] or "[]") if prev else []:
-            if f.get("file") == want and f.get("stream_s") is not None:
-                t = float(f["stream_s"]) - clip.zero_s
-    if t is None:
-        m = conn.execute("SELECT peak_s FROM moments WHERE id = ?", (pk,)).fetchone()
-        t = float(m["peak_s"]) - clip.zero_s if m else clip.duration_s / 2
-    picked = {"t": min(max(t, 0.0), max(0.0, clip.duration_s - 0.05)), "text": pick.get("text", "")}
-    if shape == "tall":
-        return th.clean(dict(th.TALL_DEFAULTS) | picked, clip.duration_s, th.TALL_DEFAULTS)
-    s = dict(th.DEFAULTS) | picked
-    face = regions.get(conn, regions.scope_for(conn, pk)[0]).get("face")
-    if face:
-        s |= {"cx": round(face["x"] + face["w"] / 2, 4), "cy": round(face["y"] + face["h"] / 2, 4), "zoom": 1.15}
-    return th.clean(s, clip.duration_s)
 
 
 def _shape(shape: Any) -> str:
@@ -299,26 +286,157 @@ def _short_layout(conn: sqlite3.Connection, pk: int, clip: es.ClipRef) -> tuple[
     return layout, lay.panels(layout, regions.get(conn, regions.scope_for(conn, pk)[0]), sw, sh)
 
 
+def cutout_of(cfg: Config, clip: es.ClipRef, t: float, box: tuple[float, float, float, float]):
+    """Her cut-out from the frame at t (kept in thumbs/ once made). Raises CutoutError."""
+    from PIL import Image
+    d = clip.folder / THUMBS_DIR
+    f = d / co.cache_name(t, box, clip.path.stat().st_mtime)
+    if f.is_file():
+        with Image.open(f) as im:
+            return im.convert("RGBA")
+    img = co.cut(cfg.paths.data_dir, frame_at(clip.path, t), box)
+    d.mkdir(exist_ok=True)
+    tmp = f.with_suffix(".tmp.png")
+    img.save(tmp)
+    tmp.replace(f)
+    return img
+
+
+def _source(cfg: Config, conn: sqlite3.Connection, pk: int, clip: es.ClipRef, shape: str) -> cv.Source:
+    b = br.get(conn)
+    logo, title_font, text_font = _fonts(cfg, b)
+    picture = lambda t: frame_at(clip.path, t)                       # noqa: E731
+    if shape == "tall":
+        _layout, panels = _short_layout(conn, pk, clip)
+        picture = lambda t: th.compose(frame_at(clip.path, t), panels)  # noqa: E731
+    return cv.Source(th.canvas_size(shape), b, logo, {"title": title_font, "text": text_font}, picture,
+                     lambda t: frame_at(clip.path, t), lambda t, box: cutout_of(cfg, clip, t, box),
+                     br.sticker_dir(cfg))
+
+
+def _claude_pick(conn: sqlite3.Connection, pk: int, clip: es.ClipRef) -> tuple[float, str]:
+    """The clip analysis's thumbnail frame (clip time) and words."""
+    a = es.latest_analysis(conn, pk)
+    pick = (a.get("thumbnail") or {})
+    want = pick.get("frame_file") or ""
+    t = None
+    for f in _frames_of(conn, pk):
+        if f.get("file") == want:
+            t = float(f.get("clip_s", 0))
+    if t is None:
+        prev = conn.execute("SELECT frames_json FROM previews WHERE moment_id = ?", (pk,)).fetchone()
+        for f in json.loads(prev["frames_json"] or "[]") if prev else []:
+            if f.get("file") == want and f.get("stream_s") is not None:
+                t = float(f["stream_s"]) - clip.zero_s
+    if t is None:
+        m = conn.execute("SELECT peak_s FROM moments WHERE id = ?", (pk,)).fetchone()
+        t = float(m["peak_s"]) - clip.zero_s if m else clip.duration_s / 2
+    return min(max(t, 0.0), max(0.0, clip.duration_s - 0.05)), str(pick.get("text") or "")
+
+
+def _frames_of(conn: sqlite3.Connection, pk: int) -> list[dict[str, Any]]:
+    row = conn.execute("SELECT frames_json FROM clips WHERE moment_id = ?", (pk,)).fetchone()
+    try:
+        return [f for f in json.loads(row["frames_json"] or "[]") if f.get("file")] if row else []
+    except json.JSONDecodeError:
+        return []
+
+
+def default_layers(conn: sqlite3.Connection, pk: int, clip: es.ClipRef, shape: str = "wide") -> list[dict[str, Any]]:
+    """Before you make one: the analysis's frame (zoomed on the face box) and its words."""
+    t, text = _claude_pick(conn, pk, clip)
+    if shape == "tall":
+        return L.clean(L.from_settings({"t": t, "text": text, "place": "top"}, aspect_tall=True), clip.duration_s)
+    s: dict[str, Any] = {"t": t, "text": text, "zoom": 1.0}
+    face = regions.get(conn, regions.scope_for(conn, pk)[0]).get("face")
+    if face:
+        s |= {"cx": face["x"] + face["w"] / 2, "cy": face["y"] + face["h"] / 2, "zoom": 1.15,
+              "side": "left" if face["x"] + face["w"] / 2 >= 0.5 else "right"}
+    return L.clean(L.from_settings(s), clip.duration_s)
+
+
+def _stored_layers(raw: str | None, clip: es.ClipRef) -> list[dict[str, Any]] | None:
+    if not raw:
+        return None
+    try:
+        return L.clean(L.shift_times(json.loads(raw), -clip.zero_s), clip.duration_s)
+    except (json.JSONDecodeError, L.LayerError, TypeError, KeyError):
+        return None
+
+
+def _ideas(conn: sqlite3.Connection, pk: int, clip: es.ClipRef, shape: str) -> dict[str, Any]:
+    row = _thumb_row(conn, pk)
+    try:
+        allx = json.loads(row["ideas_json"]) if row and row["ideas_json"] else {}
+    except json.JSONDecodeError:
+        allx = {}
+    got = allx.get(shape) or {}
+    vs = []
+    for i, v in enumerate(got.get("versions") or []):
+        layers = _stored_layers(json.dumps(v.get("layers") or []), clip)
+        if layers:
+            f = clip.folder / THUMBS_DIR / f"idea_{shape}_{i}.jpg"
+            vs.append({"name": v.get("name", ""), "why": v.get("why", ""), "warnings": v.get("warnings", []),
+                       "lines": v.get("lines", []), "layers": layers,
+                       "url": f"/moment/{pk}/thumb/idea/{i}.jpg?shape={shape}&v={int(f.stat().st_mtime)}"
+                       if f.is_file() else None})
+    return {"versions": vs, "note": got.get("note", ""), "at": got.get("at"), "model": got.get("model")}
+
+
+def current_layers(conn: sqlite3.Connection, pk: int, clip: es.ClipRef,
+                   shape: str = "wide") -> tuple[list[dict[str, Any]], str]:
+    """(the thumbnail's layers, where they come from: saved | old | claude | default)."""
+    row = _thumb_row(conn, pk)
+    mine = _stored_layers(row["short_layers_json" if shape == "tall" else "layers_json"], clip) if row else None
+    if mine:
+        return mine, "saved"
+    old = json.loads(row["short_json" if shape == "tall" else "settings_json"] or "{}") if row else {}
+    if old:                                     # made before thumbnails were layers
+        old["t"] = float(old.get("t_stream", clip.zero_s)) - clip.zero_s
+        return L.clean(L.from_settings(old, aspect_tall=shape == "tall"), clip.duration_s), "old"
+    ideas = _ideas(conn, pk, clip, shape)["versions"]
+    if ideas:
+        return ideas[0]["layers"], "claude"
+    return default_layers(conn, pk, clip, shape), "default"
+
+
+def ai_state(conn: sqlite3.Connection, pk: int) -> dict[str, Any]:
+    job = conn.execute("SELECT status, error, params_json FROM jobs WHERE moment_id = ? AND stage = 'thumb'",
+                       (pk,)).fetchone()
+    if not job:
+        return {"state": "none"}
+    params = json.loads(job["params_json"] or "{}")
+    out = {"state": {"pending": "queued"}.get(job["status"], job["status"]), "shape": params.get("shape", "wide")}
+    if job["status"] == "error":
+        out["error"] = (job["error"] or "")[:600]
+    if job["status"] == "pending":
+        busy = conn.execute("SELECT stage FROM jobs WHERE status = 'running' LIMIT 1").fetchone()
+        out["behind"] = busy["stage"] if busy else None
+    return out
+
+
 def load_thumb(cfg: Config, conn: sqlite3.Connection, pk: int, shape: str = "wide") -> dict[str, Any]:
     _shape(shape)
     clip = es.clip_ref(conn, pk)
-    base = thumb_defaults(conn, pk, clip, shape)
+    layers, source = current_layers(conn, pk, clip, shape)
     row = _thumb_row(conn, pk)
-    col, made_col = ("short_json", "short_made_at") if shape == "tall" else ("settings_json", "made_at")
-    settings = base
-    saved = json.loads(row[col]) if row and row[col] else {}
-    if saved:                                   # (a cover saved first leaves {} for the thumbnail)
-        saved["t"] = float(saved.get("t_stream", clip.zero_s)) - clip.zero_s
-        settings = th.clean(saved, clip.duration_s, base)
+    made_col = "short_made_at" if shape == "tall" else "made_at"
     f = thumb_path(clip, shape)
     q = "?shape=tall&" if shape == "tall" else "?"
     made = {"url": f"/media/thumb/{pk}{q}v={int(f.stat().st_mtime)}", "path": str(f), "at": row[made_col] if row else None} \
         if f.is_file() else None
-    out = {"shape": shape, "settings": settings, "defaults": base, "saved": made, "duration": clip.duration_s,
-           "styles": list(th.STYLES), "sides": list(th.SIDES), "places": list(th.PLACES),
-           "zoom_range": list(th.ZOOM_RANGE), "has_face": base.get("zoom", 1) != 1,
-           "brand": {"name": br.get(conn).name}, "frame": [clip.width or 1920, clip.height or 1080],
-           "size": [th.TW, th.TH] if shape == "tall" else [th.W, th.H]}
+    b = br.get(conn)
+    cid = conn.execute("SELECT id FROM clips WHERE moment_id = ?", (pk,)).fetchone()
+    frames = [{"n": i, "t": round(float(fr.get("clip_s", 0)), 3), "peak": bool(fr.get("is_peak")),
+               "url": f"/media/frame/{cid['id']}/{Path(fr['file']).name}" if cid else None}
+              for i, fr in enumerate(_frames_of(conn, pk), 1)]
+    out = {"shape": shape, "layers": layers, "source": source, "saved": made, "duration": clip.duration_s,
+           "size": list(th.canvas_size(shape)), "pad": L.PAD, "frame": list(es.size(clip)), "frames": frames,
+           "regions": regions.get(conn, regions.scope_for(conn, pk)[0]), "stickers": br.list_stickers(cfg),
+           "colours": {n: getattr(b, n) for n in L.BRAND_COLOURS} | L.COLOURS,
+           "cutouts": co.model_path(cfg.paths.data_dir) is not None, "brand": {"name": b.name, "logo": b.logo},
+           "ideas": _ideas(conn, pk, clip, shape), "ai": ai_state(conn, pk),
+           "spec": {k: (v if k == "bg" else L.COMMON | v) for k, v in L.FIELDS.items()}}
     if shape == "tall":
         layout, _ps = _short_layout(conn, pk, clip)
         out["layout"] = layout["type"]
@@ -326,50 +444,143 @@ def load_thumb(cfg: Config, conn: sqlite3.Connection, pk: int, shape: str = "wid
     return out
 
 
-def draw_thumb(cfg: Config, conn: sqlite3.Connection, pk: int, raw: Any,
-               shape: str = "wide") -> tuple[bytes, dict[str, Any]]:
-    """The thumbnail (or the Short's cover) for these settings (clip time) as JPEG bytes,
-    and the clean settings."""
+def _clean_layers(raw: Any, clip: es.ClipRef) -> list[dict[str, Any]]:
+    try:
+        return L.clean(raw, clip.duration_s)
+    except L.LayerError as e:
+        raise es.EditError(str(e), "invalid")
+
+
+def sprite_image(cfg: Config, conn: sqlite3.Connection, pk: int, raw: Any, shape: str = "wide") -> tuple[bytes, str]:
+    """One layer drawn on its own, for the editor: (bytes, media type). The background is a
+    JPEG of the whole picture; a layer is a PNG with layers.PAD of margin round it."""
     _shape(shape)
     clip = es.clip_ref(conn, pk)
     try:
-        s = th.clean(raw if isinstance(raw, dict) else {}, clip.duration_s, thumb_defaults(conn, pk, clip, shape))
-    except th.ThumbError as e:
+        ly = L.clean_one(raw, clip.duration_s)
+    except L.LayerError as e:
         raise es.EditError(str(e), "invalid")
-    b = br.get(conn)
-    logo, title_font, text_font = _fonts(cfg, b)
-    frame = frame_at(clip.path, s["t"])
-    if shape == "tall":
-        _layout, ps = _short_layout(conn, pk, clip)
-        img = th.draw_tall(th.compose(frame, ps), s, b, logo, title_font, text_font)
-    else:
-        img = th.draw(frame, s, b, logo, title_font, text_font)
+    src = _source(cfg, conn, pk, clip, shape)
+    try:
+        img = cv.sprite(ly, src)
+    except co.CutoutError as e:
+        raise es.EditError(str(e), "invalid")
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90, optimize=True)
-    return buf.getvalue(), s
+    if ly["kind"] == "bg":
+        img.convert("RGB").save(buf, "JPEG", quality=88)
+        return buf.getvalue(), "image/jpeg"
+    img.save(buf, "PNG", compress_level=1)
+    return buf.getvalue(), "image/png"
+
+
+def draw_thumb(cfg: Config, conn: sqlite3.Connection, pk: int, raw: Any,
+               shape: str = "wide") -> tuple[bytes, list[dict[str, Any]], list[str]]:
+    """The thumbnail (or the Short's cover) for these layers (clip time) as JPEG bytes, the
+    clean layers, and what couldn't be drawn."""
+    _shape(shape)
+    clip = es.clip_ref(conn, pk)
+    layers = _clean_layers(raw, clip)
+    warnings: list[str] = []
+    img = cv.render(layers, _source(cfg, conn, pk, clip, shape),
+                    on_error=lambda ly, e: warnings.append(f"Left out a {ly['kind']} layer: {e}"))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=92, optimize=True)
+    return buf.getvalue(), layers, warnings
 
 
 def save_thumb(cfg: Config, conn: sqlite3.Connection, pk: int, raw: Any, shape: str = "wide") -> dict[str, Any]:
     _shape(shape)
     clip = es.clip_ref(conn, pk)
-    data, s = draw_thumb(cfg, conn, pk, raw, shape)
+    data, layers, warnings = draw_thumb(cfg, conn, pk, raw, shape)
     dest = thumb_path(clip, shape)
     tmp = dest.with_suffix(".tmp")
     tmp.write_bytes(data)
     tmp.replace(dest)
-    stored = json.dumps({k: v for k, v in s.items() if k != "t"} | {"t_stream": round(s["t"] + clip.zero_s, 3)},
-                        ensure_ascii=False)
+    stored = json.dumps(L.shift_times(layers, clip.zero_s), ensure_ascii=False)
+    col, made = ("short_layers_json", "short_made_at") if shape == "tall" else ("layers_json", "made_at")
+    conn.execute(f"""INSERT INTO thumbs (moment_id, settings_json, {col}, {made}) VALUES (?, '{{}}', ?, datetime('now'))
+                     ON CONFLICT (moment_id) DO UPDATE SET {col} = excluded.{col}, {made} = excluded.{made}""",
+                 (pk, stored))
+    return load_thumb(cfg, conn, pk, shape) | {"warnings": warnings}
+
+
+def idea_path(clip: es.ClipRef, shape: str, i: int) -> Path:
+    return clip.folder / THUMBS_DIR / f"idea_{_shape(shape)}_{int(i)}.jpg"
+
+
+def _board(cfg: Config, conn: sqlite3.Connection, pk: int, clip: es.ClipRef, shape: str, src: cv.Source,
+           frames: list[dict[str, Any]]) -> ta.Board:
+    from chatwatcher.edit import layout as lay
+    boxes = regions.get(conn, regions.scope_for(conn, pk)[0])
+    on_picture: Callable[[float, float], tuple[float, float] | None] = lambda x, y: (x, y)   # noqa: E731
+    pw, ph = es.size(clip)
     if shape == "tall":
-        conn.execute("""INSERT INTO thumbs (moment_id, settings_json, short_json, short_made_at)
-                        VALUES (?, ?, ?, datetime('now'))
-                        ON CONFLICT (moment_id) DO UPDATE SET short_json = excluded.short_json,
-                            short_made_at = excluded.short_made_at""",
-                     (pk, json.dumps({}), stored))
-    else:
-        conn.execute("""INSERT INTO thumbs (moment_id, settings_json, made_at) VALUES (?, ?, datetime('now'))
-                        ON CONFLICT (moment_id) DO UPDATE SET settings_json = excluded.settings_json,
-                            made_at = excluded.made_at""", (pk, stored))
-    return load_thumb(cfg, conn, pk, shape)
+        _layout, panels = _short_layout(conn, pk, clip)
+        on_picture = lambda x, y: lay.map_point(x, y, panels)                                 # noqa: E731
+        pw, ph = th.canvas_size("tall")
+
+    def measure(ly: dict[str, Any]) -> tuple[float, float]:
+        clean = L.clean_one(ly, clip.duration_s)
+        return cv.content_size(clean, cv.sprite(clean, src), src)
+    return ta.Board(shape, src.size, [float(f.get("clip_s", 0)) for f in frames], boxes, (pw, ph), on_picture,
+                    measure, br.list_stickers(cfg))
+
+
+def make_ideas(cfg: Config, conn: sqlite3.Connection, pk: int, shape: str = "wide", *, runner: Any = None,
+               on_step: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Ask Claude for thumbnail versions of the clip, place them, draw each, and keep them
+    (ideas_json and thumbs/idea_<shape>_<n>.jpg). Raises ThumbAIError."""
+    from chatwatcher.analyze.claude_runner import ClaudeError, ClaudeRunner
+    from chatwatcher.analyze.sheet import contact_sheet
+    say = on_step or (lambda _m: None)
+    _shape(shape)
+    if not cfg.claude.enabled:
+        raise ThumbAIError("claude.enabled is false in the config.", "disabled")
+    clip = es.clip_ref(conn, pk)
+    frames = _frames_of(conn, pk)
+    if not frames:
+        raise ThumbAIError("This clip has no frames to choose from (download it again).", "invalid")
+    try:
+        co.download(cfg.paths.data_dir)
+    except co.CutoutError as e:                  # cut-outs become framed crops
+        say(str(e))
+    sheet = contact_sheet(clip.folder, frames)
+    src = _source(cfg, conn, pk, clip, shape)
+    a = es.latest_analysis(conn, pk)
+    peak = float(es.meta(clip).get("peak_clip_s") or clip.duration_s / 2)
+    words = [ln["text"] for ln in es.transcript_lines(clip.folder) if abs(ln["t"] - peak) <= 20]
+    prompt = ta.build_prompt(shape=shape, meta=es.meta(clip), analysis=a, frames=frames,
+                             boxes=regions.get(conn, regions.scope_for(conn, pk)[0]), stickers=br.list_stickers(cfg),
+                             brand=src.brand, words=words)
+    say("asking Claude for thumbnail versions")
+    try:
+        runner = runner or ClaudeRunner(cfg.claude)
+        res = runner.run(prompt, ta.schema(), system=ta.SYSTEM.format(language=cfg.claude.output_language),
+                         cwd=clip.folder, effort=cfg.claude.edit_effort, images=[sheet] if sheet else None)
+    except ClaudeError as e:
+        raise ThumbAIError(str(e), e.kind) from e
+    board = _board(cfg, conn, pk, clip, shape, src, frames)
+    ideas = ta.read(res.data, board, clip.duration_s)
+    if not ideas:
+        raise ThumbAIError("Claude's answer had no versions.", "bad_output")
+    (clip.folder / THUMBS_DIR).mkdir(exist_ok=True)
+    for old in (clip.folder / THUMBS_DIR).glob(f"idea_{shape}_*.jpg"):
+        old.unlink()
+    versions = []
+    for i, idea in enumerate(ideas):
+        say(f"drawing version {i + 1}: {idea.name}")
+        img = cv.render(idea.layers, src, on_error=lambda ly, e, w=idea.warnings: w.append(f"Left out a {ly['kind']}: {e}"))
+        img.save(idea_path(clip, shape, i), "JPEG", quality=90)
+        versions.append({"name": idea.name, "why": idea.why, "warnings": idea.warnings, "lines": idea.lines,
+                         "layers": L.shift_times(idea.layers, clip.zero_s)})
+    row = _thumb_row(conn, pk)
+    allx = json.loads(row["ideas_json"]) if row and row["ideas_json"] else {}
+    allx[shape] = {"versions": versions, "note": str(res.data.get("note") or "")[:500], "model": res.model,
+                   "at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "usage": res.usage}
+    conn.execute("""INSERT INTO thumbs (moment_id, settings_json, ideas_json) VALUES (?, '{}', ?)
+                    ON CONFLICT (moment_id) DO UPDATE SET ideas_json = excluded.ideas_json""",
+                 (pk, json.dumps(allx, ensure_ascii=False)))
+    return {"versions": len(versions), "warnings": sum(len(v["warnings"]) for v in versions), "model": res.model}
 
 
 # ── the brand page's preview ─────────────────────────────────────────────────

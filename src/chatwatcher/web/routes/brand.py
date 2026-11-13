@@ -22,8 +22,17 @@ class IntroIn(BaseModel):
 
 
 class ThumbIn(BaseModel):
-    settings: Any = None      # {t, text, zoom, cx, cy, side, place, style, logo, tilt}; t in clip time
+    layers: Any = None        # brand.layers: [{id, kind, x, y, w, rot, …}], t in clip time
     shape: str = "wide"       # wide: thumbnail.jpg 1280×720 | tall: the Short's cover, short_cover.jpg 1080×1920
+
+
+class SpriteIn(BaseModel):
+    layer: Any = None
+    shape: str = "wide"
+
+
+class ThumbAIIn(BaseModel):
+    shape: str = "wide"
 
 
 def router(ctx: Ctx) -> APIRouter:
@@ -87,18 +96,26 @@ def router(ctx: Ctx) -> APIRouter:
         except (EditError, MediaError) as e:
             return edit_error(e)
 
-    @r.get("/moment/{pk}/thumb.jpg")
-    def thumb_preview(pk: int, s: str = "{}", shape: str = "wide", conn=Depends(get_conn)):
-        """The thumbnail for the settings in ?s= (JSON), drawn now and not saved."""
+    @r.post("/moment/{pk}/thumb/sprite")
+    def thumb_sprite(pk: int, body: SpriteIn, conn=Depends(get_conn)):
+        """One layer drawn on its own, for the thumbnail maker (brand.canvas.sprite)."""
+        from fastapi.responses import Response
+        from chatwatcher.brand.service import sprite_image
+        from chatwatcher.edit.service import EditError
+        try:
+            data, mime = sprite_image(cfg, conn, pk, body.layer, body.shape)
+        except (EditError, MediaError) as e:
+            return edit_error(e)
+        return Response(data, media_type=mime, headers={"Cache-Control": "no-store"})
+
+    @r.post("/moment/{pk}/thumb/preview")
+    def thumb_preview(pk: int, body: ThumbIn, conn=Depends(get_conn)):
+        """The whole thumbnail for these layers, drawn now and not saved."""
         from fastapi.responses import Response
         from chatwatcher.brand.service import draw_thumb
         from chatwatcher.edit.service import EditError
         try:
-            raw = json.loads(s)
-        except json.JSONDecodeError:
-            raise HTTPException(400, "bad settings")
-        try:
-            data, _settings = draw_thumb(cfg, conn, pk, raw, shape)
+            data, _layers, _warnings = draw_thumb(cfg, conn, pk, body.layers or [], body.shape)
         except (EditError, MediaError) as e:
             return edit_error(e)
         return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
@@ -108,9 +125,49 @@ def router(ctx: Ctx) -> APIRouter:
         from chatwatcher.brand.service import save_thumb
         from chatwatcher.edit.service import EditError
         try:
-            return JSONResponse({"ok": True, **save_thumb(cfg, conn, pk, body.settings or {}, body.shape)})
+            return JSONResponse({"ok": True, **save_thumb(cfg, conn, pk, body.layers or [], body.shape)})
         except (EditError, MediaError) as e:
             return edit_error(e)
+
+    @r.post("/moment/{pk}/thumb/ai")
+    def thumb_ai(pk: int, body: ThumbAIIn, conn=Depends(get_conn)):
+        """Queue Claude's thumbnail versions (the 'thumb' job; it goes ahead of other queued work)."""
+        from chatwatcher.brand.service import ai_state
+        m = conn.execute("SELECT video_id FROM moments WHERE id = ?", (pk,)).fetchone()
+        if m is None:
+            raise HTTPException(404)
+        if body.shape not in ("wide", "tall"):
+            return JSONResponse({"ok": False, "error": "shape must be wide or tall."}, status_code=400)
+        if not cfg.claude.enabled:
+            return JSONResponse({"ok": False, "error": "claude.enabled is false in the config."}, status_code=400)
+        if jobs.enqueue(conn, m["video_id"], "thumb", moment_pk=pk, params={"shape": body.shape}) is None:
+            return JSONResponse({"ok": False, "error": "Claude is making versions right now."}, status_code=409)
+        ctx.poke()
+        return JSONResponse({"ok": True, "ai": ctx.with_worker(ai_state(conn, pk))})
+
+    @r.get("/api/moment/{pk}/thumb/ai")
+    def api_thumb_ai(pk: int, shape: str = "wide", conn=Depends(get_conn)):
+        from chatwatcher.brand.service import _ideas, ai_state
+        from chatwatcher.edit.service import EditError, clip_ref
+        try:
+            clip = clip_ref(conn, pk)
+        except EditError as e:
+            return edit_error(e)
+        if shape not in ("wide", "tall"):
+            raise HTTPException(400)
+        return JSONResponse({"ok": True, "ai": ctx.with_worker(ai_state(conn, pk)), "ideas": _ideas(conn, pk, clip, shape)})
+
+    @r.get("/moment/{pk}/thumb/idea/{i}.jpg")
+    def thumb_idea(pk: int, i: int, shape: str = "wide", conn=Depends(get_conn)):
+        from chatwatcher.brand.service import idea_path
+        from chatwatcher.edit.service import EditError, clip_ref
+        try:
+            p = idea_path(clip_ref(conn, pk), shape, i)
+        except EditError:
+            raise HTTPException(404)
+        if not p.is_file():
+            raise HTTPException(404)
+        return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     # ── brand page ───────────────────────────────────────────────────────────
 
@@ -122,7 +179,7 @@ def router(ctx: Ctx) -> APIRouter:
         made = conn.execute("SELECT (SELECT COUNT(*) FROM intros WHERE rendered_json IS NOT NULL) AS intros, "
                             "(SELECT COUNT(*) FROM thumbs WHERE made_at IS NOT NULL) AS thumbs").fetchone()
         return render(request, "brand.html", brand=b, colours=br.COLOURS, fonts=fonts, made=made,
-                      stamp=br.fingerprint(cfg, b))
+                      stamp=br.fingerprint(cfg, b), stickers=br.list_stickers(cfg))
 
     @r.post("/brand")
     def brand_save(name: str = Form(""), tagline: str = Form(""), deep: str = Form(""), purple: str = Form(""),
@@ -167,6 +224,45 @@ def router(ctx: Ctx) -> APIRouter:
         else:
             raise HTTPException(400)
         return redirect("/brand", msg="Removed.")
+
+    @r.post("/brand/stickers")
+    def brand_sticker_add(files: list[UploadFile] = File(...)):
+        from chatwatcher.brand import brand as br
+        tmp_dir = br.brand_dir(cfg) / ".upload"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        added = []
+        try:
+            for up in files:
+                if not up.filename:
+                    continue
+                tmp = tmp_dir / f"in_{time.time_ns()}{Path(up.filename).suffix[:10]}"
+                try:
+                    size = 0
+                    with open(tmp, "wb") as out:
+                        while chunk := up.file.read(1 << 20):
+                            size += len(chunk)
+                            if size > br.MAX_LOGO_BYTES:
+                                raise br.BrandError(f"{up.filename} is bigger than 10 MB.")
+                            out.write(chunk)
+                    added.append(br.import_sticker(cfg, tmp, up.filename))
+                finally:
+                    tmp.unlink(missing_ok=True)
+        except br.BrandError as e:
+            return redirect("/brand", error=str(e))
+        return redirect("/brand", msg=f"Added {len(added)} sticker(s). Claude can place them on thumbnails by name.")
+
+    @r.post("/brand/stickers/remove/{name}")
+    def brand_sticker_remove(name: str):
+        from chatwatcher.brand import brand as br
+        br.remove_sticker(cfg, name)
+        return redirect("/brand", msg="Sticker removed.")
+
+    @r.get("/brand/stickers/{name}")
+    def brand_sticker(name: str):
+        from chatwatcher.brand import brand as br
+        if name not in br.list_stickers(cfg):
+            raise HTTPException(404)
+        return FileResponse(br.sticker_dir(cfg) / name, media_type="image/png")
 
     @r.get("/brand/logo.png")
     def brand_logo(conn=Depends(get_conn)):

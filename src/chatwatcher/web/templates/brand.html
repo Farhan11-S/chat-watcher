@@ -1,6 +1,40 @@
 {% extends "base.html" %}
-{% block title %}Brand · chat-watcher{% endblock %}
-{% block autorefresh %}0{% endblock %}
+{% block title %}Brand · chat-watcher<div class="card">
+  <h2>Stickers <small class="muted">· {{ stickers | length }}</small></h2>
+  <p class="faint"><small>Pictures for thumbnails: a reaction face, a "?!", a game item, your mascot. PNG or WebP with a
+    transparent background works best (edges are trimmed). In the thumbnail maker they're under <b>+ Sticker</b>, and
+    Claude can place them by name, so name the files for what they show (<code>shocked_chibi.png</code>).</small></p>
+  {% if stickers %}<div class="sticker-grid">
+    {% for s in stickers %}<figure>
+      <img src="/brand/stickers/{{ s }}" alt="{{ s }}" loading="lazy">
+      <figcaption><small>{{ s[:-4] }}</small>
+        <form method="post" action="/brand/stickers/remove/{{ s }}" class="inline"><button class="small" title="Remove">✕</button></form></figcaption>
+    </figure>{% endfor %}
+  </div>{% endif %}
+  <form method="post" action="/brand/stickers" enctype="multipart/form-data" class="actions">
+    <input type="file" name="files" multiple accept=".png,.webp,.jpg,.jpeg,.svg,image/*" required>
+    <button class="primary">Add stickers</button>
+  </form>
+</div>
+{% endblock %}
+{% block autorefresh %}0<div class="card">
+  <h2>Stickers <small class="muted">· {{ stickers | length }}</small></h2>
+  <p class="faint"><small>Pictures for thumbnails: a reaction face, a "?!", a game item, your mascot. PNG or WebP with a
+    transparent background works best (edges are trimmed). In the thumbnail maker they're under <b>+ Sticker</b>, and
+    Claude can place them by name, so name the files for what they show (<code>shocked_chibi.png</code>).</small></p>
+  {% if stickers %}<div class="sticker-grid">
+    {% for s in stickers %}<figure>
+      <img src="/brand/stickers/{{ s }}" alt="{{ s }}" loading="lazy">
+      <figcaption><small>{{ s[:-4] }}</small>
+        <form method="post" action="/brand/stickers/remove/{{ s }}" class="inline"><button class="small" title="Remove">✕</button></form></figcaption>
+    </figure>{% endfor %}
+  </div>{% endif %}
+  <form method="post" action="/brand/stickers" enctype="multipart/form-data" class="actions">
+    <input type="file" name="files" multiple accept=".png,.webp,.jpg,.jpeg,.svg,image/*" required>
+    <button class="primary">Add stickers</button>
+  </form>
+</div>
+{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
@@ -12,7 +46,7 @@
 <div class="card">
   <div class="brand-grid">
     <form method="post" action="/brand" enctype="multipart/form-data" class="brand-form">
-      <label><span>Channel name <small class="muted">· shown in capitals on the intro and the corner badge</small></span>
+      <label><span>Channel name <small class="muted">· shown in capitals on the intro</small></span>
         <input type="text" name="name" value="{{ brand.name }}" maxlength="40" required></label>
       <label><span>Tagline <small class="muted">· under the name on the intro; empty = none</small></span>
         <input type="text" name="tagline" value="{{ brand.tagline }}" maxlength="80" placeholder="VTuber clips • for the love of the game"></label>
@@ -50,5 +84,22 @@
       <p class="faint"><small>Made so far: {{ made.intros }} intro(s), {{ made.thumbs }} thumbnail(s).</small></p>
     </div>
   </div>
+</div>
+<div class="card">
+  <h2>Stickers <small class="muted">· {{ stickers | length }}</small></h2>
+  <p class="faint"><small>Pictures for thumbnails: a reaction face, a "?!", a game item, your mascot. PNG or WebP with a
+    transparent background works best (edges are trimmed). In the thumbnail maker they're under <b>+ Sticker</b>, and
+    Claude can place them by name, so name the files for what they show (<code>shocked_chibi.png</code>).</small></p>
+  {% if stickers %}<div class="sticker-grid">
+    {% for s in stickers %}<figure>
+      <img src="/brand/stickers/{{ s }}" alt="{{ s }}" loading="lazy">
+      <figcaption><small>{{ s[:-4] }}</small>
+        <form method="post" action="/brand/stickers/remove/{{ s }}" class="inline"><button class="small" title="Remove">✕</button></form></figcaption>
+    </figure>{% endfor %}
+  </div>{% endif %}
+  <form method="post" action="/brand/stickers" enctype="multipart/form-data" class="actions">
+    <input type="file" name="files" multiple accept=".png,.webp,.jpg,.jpeg,.svg,image/*" required>
+    <button class="primary">Add stickers</button>
+  </form>
 </div>
 {% endblock %}

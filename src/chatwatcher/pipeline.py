@@ -71,6 +71,8 @@ def run_stage(cfg: Config, conn: sqlite3.Connection, video_id: str, stage: str, 
             return _render(cfg, conn, moment_id, say, kind="long" if stage == "render" else "short")
         if stage == "intro":
             return _intro(cfg, conn, moment_id, say)
+        if stage == "thumb":
+            return _thumb(cfg, conn, moment_id, attempt, deps, say, shape=params.get("shape", "wide"))
         return {"clip": _clip, "transcribe": _transcribe, "analyze": _analyze, "upload": _upload}[stage](
             cfg, conn, video_id, attempt, deps, say, rank=row["rank"], **_opts(stage, params))
     fn = {"ingest": _ingest, "score": _score, "clip": _clip, "transcribe": _transcribe, "frames": _frames,
@@ -338,6 +340,27 @@ def _intro(cfg, conn, moment_id: int, say) -> StageOutcome:
         return StageOutcome("error", str(e))
     return StageOutcome("done", f"intro rendered: {r['duration_s']:.1f}s, {len(r['teasers'])} teaser(s), "
                                 f"{r['size_bytes'] / 1_048_576:.1f} MB")
+
+
+def _thumb(cfg, conn, moment_id: int, attempt: int, deps, say, shape: str = "wide") -> StageOutcome:
+    """Claude composes thumbnail versions from the clip's frames, her cut-out, words and
+    stickers (brand.thumbai); you pick one in the thumbnail maker."""
+    from chatwatcher.brand.service import ThumbAIError, make_ideas
+    from chatwatcher.clip.media import MediaError
+    from chatwatcher.edit.service import EditError
+    try:
+        r = make_ideas(cfg, conn, moment_id, shape if shape in ("wide", "tall") else "wide", runner=deps.claude,
+                       on_step=say)
+    except ThumbAIError as e:
+        if e.kind == "usage_limit" and attempt < 4:
+            return StageOutcome("retry", str(e), usage_reset_delay(str(e)))
+        if e.kind in ("timeout", "bad_output") and attempt < 2:
+            return StageOutcome("retry", str(e), timedelta(minutes=1))
+        return StageOutcome("error", str(e))
+    except (EditError, MediaError) as e:
+        return StageOutcome("error", str(e))
+    skipped = f", {r['warnings']} line(s) skipped" if r["warnings"] else ""
+    return StageOutcome("done", f"{r['versions']} thumbnail version(s){skipped}")
 
 
 # ── bookkeeping shared by the worker and `cw run` ─────────────────────────────

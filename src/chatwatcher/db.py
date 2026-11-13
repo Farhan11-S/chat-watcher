@@ -522,6 +522,40 @@ MIGRATIONS: list[str] = [
     ALTER TABLE overlays ADD COLUMN moment_id INTEGER REFERENCES moments(id) ON DELETE CASCADE;
     CREATE INDEX idx_overlays_moment ON overlays(moment_id);
     """,
+    # 24 — thumbnails as layers you move and restyle (brand/layers.py), Claude's versions of
+    # them (brand/thumbai.py), and a 'thumb' job that asks for those (jobs rebuilt, as in 8)
+    """
+    ALTER TABLE thumbs ADD COLUMN layers_json TEXT;         -- thumbnail.jpg's layers, times in stream time
+    ALTER TABLE thumbs ADD COLUMN short_layers_json TEXT;   -- short_cover.jpg's
+    ALTER TABLE thumbs ADD COLUMN ideas_json TEXT;          -- Claude's versions: {"wide": {...}, "tall": {...}}
+    CREATE TABLE jobs_new (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id   INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        stage       TEXT NOT NULL
+                    CHECK (stage IN ('ingest','score','clip','transcribe','frames','analyze','digest','upload',
+                                     'render','intro','short','compile','thumb')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        run_after   TEXT NOT NULL DEFAULT (datetime('now')),
+        error       TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at  TEXT,
+        finished_at TEXT,
+        message     TEXT,
+        params_json TEXT
+    );
+    INSERT INTO jobs_new (id, video_id, moment_id, stage, status, attempts, run_after, error,
+                          created_at, updated_at, started_at, finished_at, message, params_json)
+        SELECT id, video_id, moment_id, stage, status, attempts, run_after, error,
+               created_at, updated_at, started_at, finished_at, message, params_json FROM jobs;
+    DROP TABLE jobs;
+    ALTER TABLE jobs_new RENAME TO jobs;
+    CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
+    CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

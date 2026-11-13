@@ -11,7 +11,8 @@ from typing import Any
 # analyse every moment before anything is downloaded at full quality.
 STAGES = ("ingest", "score", "clip", "transcribe", "frames", "analyze", "upload")
 # Only ever run for one moment, when you ask on the dashboard; never part of the pipeline.
-MOMENT_STAGES = ("render", "intro", "short")
+# thumb = Claude composes thumbnail versions (brand.thumbai).
+MOMENT_STAGES = ("render", "intro", "short", "thumb")
 # Run for a whole stream, only when you ask on its page; never part of the pipeline.
 # compile = one Claude call over the whole stream, looking for compilation material.
 VIDEO_STAGES = ("compile",)
@@ -37,7 +38,7 @@ def enqueue(conn: sqlite3.Connection, video_pk: int, stage: str, *, moment_pk: i
     if stage not in STAGES + MOMENT_STAGES + VIDEO_STAGES:
         raise ValueError(f"Unknown stage {stage!r}")
     if moment_pk is not None and stage not in ("clip", "transcribe", "analyze", "upload", *MOMENT_STAGES):
-        raise ValueError("Only clip, transcribe, analyze, upload, render, intro and short can run for a single moment")
+        raise ValueError("Only clip, transcribe, analyze, upload, render, intro, short and thumb can run for a single moment")
     if moment_pk is None and stage in MOMENT_STAGES:
         raise ValueError(f"{stage} runs for one moment at a time")
     row = conn.execute(
@@ -73,7 +74,7 @@ def claim(conn: sqlite3.Connection) -> sqlite3.Row | None:
         UPDATE jobs SET status = 'running', attempts = attempts + 1,
                         started_at = datetime('now'), updated_at = datetime('now')
         WHERE id = (SELECT id FROM jobs WHERE status = 'pending' AND run_after <= datetime('now')
-                    ORDER BY stage IN ('render', 'intro', 'short') DESC, run_after, id LIMIT 1)
+                    ORDER BY stage IN ('render', 'intro', 'short', 'thumb') DESC, run_after, id LIMIT 1)
         RETURNING *
         """
     ).fetchone()

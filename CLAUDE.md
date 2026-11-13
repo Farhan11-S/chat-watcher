@@ -29,7 +29,7 @@ no build step. Read only the feature you are changing; the map below says where 
 | The clip editor and renders | `edit/` — `service.py` (re-exports only), `clipref.py` (clip + edit rows, file names), `validate.py` (checking segments and effects), `substate.py` (subtitles as the editor sees them), `editstore.py` (load/save, tables `edits` and `shorts`), `rendering.py` (render a saved edit), `render.py` (ffmpeg graph), `pieces.py`, `audio.py`, `captions.py`, `layout.py` (Shorts), `motion.py`, `spots.py`, `texts.py`, `layers.py` (a region of the clip over the picture), `regions.py`, `proxy.py` |
 | AI edit and Direct | `edit/autoedit/` — `prompt.py` (system prompt, answer schema), `plan.py` (reading Claude's answer), `assemble.py` (the cut), `camera.py` (shots), `effects.py` (sounds, overlays, texts, spots), `run.py` (gather, ask, apply); `edit/direct.py` |
 | Sound and overlay library | `edit/sounds.py`, `edit/overlays.py` |
-| Brand, intro, thumbnail | `brand/` — `brand.py`, `intro.py`, `thumb.py`, `art.py`, `sfx.py`, `service.py` |
+| Brand, intro, thumbnail | `brand/` — `brand.py` (also the sticker library), `intro.py`, `sfx.py`, `art.py`, `service.py`; thumbnails: `layers.py` (the layer model), `canvas.py` (draws layers), `cutout.py` (her cut-out, anime-seg ONNX model in `data/models`), `thumbai.py` (Claude composes versions; the on-demand `thumb` job), `thumb.py` (text, sizes, the Short layout) |
 | Google Drive upload | `upload/drive.py`, `upload/login.py` |
 | Disk and Drive usage, deleting | `storage.py`, `doctor.py` (health checks) |
 
@@ -45,7 +45,7 @@ the worker status and the Drive cache. Never use module globals for these: tests
 | `/`, `/add`, `/video/…` (stream page: review, Compilation ideas) | `routes/streams.py` | `home.html`, `video.html` | `app.js` |
 | `/clips`, `/moment/{pk}`, keep/skip, re-cut | `routes/clips.py` | `clips.html`, `moment.html` | `app.js` |
 | Editor API (`/api/moment/…`, `/moment/{pk}/edit`, `render`, `autoedit`, `direct`, `subs`, …) | `routes/editor.py` | `moment.html` | `editor/main.js` (modules, below), `editor.css` |
-| `/brand`, intro and thumbnail endpoints | `routes/brand.py` | `brand.html`, `moment.html` | `maker.js` |
+| `/brand`, stickers, intro and thumbnail endpoints | `routes/brand.py` | `brand.html`, `moment.html` | `maker.js` (intro), `thumb.js` (thumbnail layers) |
 | `/sounds`, `/overlays/…` | `routes/library.py` | `sounds.html` | |
 | `/vtubers` | `routes/vtubers.py` | `vtubers.html` | |
 | `/channels` | `routes/channels.py` | `channels.html` | |
