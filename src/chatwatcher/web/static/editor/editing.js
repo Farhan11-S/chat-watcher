@@ -170,7 +170,12 @@ export function addVis(type) {
     f.region = names.includes("face") ? "face" : names[0] || "";
     f.zoom = type === "punch" ? (f.region ? Math.min(fitZoom(f.region), 2.5) : 1.5) : 1.25;
   } else if (type === "shake") f.strength = 2;
-  else if (type === "caption") Object.assign(f, { fx: "pop", font: "", at: "" });
+  else if (type === "layer") {
+    const names = Object.keys(S.D.regions);
+    if (!names.length) { flash("Draw regions first: a layer shows one of them (⋯ More → ▢ Draw regions)."); return; }
+    Object.assign(f, { region: names.find(n => n.includes("chat")) || names[0], at: "middle", dx: 0, dy: 0,
+                       size: S.D.layer_info.default_size, opacity: S.D.layer_info.default_opacity });
+  } else if (type === "caption") Object.assign(f, { fx: "pop", font: "", at: "" });
   else f.color = "white";
   pushUndo();
   S.fx.push(f);

@@ -92,12 +92,16 @@ def test_points_map_onto_the_short():
     assert abs(lay.map_point(0.5, 0.5, bg_ps)[1] - 0.5) < 1e-9               # never the blurred copy
     crop = lay.panels({"type": "crop", "x": 0.2, "scale": 1.0}, {}, 1920, 1080)
     assert lay.map_point(0.95, 0.5, crop) is None                           # off screen
-    # Zooms aim at their region on the Short; a missing region aims at the centre.
+    # Zooms aim at their region on the Short; a missing region aims at the centre. In a stack
+    # they zoom inside the panel showing their region (cx, cy: shares of that panel).
     fx_list = [{"type": "punch", "t": 1, "d": 1, "zoom": 1.5, "region": "face"},
                {"type": "push", "t": 3, "d": 2, "zoom": 1.3, "region": "chat"}, {"type": "sfx", "t": 2}]
     out, missing = short_visuals(fx_list, {"face": FACE, "game": GAME}, ps)
-    assert isinstance(out[0], Visual) and out[0].cy > 0.6 and (out[1].cx, out[1].cy) == (0.5, 0.5)
+    assert isinstance(out[0], Visual) and out[0].box == ps[1].dst and (out[1].cx, out[1].cy) == (0.5, 0.5)
     assert missing == {"chat"}
+    one = lay.panels({"type": "crop", "x": 0.8, "y": 0.5, "scale": 1.0}, {}, 1920, 1080)
+    (v, _), _ = short_visuals(fx_list[:2], {"face": FACE}, one)
+    assert v.box is None and abs(v.cx - 0.5) < 0.2                          # one picture: the whole frame zooms
 
 
 def test_graph_builds_a_1080x1920_picture():

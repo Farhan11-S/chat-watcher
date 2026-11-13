@@ -27,10 +27,9 @@ function fitBox([bx, by, bw, bh], aspect, sw, sh) {
   return [x0 / sw, y0 / sh, pw / sw, ph / sh];
 }
 const boxOf = name => { const b = name && S.D.regions[name]; return b ? [b.x, b.y, b.w, b.h] : [0, 0, 1, 1]; };
-function panels() {
+function panels(L = S.layout) {
   const [OW, OH] = S.D.layout_info.out;
   const sw = video.videoWidth || S.D.layout_info.src[0], sh = video.videoHeight || S.D.layout_info.src[1];
-  const L = S.layout;
   if (L.type === "stack") {
     const s = L.split;
     return [{ src: fitBox(boxOf(L.top), OW / (OH * s), sw, sh), dst: [0, 0, 1, s] },
@@ -61,11 +60,49 @@ function framePanels(name) {
   const dh = Math.min(0.6, OW / (src[2] * sw) * (src[3] * sh) / OH);
   return [{ src: fitBox(grown, aspect, sw, sh), dst: [0, 0, 1, 1], blur: true }, { src, dst: [0, (1 - dh) / 2, 1, dh] }];
 }
+// A frame shot with top / bottom is a stack of two regions for a while (shot_panels).
+const isStackShot = f => !!(f.top || f.bottom);
+const shotOk = f => (isStackShot(f) ? [f.top, f.bottom].every(n => !n || S.D.regions[n]) : !!frameBox(f.region));
 export function shortPanels(t) {
   let on = null;
-  for (const f of S.fx) if (f.type === "frame" && active(f, t) && frameBox(f.region) && (!on || f.t >= on.t)) on = f;
-  return on ? framePanels(on.region) : panels();
+  for (const f of S.fx) if (f.type === "frame" && active(f, t) && shotOk(f) && (!on || f.t >= on.t)) on = f;
+  if (!on) return panels();
+  if (isStackShot(on)) return panels({ type: "stack", top: on.top || "", bottom: on.bottom || "", split: on.split || 0.6 });
+  return framePanels(on.region);
 }
+// With two pictures (a stack), a zoom stays inside the panel showing its region (the top
+// one for the centre): short_visuals in edit/validate.py. viewPanels: the panels with
+// their zooms applied (what the render shows), camera(): what zooms the whole picture.
+const sharpOf = ps => ps.filter(p => !p.blur);
+function panelOf(f, two) {
+  const b = S.D.regions[f.region];
+  if (!b) return [two[0], 0.5, 0.5];
+  const x = b.x + b.w / 2, y = b.y + b.h / 2;
+  for (const p of [...two].reverse()) {
+    const [sx, sy, sw, sh] = p.src;
+    if (sx <= x && x <= sx + sw && sy <= y && y <= sy + sh) return [p, (x - sx) / sw, (y - sy) / sh];
+  }
+  return [two[0], 0.5, 0.5];
+}
+export function viewPanels(t) {
+  const ps = shortPanels(t), two = sharpOf(ps);
+  if (two.length < 2) return ps;
+  const on = new Map();
+  for (const f of S.fx.filter(f => ZOOMS.includes(f.type) && active(f, t)).sort((a, b) => a.t - b.t)) {
+    const [p, rx, ry] = panelOf(f, two);
+    on.set(p, [f, rx, ry]);                                 // the latest one to start wins
+  }
+  return ps.map(p => {
+    if (!on.has(p)) return p;
+    const [f, rx, ry] = on.get(p);
+    const q = Math.min(Math.max((t - f.t) / f.d, 0), 1), sq = q * q * (3 - 2 * q), k = f.type === "punch" ? 1 : sq;
+    const z = 1 + (f.zoom - 1) * k, h = 0.5 / z;
+    const cx = Math.min(Math.max(0.5 + (rx - 0.5) * k, h), 1 - h), cy = Math.min(Math.max(0.5 + (ry - 0.5) * k, h), 1 - h);
+    const [sx, sy, sw, sh] = p.src;
+    return { ...p, src: [sx + (cx - h) * sw, sy + (cy - h) * sh, 2 * h * sw, 2 * h * sh] };
+  });
+}
+const twoPictures = t => isShort() && sharpOf(shortPanels(t)).length > 1;
 export function mapPoint(x, y, ps) {
   for (const p of [...ps].reverse()) {
     if (p.blur) continue;
@@ -103,7 +140,8 @@ const blurAt = t => transVis().some(v => v.type === "blur" && active(v, t));
 const wave = (tau, ws) => ws.reduce((n, [w, hz, ph]) => n + w * Math.sin(2 * Math.PI * hz * tau + ph), 0);
 export function camera(t) {
   let z = 1, cx = 0.5, cy = 0.5, zf = null;
-  const zs = S.fx.filter(f => ZOOMS.includes(f.type)).concat(transVis().filter(v => v.type === "push" || v.type === "pull"));
+  const zs = (twoPictures(t) ? [] : S.fx.filter(f => ZOOMS.includes(f.type)))   // a stack's zooms are its panels' (viewPanels)
+    .concat(transVis().filter(v => v.type === "push" || v.type === "pull"));
   for (const f of zs.sort((a, b) => a.t - b.t)) if (active(f, t)) zf = f;
   if (zf) {
     const q = Math.min(Math.max((t - zf.t) / zf.d, 0), 1), sq = q * q * (3 - 2 * q);
@@ -161,7 +199,7 @@ function drawShort() {
   c.fillStyle = "#000";
   c.fillRect(0, 0, cw, ch);
   if (vw && video.readyState >= 2) {
-    for (const p of shortPanels(video.currentTime)) {
+    for (const p of viewPanels(video.currentTime)) {
       const [sx, sy, sw, sh] = p.src, [dx, dy, dw, dh] = p.dst;
       if (p.blur) {           // small, blurred, scaled up and darkened: like the render's background
         const bw = Math.max(2, Math.round(cw * dw / S.D.layout_info.blur_down)), bh = Math.max(2, Math.round(ch * dh / S.D.layout_info.blur_down));
@@ -243,7 +281,7 @@ function spotsAt(t) {
 export function spotBox(f, t) {       // map_box in edit/spots.py
   if (!isShort()) return [f.x, f.y, f.w, f.h];
   const cx = f.x + f.w / 2, cy = f.y + f.h / 2;
-  for (const p of [...shortPanels(t)].reverse()) {
+  for (const p of [...viewPanels(t)].reverse()) {          // a stack's zoom goes into the spotlight too
     if (p.blur) continue;
     const [sx, sy, sw, sh] = p.src, [dx, dy, dw, dh] = p.dst;
     if (sx <= cx && cx <= sx + sw && sy <= cy && cy <= sy + sh) {

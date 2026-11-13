@@ -1,7 +1,7 @@
 // Things you place on the picture: overlay clips, text callouts and spotlights, each with
 // a handle to drag and resize it in the player.
-import { $, ASS_TO_CSS, S, subLayer, video } from "./state.js";
-import { curFx, el, flash, hold, keptFx, ovPicture, overlayOf, r3, runsOf, wrapSub } from "./util.js";
+import { $, ASS_TO_CSS, S, pk, subLayer, video } from "./state.js";
+import { curFx, el, flash, hold, keptFx, ovPicture, overlayOf, post, r3, runsOf, wrapSub } from "./util.js";
 import { camera, isShort, mapPoint, place, shortPanels, spotBox, viewBox } from "./preview.js";
 import { buffer } from "./audio.js";
 import { changed, editFx, pushUndo } from "./editing.js";
@@ -12,8 +12,13 @@ import { changed, editFx, pushUndo } from "./editing.js";
 // the playhead; placed like edit/overlays.py place() does for the render. The one you've
 // picked shows even when the playhead isn't on it (dimmed, mid-way through), with a box you
 // drag to move it, a corner to resize it, and the mouse wheel to resize it too.
+// A cutaway (at "fill": an insert such as an X post) blurs the picture behind it and sits
+// in the middle, fitted inside FILL of it, like edit/overlays.py filter_graph.
+const FILL = [0.94, 0.86];
 const ovLayer = el("div", "ed-ovs");
 subLayer.parentElement.insertBefore(ovLayer, subLayer);
+const ovBlur = el("div", "ed-ov-blur");
+ovLayer.appendChild(ovBlur);
 const ovHandle = makeHandle(ovLayer);
 const ovEls = new Map();
 let ovDrag = null, ovWheelAt = 0;
@@ -55,6 +60,7 @@ export function drawOverlays() {
   for (const [id, v] of ovEls) if (!ids.has(id)) { v.pause(); v.remove(); ovEls.delete(id); }
   ovLayer.hidden = !on.length;
   ovHandle.hidden = true;
+  ovBlur.hidden = !on.some(f => f.at === "fill" && t >= f.t && t < f.t + f.d);
   for (const f of soon) {
     const v = overlayEl(f);
     v.style.visibility = "hidden";
@@ -65,15 +71,17 @@ export function drawOverlays() {
   place(ovLayer, box);
   for (const f of on) {
     const ov = overlayOf(f.overlay), v = overlayEl(f);
-    const inside = t >= f.t && t < f.t + f.d;
-    const [cx, cy] = overlayCentre(f, t), w = (f.size || 1) * box.width, h = w / ov.aspect;
+    const inside = t >= f.t && t < f.t + f.d, fill = f.at === "fill";
+    const [cx, cy] = fill ? [0.5, 0.5] : overlayCentre(f, t);
+    const w = fill ? Math.min(FILL[0] * box.width, FILL[1] * box.height * ov.aspect) : (f.size || 1) * box.width;
+    const h = w / ov.aspect;
     const r = { left: cx * box.width - w / 2, top: cy * box.height - h / 2, width: w, height: h };
     Object.assign(v.style, { left: r.left + "px", top: r.top + "px", width: w + "px", height: h + "px",
                              visibility: "visible", opacity: inside ? "" : ".55" });
     const want = inside ? t - f.t : Math.min(ov.length, f.d) / 2;
     if (v.readyState > 0 && Math.abs(v.currentTime - want) > 0.12 && !v.seeking) v.currentTime = want;
     if (video.paused || !inside) { if (!v.paused) v.pause(); } else if (v.paused) v.play().catch(() => {});
-    if (f === sel) {       // the handle: the part of it that's on the picture
+    if (f === sel && !fill) {       // the handle: the part of it that's on the picture
       const l = Math.max(r.left, 0), tp = Math.max(r.top, 0);
       const rr = Math.min(r.left + w, box.width), b = Math.min(r.top + h, box.height);
       if (rr - l > 8 && b - tp > 8) {
@@ -83,10 +91,56 @@ export function drawOverlays() {
     }
   }
 }
+// Layers: a part of the clip's own picture over the picture, see-through (edit/layers.py),
+// drawn from the video on a canvas under the overlays and placed like an overlay. The
+// picked one shows even off its time (faintly), with the same box to move and resize it.
+const lyLayer = el("div", "ed-lys");
+ovLayer.parentElement.insertBefore(lyLayer, ovLayer);
+const lyCanvas = document.createElement("canvas");
+lyLayer.appendChild(lyCanvas);
+const lyHandle = makeHandle(lyLayer);
+const layerAspect = f => {
+  const b = S.D.regions[f.region], vw = video.videoWidth || 16, vh = video.videoHeight || 9;
+  return b ? (b.w * vw) / Math.max(b.h * vh, 1e-6) : 1;
+};
+export function drawLayers() {
+  const t = video.currentTime, picked = curFx();
+  const sel = picked && picked.type === "layer" ? picked : null;
+  const on = S.regionMode || !video.videoWidth || video.readyState < 2 ? []
+    : S.fx.filter(f => f.type === "layer" && S.D.regions[f.region] && keptFx(f) && ((t >= f.t && t < f.t + f.d) || f === sel))
+        .sort((a, b) => a.t - b.t);
+  lyLayer.hidden = !on.length;
+  lyHandle.hidden = true;
+  if (!on.length) return;
+  const box = viewBox(), dpr = window.devicePixelRatio || 1;
+  place(lyLayer, box);
+  const cw = Math.round(box.width * dpr), ch = Math.round(box.height * dpr);
+  if (lyCanvas.width !== cw || lyCanvas.height !== ch) { lyCanvas.width = cw; lyCanvas.height = ch; }
+  const c = lyCanvas.getContext("2d"), vw = video.videoWidth, vh = video.videoHeight, F = S.D.layer_info.fade;
+  c.clearRect(0, 0, cw, ch);
+  for (const f of on) {
+    const b = S.D.regions[f.region], inside = t >= f.t && t < f.t + f.d;
+    const [cx, cy] = overlayCentre(f, t), w = fxSize(f) * box.width, h = w / layerAspect(f);
+    const r = { left: cx * box.width - w / 2, top: cy * box.height - h / 2 };
+    const fade = inside ? Math.min(1, (t - f.t) / F, (f.t + f.d - t) / F) : 0.55;
+    c.globalAlpha = (f.opacity || S.D.layer_info.default_opacity) * Math.max(0, fade);
+    c.drawImage(video, b.x * vw, b.y * vh, b.w * vw, b.h * vh, r.left * dpr, r.top * dpr, w * dpr, h * dpr);
+    if (f === sel) {
+      const l = Math.max(r.left, 0), tp = Math.max(r.top, 0);
+      const rr = Math.min(r.left + w, box.width), bt = Math.min(r.top + h, box.height);
+      if (rr - l > 8 && bt - tp > 8) {
+        lyHandle.hidden = false;
+        place(lyHandle, { left: l, top: tp, width: rr - l, height: bt - tp });
+      }
+    }
+  }
+  c.globalAlpha = 1;
+}
+
 // Moving and resizing the picked overlay or text on the picture: a box over it (in its
 // layer, which sits on the picture) to drag, a corner to drag, the mouse wheel.
 const OV_SNAP = 0.02;          // its centre snaps to the middle of the picture within this
-const movable = f => !!f && (f.type === "overlay" || f.type === "text" || f.type === "spot");
+const movable = f => !!f && (f.type === "overlay" || f.type === "text" || f.type === "spot" || f.type === "layer");
 const camPoint = ([xc, yc, h], px, py) => [xc - h + px * 2 * h, yc - h + py * 2 * h];   // view → picture
 function makeHandle(layer) {
   const h = el("div", "ed-ov-handle");
@@ -181,8 +235,10 @@ function makeHandle(layer) {
 }
 const r4 = v => Math.round(v * 1e4) / 1e4;
 // Sizes: an overlay's width, a text's font size, both as shares of the picture's width.
-export const sizeRange = f => (f.type === "text" ? S.D.text_info.size : S.D.overlay_info.size);
-export const fxSize = f => f.size || (f.type === "text" ? S.D.text_info.default_size[f.style || "pop"] : 1);
+export const sizeRange = f => (f.type === "text" ? S.D.text_info.size : f.type === "layer" ? S.D.layer_info.size
+                                : S.D.overlay_info.size);
+export const fxSize = f => f.size || (f.type === "text" ? S.D.text_info.default_size[f.style || "pop"]
+                                      : f.type === "layer" ? S.D.layer_info.default_size : 1);
 export const clampSize = (f, v) => {
   const [lo, hi] = sizeRange(f), k = f.type === "text" ? 1000 : 100;
   return Math.round(Math.min(Math.max(v, lo), hi) * k) / k;
@@ -331,6 +387,7 @@ export function setSpotRegion(name) {   // round a drawn region, with some room
   editFx({ x: r4(b.x - b.w * pad), y: r4(b.y - b.h * pad), w: r4(b.w * (1 + 2 * pad)), h: r4(b.h * (1 + 2 * pad)) });
 }
 export function ovSize(at, ov) {     // default_size in edit/overlays.py: "full" covers the picture
+  if (at === "fill") return 1;
   if (at !== "full") return 0.5;
   const [W, H] = isShort() ? [9, 16] : [video.videoWidth || 16, video.videoHeight || 9];
   return Math.round(Math.min(Math.max(1, H / W * ov.aspect), 2.5) * 100) / 100;
@@ -351,11 +408,40 @@ export function addOverlay() {
   if (ov.sound) buffer("ov:" + ov.id).catch(() => {});
   changed();
 }
+// Bringing in an insert from a link (an X post, a picture, a video): downloaded for this
+// clip (edit/inserts.py), then the picked overlay becomes a cutaway to it.
+export async function bringIn(url) {
+  url = (url || "").trim();
+  if (!/^https?:\/\/\S+$/.test(url)) { flash("Paste a link: an X post, a picture or a video."); return; }
+  flash("Downloading… (a video can take a minute)");
+  let d;
+  try { d = await post(`/api/moment/${pk}/insert`, { url }); } catch (e) { d = { ok: false, error: String(e) }; }
+  if (!d.ok) { flash("Couldn't bring it in: " + (d.error || "error")); return; }
+  S.D.overlays = d.overlays;
+  const ov = overlayOf(d.added[0]), f = curFx();
+  if (!ov) return;
+  if (f && f.type === "overlay") {
+    editFx({ overlay: ov.id, at: "fill", size: 1, dx: 0, dy: 0, d: r3(Math.min(ov.length, 4, S.D.duration - f.t)) });
+  } else {
+    const t = video.currentTime;
+    const n = { id: "u" + Math.random().toString(36).slice(2, 8), type: "overlay", overlay: ov.id, t: r3(t),
+                d: r3(Math.min(ov.length, 4, S.D.duration - t)), at: "fill", dx: 0, dy: 0, size: 1, gain: 0,
+                mode: "both", by: "you", why: "" };
+    if (n.d < 0.1) { flash("Too close to the end of the clip."); return; }
+    pushUndo();
+    S.fx.push(n);
+    S.selFx = n.id;
+    changed();
+  }
+  if (ov.sound) buffer("ov:" + ov.id).catch(() => {});
+  flash(`Brought in ${d.added.length > 1 ? d.added.length + " inserts" : ov.name}: it shows full screen.`);
+}
 export function setOverlay(id) {
   const ov = overlayOf(id), f = curFx();
   if (!ov || !f) return;
   lastOverlay = id;
   try { localStorage.setItem("cw-ed-overlay", id); } catch (e) {}
-  editFx({ overlay: id, d: r3(Math.min(ov.length, S.D.duration - f.t)), size: ovSize(f.at || "full", ov) });
+  const at = ov.insert && f.at !== "fill" ? "fill" : f.at || "full";     // an insert is a cutaway
+  editFx({ overlay: id, at, d: r3(Math.min(ov.length, ov.insert ? 4 : ov.length, S.D.duration - f.t)), size: ovSize(at, ov) });
   if (ov.sound) buffer("ov:" + id).catch(() => {});
 }

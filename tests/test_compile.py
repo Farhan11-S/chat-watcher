@@ -342,7 +342,7 @@ def test_migration_keeps_jobs_and_allows_compile(tmp_path):
     conn.executescript("BEGIN;" + "".join(db.MIGRATIONS[:21]) + "PRAGMA user_version = 21; COMMIT;")
     v = conn.execute("INSERT INTO videos (video_id) VALUES ('abcdefghijk')").lastrowid
     conn.execute("INSERT INTO jobs (video_id, stage, message, params_json) VALUES (?, 'clip', 'm', '{\"a\": 1}')", (v,))
-    assert db.migrate(conn) == [22]
+    assert db.migrate(conn) == [22, 23]
     row = conn.execute("SELECT * FROM jobs").fetchone()
     assert (row["stage"], row["message"], json.loads(row["params_json"])) == ("clip", "m", {"a": 1})
     conn.execute("INSERT INTO jobs (video_id, stage) VALUES (?, 'compile')", (v,))

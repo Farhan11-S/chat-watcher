@@ -155,13 +155,13 @@ class ClaudeRunner:
     def run(self, prompt: str, schema: dict[str, Any], *, system: str, cwd: Path,
             allow_read: bool = False, model: str | None = None,
             effort: str | None = None, images: list[bytes] | None = None,
-            session: str | None = None, resume: bool = False) -> ClaudeResult:
+            session: str | None = None, resume: bool = False, tools: list[str] | None = None) -> ClaudeResult:
         """One structured answer matching `schema`. model/effort override the config.
         images: JPEGs shown to Claude before the prompt text. session / resume: see command()
         (a resumed session must run in the same cwd)."""
         cmd = self.command(schema, system=system, allow_read=allow_read,
                            read_dir=cwd if allow_read else None, model=model, effort=effort,
-                           images=bool(images), session=session, resume=resume)
+                           images=bool(images), session=session, resume=resume, tools=tools)
         out = self._invoke(cmd, image_message(prompt, images) if images else prompt, cwd)
         data = out.get("structured_output")
         if data is None:

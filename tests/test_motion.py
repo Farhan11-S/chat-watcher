@@ -116,6 +116,7 @@ def test_preview_maths_matches_the_render(layout):
               f"  kind: {json.dumps('short' if layout else 'long')}, layout: {json.dumps(layout)}, regionMode: false }};\n"
               "const video = { videoWidth: 1920, videoHeight: 1080 };\n"
               f"{code}\nconsole.log(JSON.stringify({{cams: {json.dumps(times)}.map(t => [camera(t), flashesAt(t)]),"
+              f" views: S.layout ? {json.dumps(times)}.map(t => viewPanels(t).map(p => p.src)) : [],"
               " panels: S.layout ? panels() : []}));")
     got = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
     from chatwatcher.edit.service import short_visuals, visuals
@@ -130,7 +131,19 @@ def test_preview_maths_matches_the_render(layout):
     else:
         vis, missing = visuals(fx_full, regions)
     assert missing == {"nowhere"}
-    vis = list(vis) + [v for _k, v in motion.transitions(segs, fx_full)]      # the transitions' pieces too
+    in_panels = [v for v in vis if v.box is not None]                         # a stack's zooms, inside their panel
+    vis = [v for v in vis if v.box is None] + [v for _k, v in motion.transitions(segs, fx_full)]   # + the transitions
+    if layout and layout["type"] == "stack":
+        assert {v.box for v in in_panels} == {p.dst for p in ps}
+    for t, views in zip(times, got["views"]):
+        for g, p in zip(views, ps):
+            mine = [v for v in in_panels if v.box == p.dst]
+            want = list(p.src)
+            if mine:
+                xc, yc, h = camera(t, mine)
+                sx, sy, sw, sh = p.src
+                want = [sx + (xc - h) * sw, sy + (yc - h) * sh, 2 * h * sw, 2 * h * sh]
+            assert g == pytest.approx(want, abs=1e-9), t
     for t, (cam, fl) in zip(times, got["cams"]):
         assert cam == pytest.approx(list(camera(t, vis)), abs=1e-9), t
         want = [(list(rgb), a) for rgb, a in flashes(t, vis)]

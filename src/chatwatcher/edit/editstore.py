@@ -11,6 +11,7 @@ from typing import Any
 from chatwatcher.config import Config
 from chatwatcher.edit import captions as cap
 from chatwatcher.edit import clipref as cr
+from chatwatcher.edit import layers as lyr
 from chatwatcher.edit import layout as lay
 from chatwatcher.edit import overlays as ovl
 from chatwatcher.edit import spots as spt
@@ -21,6 +22,14 @@ from chatwatcher.edit.clipref import (KINDS, STAGE, TABLE, WAVEFORM_FILE, ClipRe
                                       whole)
 from chatwatcher.edit.substate import sub_default, subs_rendered, subtitles, transcript_lines, transcript_state
 from chatwatcher.edit.validate import clean_effects, clean_segments, short_regions, used_regions
+
+
+def overlay_list(conn: sqlite3.Connection, moment_pk: int) -> list[dict[str, Any]]:
+    """The overlay library and this clip's inserts, as the editor gets them."""
+    return [{"id": o["id"], "name": o["name"], "description": o["description"], "length": o["duration_s"],
+             "aspect": o["width"] / o["height"], "gain": o["gain_db"], "sound": bool(o["sound"]),
+             "insert": o["moment_id"] is not None}
+            for o in ovl.list_overlays(conn, moment_pk)]
 
 
 def current_layout(conn: sqlite3.Connection, moment_pk: int, clip: ClipRef,
@@ -62,9 +71,7 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
         "kind": kind, "duration": clip.duration_s, "fps": clip.fps, **wf.to_json(),
         "segments": segments, "source": source, "saved": bool(row),
         "effects": cr.effects_to_clip(cr.effects(base), clip), "sounds": sounds,
-        "overlays": [{"id": o["id"], "name": o["name"], "description": o["description"], "length": o["duration_s"],
-                      "aspect": o["width"] / o["height"], "gain": o["gain_db"], "sound": bool(o["sound"])}
-                     for o in ovl.list_overlays(conn)],
+        "overlays": overlay_list(conn, moment_pk),
         "overlay_info": {"places": ovl.PLACES, "size": ovl.SIZE_RANGE, "offset": ovl.OFFSET_RANGE, "out": list(cr.size(clip)) if kind == "long"
                          else [lay.OUT_W, lay.OUT_H]},
         "regions": regions.get(conn, scope), "region_scope": scope_label,
@@ -72,12 +79,14 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
                       "size": txt.SIZE_RANGE, "line": txt.LINE, "label_line": txt.LABEL_LINE, "max": txt.MAX_CHARS, "tilt": txt.STAMP_TILT,
                       "intro_ms": txt.INTRO_MS, "outro_ms": txt.OUTRO_MS,
                       "default_size": {st: txt.default_size(st, kind == "short") for st in txt.STYLES}},
+        "layer_info": {"size": lyr.SIZE_RANGE, "opacity": lyr.OPACITY_RANGE, "default_size": lyr.DEFAULT_SIZE,
+                       "default_opacity": lyr.DEFAULT_OPACITY, "fade": lyr.FADE},
         "spot_info": {"styles": spt.STYLES, "colors": {k: "%02X%02X%02X" % v for k, v in spt.COLORS.items()},
                       "default_color": spt.DEFAULT_COLOR, "dim": spt.DIM, "feather": spt.FEATHER, "ring": spt.RING,
                       "fade": [spt.FADE_IN, spt.FADE_OUT], "min": spt.MIN_SIZE},
-        "visual": {"types": motion.TYPES | {lay.FRAME: lay.FRAME_LIMITS, ovl.OVERLAY: (1.0, 0.1, ovl.MAX_SECONDS),
+        "visual": {"types": motion.TYPES | {lay.FRAME: lay.FRAME_LIMITS, ovl.OVERLAY: (1.0, 0.1, ovl.MAX_EFFECT_S),
                                             txt.TEXT: txt.D_LIMITS, spt.SPOT: spt.D_LIMITS,
-                                            cap.CAPTION: cap.D_LIMITS},
+                                            cap.CAPTION: cap.D_LIMITS, lyr.LAYER: lyr.D_LIMITS},
                    "transitions": motion.TRANSITIONS,
                    "transition_d": motion.TRANSITION_D, "zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP,
                    "flash": motion.FLASH, "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]},

@@ -14,7 +14,11 @@ or a region (centred where that region is on screen); dx, dy move it from there,
 of the picture (you drag it in the editor's preview); size is its width as a share of the
 picture's width; gain is its sound's volume in dB; mode is what plays: MODES (both, only its
 sound, only its picture). place() works out where it goes; editor.js does the same for its
-preview: change both together."""
+preview: change both together.
+
+at = "fill" is a cutaway: the overlay fills the picture, fitted over a blurred copy of what
+was on screen (size, dx, dy don't apply). That's how inserts (edit.inserts: an X post or a
+video from outside the stream, kept with one clip) are shown."""
 
 from __future__ import annotations
 
@@ -33,14 +37,19 @@ from chatwatcher.config import Config
 from chatwatcher.edit import layout as lay
 
 OVERLAY = "overlay"
-MAX_SECONDS = 15.0
+MAX_SECONDS = 15.0                # a library overlay
+MAX_EFFECT_S = 30.0               # an overlay on an edit (an insert can be a 30 s video)
 MAX_UPLOAD_BYTES = 80 * 1024 * 1024
 MAX_HEIGHT = 720                  # stored at most this tall (an overlay is rarely seen bigger)
 SIMILARITY, BLEND = 0.16, 0.06    # chromakey: how close to the key colour is see-through, and the soft edge
 SIZE_RANGE = (0.1, 2.5)           # width as a share of the picture's (more than 1 spills off the sides)
 GAIN_RANGE = (-30.0, 10.0)
 OFFSET_RANGE = (-1.0, 1.0)        # dx, dy: how far it's moved from where it's centred, shares of the picture
-PLACES = ("full", "middle")
+PLACES = ("full", "middle", "fill")
+FILL = "fill"                     # a cutaway: fitted over a blurred copy of the picture
+FILL_MARGIN = (0.94, 0.86)        # …inside this share of the picture's width and height
+FILL_BLUR = 24
+FILL_DUCK = -12.0                 # her voice, while a cutaway's own sound plays
 MODES = ("both", "sound", "picture")   # what plays: its picture and sound, only its sound, only its picture
 _ID = re.compile(r"^[a-z0-9_]{1,32}$")
 
@@ -53,8 +62,11 @@ def overlays_dir(cfg: Config) -> Path:
     return cfg.paths.data_dir / "overlays"
 
 
-def list_overlays(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [dict(r) for r in conn.execute("SELECT * FROM overlays ORDER BY name COLLATE NOCASE")]
+def list_overlays(conn: sqlite3.Connection, moment_pk: int | None = None) -> list[dict[str, Any]]:
+    """The library; with moment_pk, also that clip's inserts (first)."""
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM overlays WHERE moment_id IS NULL OR moment_id = ? "
+        "ORDER BY moment_id IS NULL, name COLLATE NOCASE", (moment_pk if moment_pk is not None else -1,))]
 
 
 def get_overlay(conn: sqlite3.Connection, oid: str) -> dict[str, Any] | None:
@@ -196,6 +208,8 @@ def delete_overlay(cfg: Config, conn: sqlite3.Connection, oid: str) -> None:
 def default_size(at: str, ov: dict[str, Any], out_w: int, out_h: int) -> float:
     """"full" covers the picture (a 16:9 overlay on a Short spills off the sides); anything
     else starts at about half the width."""
+    if at == FILL:
+        return 1.0
     if at == "full":
         return round(min(max(1.0, out_h / out_w * ov["width"] / ov["height"]), SIZE_RANGE[1]), 2)
     return 0.5
@@ -210,6 +224,7 @@ class Placed:
     y: float
     w: float                      # its width, as a share of the output picture's width
     aspect: float                 # width / height
+    fill: bool = False            # a cutaway (at "fill")
 
 
 def place(at: str, boxes: dict[str, dict[str, float]], panels: list[lay.Panel] | None,
@@ -240,7 +255,7 @@ def placed(cfg: Config, conn: sqlite3.Connection, effects: list[dict[str, Any]],
             continue
         x, y = place(fx.get("at") or "full", boxes, panels, float(fx.get("dx") or 0), float(fx.get("dy") or 0))
         out.append(Placed(video_path(cfg, ov), fx["t"], fx["d"], x, y, float(fx.get("size") or 1.0),
-                          ov["width"] / ov["height"]))
+                          ov["width"] / ov["height"], fx.get("at") == FILL))
     return out, missing
 
 
@@ -261,11 +276,21 @@ def filter_graph(base: str, items: list[tuple[Placed, float, float, float]], fir
     stream labelled base. Returns (filters, the label of the result)."""
     chains, cur = [], base
     for k, (p, a, d, _skip) in enumerate(items):
+        on = f"enable='between(t,{a:.3f},{a + d:.3f})'"
+        if p.fill:           # a cutaway: blur what's on screen, fit the insert in the middle
+            fw, fh = FILL_MARGIN[0] * out_w, FILL_MARGIN[1] * out_h
+            w = max(2, round(min(fw, fh * p.aspect) / 2) * 2)
+            h = max(2, round(w / p.aspect / 2) * 2)
+            chains.append(f"{cur}boxblur={FILL_BLUR}:2:{on}[ovb{k}]")
+            chains.append(f"[{first_input + k}:v]scale={w}:{h},format=yuva420p,setpts=PTS-STARTPTS+{a:.3f}/TB[ov{k}]")
+            chains.append(f"[ovb{k}][ov{k}]overlay=x={(out_w - w) // 2}:y={(out_h - h) // 2}:eof_action=pass:"
+                          f"format=auto:{on}[ovo{k}]")
+            cur = f"[ovo{k}]"
+            continue
         w = max(2, round(p.w * out_w / 2) * 2)
         h = max(2, round(w / p.aspect / 2) * 2)
         x, y = round(p.x * out_w - w / 2), round(p.y * out_h - h / 2)
         chains.append(f"[{first_input + k}:v]scale={w}:{h},format=yuva420p,setpts=PTS-STARTPTS+{a:.3f}/TB[ov{k}]")
-        chains.append(f"{cur}[ov{k}]overlay=x={x}:y={y}:eof_action=pass:format=auto:"
-                      f"enable='between(t,{a:.3f},{a + d:.3f})'[ovo{k}]")
+        chains.append(f"{cur}[ov{k}]overlay=x={x}:y={y}:eof_action=pass:format=auto:{on}[ovo{k}]")
         cur = f"[ovo{k}]"
     return ";".join(chains), cur

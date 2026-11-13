@@ -138,6 +138,7 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
            intro: Path | None = None, intro_s: float = 0.0, layout: str | list[str] | None = None, title: str = "",
            overlays: list[list[Any]] | None = None, texts: list[list[Any]] | None = None,
            spots: list[list[Any]] | None = None, captions: list[list[Any]] | None = None,
+           layers: list[list[Any]] | None = None,
            on_progress: Callable[[float], None] | None = None) -> Rendered:
     """segments: [[start, end, gain_db], …] in src time, in play order. sounds: effects
     placed on the edit's timeline (ignored if the clip has no audio). visuals: zooms,
@@ -155,8 +156,10 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
     spots: spotlights (edit.spots.Placed, src time) per segment, laid over the picture
     before its zooms (so a zoom goes into them too). captions: caption styles
     (edit.captions.Mark, src time) per segment; with them or the bubble look, edit.captions
-    draws the subtitles."""
+    draws the subtitles. layers: parts of the clip's own picture (edit.layers.Placed, src
+    time) per segment, laid over the picture after its zooms and under the overlays."""
     from chatwatcher.edit import captions as cap
+    from chatwatcher.edit import layers as lyr
     from chatwatcher.edit import overlays as ovl
     from chatwatcher.edit import spots as spt
     from chatwatcher.edit import texts as txt
@@ -207,7 +210,7 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             args = ["-v", "error", "-ss", f"{s:.3f}", "-i", str(src), "-t", f"{length:.6f}",
                     "-map", "0:v:0", "-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf),
                     "-pix_fmt", "yuv420p"]
-            vf = video_filter(local(seg_visuals, s, length), fps, length)
+            vf = video_filter(local(seg_visuals, s, length), fps, length, size if size[0] and size[1] else (1080, 1920))
             shown = lines.local(subs or [], s, length)
             ass = ""
             callouts = txt.events(txt.local(texts[i], s, length), *size) if texts and i < len(texts) else []
@@ -225,20 +228,30 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                 ass = f"ass=part{i:03d}.ass:fontsdir=fonts"
             ov_items = ovl.local(overlays[i], s, length) if overlays and i < len(overlays) else []
             sp_items = spt.local(spots[i], s, length) if spots and i < len(spots) else []
+            ly_items = lyr.local(layers[i], s, length) if layers and i < len(layers) else []
             # Inputs after the clip's: the overlays, then the spotlights' pictures (looped).
             for k in reversed(range(len(sp_items))):
                 mask = spt.write_mask(sp_items[k][0], *size, tmp / f"part{i:03d}_spot{k}.png")
                 args[6:6] = ["-loop", "1", "-framerate", f"{fps:.6g}", "-i", str(mask)]
             for p, _a, _d, skip in reversed(ov_items):
-                args[6:6] = (["-ss", f"{skip:.3f}"] if skip > 0.01 else []) + ["-c:v", "libvpx-vp9", "-i", str(p.file)]
+                vp9 = ["-c:v", "libvpx-vp9"] if p.file.suffix == ".webm" else []     # its alpha (inserts are mp4)
+                args[6:6] = (["-ss", f"{skip:.3f}"] if skip > 0.01 else []) + vp9 + ["-i", str(p.file)]
             script = tmp / f"part{i:03d}.vf"      # in a file: the expressions can be longer than a command line allows
-            if ov_items or sp_items:
-                graph, cur = [seg_layout or "[0:v]null[base]"], "[base]"
+            if ov_items or sp_items or ly_items:
+                picture = seg_layout or "[0:v]null[base]"
+                graph, cur = [], "[base]"
+                if ly_items:                       # a copy of the clip for the layers to cut from
+                    graph.append("[0:v]split=2[lyin][lysrc]")
+                    picture = picture.replace("[0:v]", "[lyin]")
+                graph.append(picture)
                 if sp_items:
                     spf, cur = spt.filter_graph(cur, sp_items, 1 + len(ov_items))
                     graph.append(spf)
                 graph.append(f"{cur}{vf or 'null'}[m]")
                 cur = "[m]"
+                if ly_items:
+                    lyf, cur = lyr.filter_graph(cur, "[lysrc]", ly_items, *size, start=s)
+                    graph.append(lyf)
                 if ov_items:
                     ovf, cur = ovl.filter_graph(cur, ov_items, 1, *size)
                     graph.append(ovf)

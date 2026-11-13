@@ -121,7 +121,7 @@ def router(ctx: Ctx) -> APIRouter:
         p = overlays.video_path(cfg, o) if o else None
         if not p or not p.is_file() or p.parent != overlays.overlays_dir(cfg):
             raise HTTPException(404)
-        return FileResponse(p, media_type="video/webm")
+        return FileResponse(p, media_type="video/mp4" if p.suffix == ".mp4" else "video/webm")
 
     @r.get("/media/overlay/{oid}/sound")
     def media_overlay_sound(oid: str, conn=Depends(get_conn)):

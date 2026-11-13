@@ -180,11 +180,13 @@ function drawFx(x, t0, t1, w) {
 function visLabel(f) {
   if (ZOOMS.includes(f.type)) return `${f.type === "punch" ? "punch" : "push"} ${f.region || "centre"} ${nice(f.zoom)}×`;
   if (f.type === "shake") return "shake " + (STRENGTH[f.strength] || "");
-  if (f.type === "frame") return f.region === FULL ? "whole picture" : "show " + (f.region || "?");
+  if (f.type === "frame") return f.top || f.bottom ? `${f.top || "whole"} / ${f.bottom || "whole"}`
+                                                  : f.region === FULL ? "whole picture" : "show " + (f.region || "?");
   if (f.type === "text") return `“${f.text}”`;
   if (f.type === "spot") return "◯ " + (f.style || "spotlight");
+  if (f.type === "layer") return `▣ ${f.region || "?"} ${Math.round((f.opacity || 0.7) * 100)}%`;
   if (f.type === "caption") return "Aa " + [f.fx || "pop", f.font, f.at, f.size].filter(Boolean).join(" · ");
-  if (f.type === "overlay") return ({ sound: "♪ only · ", picture: "muted · " }[f.mode] || "")
+  if (f.type === "overlay") return (f.at === "fill" ? "⧉ cutaway · " : "") + ({ sound: "♪ only · ", picture: "muted · " }[f.mode] || "")
                                    + (overlayOf(f.overlay) || { name: f.overlay + " (gone)" }).name;
   return "flash " + f.color;
 }

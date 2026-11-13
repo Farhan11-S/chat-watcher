@@ -516,6 +516,12 @@ MIGRATIONS: list[str] = [
     CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
     CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
     """,
+    # 23 — inserts: pictures and videos from outside the stream (an X post, another video)
+    # kept with one clip, as overlays without a key colour (edit/inserts.py)
+    """
+    ALTER TABLE overlays ADD COLUMN moment_id INTEGER REFERENCES moments(id) ON DELETE CASCADE;
+    CREATE INDEX idx_overlays_moment ON overlays(moment_id);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

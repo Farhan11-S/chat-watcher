@@ -10,6 +10,7 @@ import sqlite3
 from typing import Any
 
 from chatwatcher.edit import captions as cap
+from chatwatcher.edit import layers as lyr
 from chatwatcher.edit import layout as lay
 from chatwatcher.edit import overlays as ovl
 from chatwatcher.edit import spots as spt
@@ -62,9 +63,9 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
     for i, fx in enumerate(raw, 1):
         kind = fx.get("type", "sfx") if isinstance(fx, dict) else None
         if kind != "sfx" and kind not in motion.TYPES and kind not in (lay.FRAME, "transition", ovl.OVERLAY, txt.TEXT,
-                                                                         spt.SPOT, cap.CAPTION):
-            raise EditError(f"Effect {i} isn't a sound, zoom, shake, flash, overlay, text, spotlight or caption style.",
-                            "invalid")
+                                                                         spt.SPOT, cap.CAPTION, lyr.LAYER):
+            raise EditError(f"Effect {i} isn't a sound, zoom, shake, flash, overlay, layer, text, spotlight or "
+                            "caption style.", "invalid")
         try:
             t = float(fx["t"])
         except (KeyError, TypeError, ValueError):
@@ -113,11 +114,31 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
             at = str(fx.get("at") or "full")
             at = at if at in ovl.PLACES else (regions.normal_name(at) or "full")
             lo, hi = ovl.OFFSET_RANGE
-            e |= {"overlay": oid, "d": round(min(max(d, 0.1), ovl.MAX_SECONDS), 3), "at": at,
+            e |= {"overlay": oid, "d": round(min(max(d, 0.1), ovl.MAX_EFFECT_S), 3), "at": at,
                   "dx": round(min(max(dx, lo), hi), 4), "dy": round(min(max(dy, lo), hi), 4),
                   "size": round(min(max(size, ovl.SIZE_RANGE[0]), ovl.SIZE_RANGE[1]), 2),
                   "gain": round(min(max(gain, ovl.GAIN_RANGE[0]), ovl.GAIN_RANGE[1]), 1),
                   "mode": fx.get("mode") if fx.get("mode") in ovl.MODES else "both"}
+        elif kind == lyr.LAYER:                  # a region of the clip over the picture, see-through
+            default, shortest, longest = lyr.D_LIMITS
+            region = regions.normal_name(fx.get("region"))
+            if not region:
+                raise EditError(f"Effect {i} is a layer without a region to show.", "invalid")
+            try:
+                d, dx, dy = float(fx.get("d", default)), float(fx.get("dx") or 0), float(fx.get("dy") or 0)
+                size = float(fx.get("size") or lyr.DEFAULT_SIZE)
+                opacity = float(fx.get("opacity") or lyr.DEFAULT_OPACITY)
+            except (TypeError, ValueError):
+                raise EditError(f"Effect {i} has a bad length, size, place or opacity.", "invalid")
+            if not all(math.isfinite(v) for v in (d, dx, dy, size, opacity)):
+                raise EditError(f"Effect {i} has a bad length, size, place or opacity.", "invalid")
+            at = str(fx.get("at") or "middle")
+            at = at if at in ("middle", "full") else (regions.normal_name(at) or "middle")
+            lo, hi = ovl.OFFSET_RANGE
+            e |= {"d": round(min(max(d, shortest), longest), 3), "region": region, "at": at,
+                  "dx": round(min(max(dx, lo), hi), 4), "dy": round(min(max(dy, lo), hi), 4),
+                  "size": round(min(max(size, lyr.SIZE_RANGE[0]), lyr.SIZE_RANGE[1]), 2),
+                  "opacity": round(min(max(opacity, lyr.OPACITY_RANGE[0]), lyr.OPACITY_RANGE[1]), 2)}
         elif kind == spt.SPOT:                   # a spotlight on something in the clip's frame
             default, shortest, longest = spt.D_LIMITS
             try:
@@ -176,6 +197,15 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
             if not math.isfinite(d):
                 raise EditError(f"Effect {i} has a bad length.", "invalid")
             e |= {"d": round(min(max(d, shortest), longest), 3), "region": regions.normal_name(fx.get("region"))}
+            if lay.is_stack_shot(fx):            # …or stacks two regions: top (or "" = the whole frame) over bottom
+                try:
+                    split = float(fx.get("split", 0.6))
+                except (TypeError, ValueError):
+                    split = 0.6
+                split = split if math.isfinite(split) else 0.6
+                e |= {"region": "", "top": regions.normal_name(fx.get("top")) if fx.get("top") else "",
+                      "bottom": regions.normal_name(fx.get("bottom")) if fx.get("bottom") else "",
+                      "split": round(min(max(split, lay.SPLIT_RANGE[0]), lay.SPLIT_RANGE[1]), 3)}
         else:
             default, shortest, longest = motion.TYPES[kind]
             try:
@@ -203,8 +233,8 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
 def used_regions(conn: sqlite3.Connection, moment_pk: int,
                   effects: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     """The boxes of the regions these effects aim at (as they are now)."""
-    names = {fx.get("region") for fx in effects if fx.get("type") in motion.ZOOMS and fx.get("region")}
-    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION)
+    names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lyr.LAYER) and fx.get("region")}
+    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION, lyr.LAYER)
               and fx.get("at") and fx.get("at") not in (*ovl.PLACES, *cap.PLACES)}
     if not names:
         return {}
@@ -216,8 +246,9 @@ def short_regions(conn: sqlite3.Connection, moment_pk: int, effects: list[dict[s
                    layout: dict[str, Any]) -> dict[str, dict[str, float]]:
     """The boxes a Short depends on: those its zooms aim at, and its stack panels."""
     have = regions.get(conn, regions.scope_for(conn, moment_pk)[0])
-    names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lay.FRAME) and fx.get("region")}
-    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION)
+    names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lyr.LAYER) and fx.get("region")}
+    names |= {n for fx in effects if fx.get("type") == lay.FRAME for n in lay.shot_regions(fx)}
+    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION, lyr.LAYER)
               and fx.get("at") and fx.get("at") not in (*ovl.PLACES, *cap.PLACES)}
     names |= lay.used_regions(layout)
     return {n: have[n] for n in sorted(names) if n in have}
@@ -246,12 +277,25 @@ def visuals(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]]) -
 def short_visuals(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]],
                   ps: list[lay.Panel]) -> tuple[list[motion.Visual], set[str]]:
     """visuals() for a Short: zooms aim at where their region lands on the 9:16 frame (its
-    centre when the region isn't drawn or isn't on screen)."""
+    centre when the region isn't drawn or isn't on screen). With two pictures (a stack), a
+    zoom stays inside the panel that shows its region (the top one for the centre or a
+    region not on screen): the other panel and the line between them hold still."""
     out, missing = visuals(effects, boxes)
+    two = lay.sharp(ps) if len(lay.sharp(ps)) > 1 else []
     for fx, v in zip([f for f in effects if f.get("type") in motion.TYPES], out):
-        if v.type in motion.ZOOMS:
-            at = lay.map_point(v.cx, v.cy, ps) if boxes.get(fx.get("region") or "") else None
-            v.cx, v.cy = at or (0.5, 0.5)
+        if v.type not in motion.ZOOMS:
+            continue
+        on = boxes.get(fx.get("region") or "")
+        if two:
+            p = lay.panel_at(v.cx, v.cy, two) if on else None
+            if p:
+                sx, sy, sw, sh = p.src
+                v.box, v.cx, v.cy = p.dst, (v.cx - sx) / sw, (v.cy - sy) / sh
+            else:
+                v.box, v.cx, v.cy = two[0].dst, 0.5, 0.5
+            continue
+        at = lay.map_point(v.cx, v.cy, ps) if on else None
+        v.cx, v.cy = at or (0.5, 0.5)
     return out, missing
 
 

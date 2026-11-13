@@ -10,7 +10,11 @@ whole edit again and apply = true, which replaces the edit (Ctrl+Z in the editor
 yours back), or apply = false when it only answers.
 
 A session that can't be resumed (the clip was re-cut into another folder, or the CLI's
-history was cleared) is started again with the full material and the recent messages."""
+history was cleared) is started again with the full material and the recent messages.
+
+Links in a message (an X post, a picture, a video) are downloaded into the clip's inserts
+(edit.inserts) before Claude is asked, so it can cut away to them. When you write to it,
+it may also search the web and read pages, to find a reference you ask for itself."""
 
 from __future__ import annotations
 
@@ -89,7 +93,7 @@ def _ids(nums: list[int]) -> str:
 
 
 def describe(m: ae.Material, segments: list[list[float]], effects: list[dict[str, Any]],
-             title: str = "") -> str:
+             title: str = "", since: str | None = None) -> str:
     """The edit in the AI edit's own words: kept pieces per segment, in play order, and the
     effects (whose they are)."""
     lines = []
@@ -105,6 +109,25 @@ def describe(m: ae.Material, segments: list[list[float]], effects: list[dict[str
         out += f"\nShort's title: {title}"
     lib = [f"- {o['id']}: {o['name']} · {o['duration_s']:.1f} s · {o['description'] or ''}" for o in m.overlays]
     out += "\nOverlay library now (for overlays):\n" + ("\n".join(lib) or "(empty)")
+    out += "\nInserts for this clip now (for cutaways):\n" + ae.inserts_text(m.inserts)
+    # The session saw the sound library when it started: tell it about sounds added since.
+    new = [x for x in m.sounds if since and (x.get("added_at") or "") > since]
+    if new:
+        out += "\nSounds added to the library since this conversation started (ids, for sounds):\n" + "\n".join(
+            f"- {x['id']}: {x['name']} · {x['duration_s']:.1f} s · default {x['gain_db']:+g} dB · {x['description'] or ''}"
+            for x in new)
+    return out
+
+
+def _brought(got: list[dict[str, Any]], failed: list[str]) -> str:
+    """What came of the links in the director's message, for Claude."""
+    out = ""
+    if got:
+        out += "\n\nFrom the links in that message, these inserts are ready for cutaways: " + \
+            ", ".join(o["id"] for o in got) + "."
+    if failed:
+        out += "\n\nSome links couldn't be downloaded: " + "; ".join(failed) + \
+            " Say so in note; you may look for another copy of the same thing."
     return out
 
 
@@ -122,7 +145,10 @@ def _summary(r: ae.Result) -> str:
             f"{c['camera']} shot{'s' * (c['camera'] != 1)}" if c.get("camera") else "",
             f"{c['sounds']} sound{'s' * (c['sounds'] != 1)}" if c.get("sounds") else "",
             f"{c['hits']} shake/flash" if c.get("hits") else "",
+            f"{c['layouts']} layout change{'s' * (c['layouts'] != 1)}" if c.get("layouts") else "",
             f"{c['overlays']} overlay{'s' * (c['overlays'] != 1)}" if c.get("overlays") else "",
+            f"{c['layers']} layer{'s' * (c['layers'] != 1)}" if c.get("layers") else "",
+            f"{c['cutaways']} cutaway{'s' * (c['cutaways'] != 1)}" if c.get("cutaways") else "",
             f"{c['texts']} text{'s' * (c['texts'] != 1)}" if c.get("texts") else "",
             f"{c['spots']} spotlight{'s' * (c['spots'] != 1)}" if c.get("spots") else "",
             f"{c['captions']} caption style{'s' * (c['captions'] != 1)}" if c.get("captions") else "",
@@ -136,7 +162,14 @@ def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str =
     """Send the director's message (empty = just make the edit) to the edit's session; a
     new session when there's none yet or new=True. Saves the edit Claude makes."""
     message = str(message or "").strip()[:MAX_MESSAGE]
+    from chatwatcher.edit import inserts
+    urls, got, failed = inserts.links(message), [], []
+    if urls:
+        ae.material(cfg, conn, moment_pk, kind, intensity)   # fails early (no words, Claude off) before downloading
+        got, failed = inserts.fetch_all(cfg, conn, moment_pk, urls)
     m = ae.material(cfg, conn, moment_pk, kind, intensity)
+    brought = _brought(got, failed)
+    web = bool(message)
     session, history = thread(conn, moment_pk, kind)
     fresh = new or session is None
     res = None
@@ -147,9 +180,11 @@ def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str =
         segs = service.to_clip(json.loads(row["segments_json"]), m.clip) if row else service.whole(m.clip)
         effects = service.effects_to_clip(service.effects(m.base), m.clip)
         title = (service.current_layout(conn, moment_pk, m.clip, row).get("title") or "") if kind == "short" else ""
-        prompt = FOLLOW_UP.format(message=message, state=describe(m, segs, effects, title))
+        since = history[0]["created_at"] if history else None
+        prompt = FOLLOW_UP.format(message=message, state=describe(m, segs, effects, title, since)) + brought
         try:
-            res = ae.ask(cfg, m, prompt, runner=runner, images=False, chat=True, session=session, resume=True)
+            res = ae.ask(cfg, m, prompt, runner=runner, images=False, chat=True, session=session, resume=True,
+                         web=web)
         except ae.AutoEditError as e:
             if e.kind != "no_session":
                 raise
@@ -160,8 +195,8 @@ def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str =
             said = [f"{'Director' if h['role'] == 'user' else 'You'}: {h['text']}" for h in history[-RECAP:]]
             recap = "\n\nEarlier in this conversation (the session was lost):\n" + "\n".join(said)
         session = str(uuid.uuid4())
-        prompt = m.prompt() + (FIRST.format(message=message) if message else "") + recap
-        res = ae.ask(cfg, m, prompt, runner=runner, chat=True, session=session)
+        prompt = m.prompt() + (FIRST.format(message=message) if message else "") + brought + recap
+        res = ae.ask(cfg, m, prompt, runner=runner, chat=True, session=session, web=web)
         res.data["apply"] = True            # a first answer always makes the edit
     assert res is not None and session is not None
     _say(conn, moment_pk, kind, session, "user", message or "✨ Make the edit")
@@ -173,6 +208,8 @@ def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str =
                           restyle=fresh)
         done = _summary(result)
         reply = (reply + (f" ({done})" if done else "")).strip() or "Done."
+        if failed and not result.counts.get("cutaways"):
+            reply += " Couldn't download: " + "; ".join(failed)
         if result.plan.warnings:
             reply += " " + " ".join(result.plan.warnings)
     if fresh and not new and history:

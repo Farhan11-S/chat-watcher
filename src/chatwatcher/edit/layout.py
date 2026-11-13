@@ -8,8 +8,9 @@ Three layouts:
     fit    the whole frame across the middle, over a blurred, darker copy that fills the screen
 Any layout can have a title in the top band (burned in with the subtitles).
 
-A "frame" effect (FRAME) overrides the layout for a while: the Short then shows one region
-full-screen (frame_panels): a narrow one (her face, a plugin window) as a tight crop, a wide
+A "frame" effect (FRAME) overrides the layout for a while (shot_panels): with top / bottom /
+split it's a stack of two regions (the scene changed: the game feed went away, she's
+chatting now); with a region the Short shows that one region full-screen (frame_panels): a narrow one (her face, a plugin window) as a tight crop, a wide
 one (the game) across the middle over a blurred copy. That's how the camera moves to
 something the layout doesn't show. Its region can be FULL, the whole picture: the fit + blur
 view for a while (everyone's facecams and the game at once, a desktop).
@@ -138,7 +139,7 @@ def panels(layout: dict[str, Any], boxes: dict[str, dict[str, float]], sw: int, 
 FRAME = "frame"
 FULL = "full"                       # a frame shot on the whole picture: fit + blur for a while
 FULL_BOX = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
-FRAME_LIMITS = (2.0, 0.3, 15.0)     # default, shortest and longest frame shot, seconds
+FRAME_LIMITS = (2.0, 0.3, 60.0)     # default, shortest and longest frame shot, seconds (a stack can be a whole scene)
 FRAME_MARGIN = 1.25                 # room around the region
 FRAME_WIDE = 1.6                    # wider than this × the Short's shape: across the middle instead
 
@@ -161,6 +162,42 @@ def frame_panels(box: dict[str, float], sw: int, sh: int) -> list[Panel]:
 def region_box(name: str, boxes: dict[str, dict[str, float]]) -> dict[str, float] | None:
     """A frame shot's region: a drawn box, or FULL (the whole picture), or None."""
     return FULL_BOX if name == FULL else boxes.get(name)
+
+
+def is_stack_shot(fx: dict[str, Any]) -> bool:
+    """A frame shot that stacks two regions (top, bottom, split) instead of showing one."""
+    return bool(fx.get("top") or fx.get("bottom"))
+
+
+def shot_regions(fx: dict[str, Any]) -> set[str]:
+    names = {fx.get("top"), fx.get("bottom")} if is_stack_shot(fx) else {fx.get("region")}
+    return {n for n in names if n and n != FULL}
+
+
+def shot_panels(fx: dict[str, Any], boxes: dict[str, dict[str, float]], sw: int, sh: int) -> list[Panel] | None:
+    """A frame shot's picture: two regions stacked (like the stack layout, for a while: the
+    scene changed, the game feed went away), or one region full-screen. None when a region
+    it needs isn't drawn."""
+    if is_stack_shot(fx):
+        if any(n not in boxes for n in shot_regions(fx)):
+            return None
+        return panels({"type": "stack", "top": fx.get("top") or "", "bottom": fx.get("bottom") or "",
+                       "split": fx.get("split", 0.6)}, boxes, sw, sh)
+    box = region_box(fx.get("region") or "", boxes)
+    return frame_panels(box, sw, sh) if box else None
+
+
+def sharp(ps: list[Panel]) -> list[Panel]:
+    return [p for p in ps if not p.blur]
+
+
+def panel_at(x: float, y: float, ps: list[Panel]) -> Panel | None:
+    """The top-most sharp panel showing this point of the clip's frame (map_point's panel)."""
+    for p in reversed(ps):
+        sx, sy, sw, sh = p.src
+        if not p.blur and sx <= x <= sx + sw and sy <= y <= sy + sh:
+            return p
+    return None
 
 
 def frame_at(t: float, frames: list[dict[str, Any]]) -> dict[str, Any] | None:

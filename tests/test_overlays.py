@@ -36,7 +36,7 @@ def pixel(video: Path, t: float, x: float, y: float) -> tuple[int, int, int]:
 def test_effects_check_overlays():
     fx = clean_effects([{"type": "overlay", "t": 1, "overlay": "pings", "d": 99, "size": 9, "at": "Face "}], 10, set(),
                        {"pings"})
-    assert fx[0] | {"id": ""} == {"id": "", "type": "overlay", "t": 1.0, "overlay": "pings", "d": ovl.MAX_SECONDS,
+    assert fx[0] | {"id": ""} == {"id": "", "type": "overlay", "t": 1.0, "overlay": "pings", "d": ovl.MAX_EFFECT_S,
                                   "at": "face", "dx": 0.0, "dy": 0.0, "size": ovl.SIZE_RANGE[1], "gain": 0.0,
                                   "mode": "both", "by": "you", "why": ""}
     # Moved by hand (kept to OFFSET_RANGE), and only its sound or only its picture.

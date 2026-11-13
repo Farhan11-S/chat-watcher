@@ -226,19 +226,56 @@ export function paintVisPanel() {
     if (f.region && S.D.regions[f.region])
       acts.appendChild(btn("⤢ fill", `Zoom so ${f.region} fills the frame (${nice(fitZoom(f.region))}×)`, { visFit: "" }));
   } else if (f.type === "frame") {
-    box.appendChild(regionChips(f.region || "", { chipFor: "vis" }, "", [[FULL, "whole picture (fit + blur)"]]));
+    const stacked = !!(f.top || f.bottom);
+    const mode = el("div", "ed-region-chips");
+    for (const [v, label, tip] of [["one", "one region", "Show one region full-screen"],
+                                   ["stack", "two stacked", "Stack two regions, one above the other (when the scene changed)"]]) {
+      const b = btn(label, tip, { shotMode: v });
+      b.className = "chip ed-rchip" + ((stacked ? "stack" : "one") === v ? " current" : "");
+      mode.appendChild(b);
+    }
+    box.appendChild(mode);
+    if (stacked) {
+      box.appendChild(el("small", "muted", "Top"));
+      box.appendChild(regionChips(f.top || "", { chipFor: "top" }, "whole frame"));
+      box.appendChild(el("small", "muted", "Bottom"));
+      box.appendChild(regionChips(f.bottom || "", { chipFor: "bottom" }, "whole frame"));
+      acts.appendChild(labelled("top gets", select([0.3, 0.4, 0.5, 0.55, 0.6, 0.65, 0.7].map(v => [v, Math.round(v * 100) + "%"]),
+                                                   f.split || 0.6, { shotSplit: "" }, "The top picture's share of the height",
+                                                   v => Math.round(v * 100) + "%")));
+    } else box.appendChild(regionChips(f.region || "", { chipFor: "vis" }, "", [[FULL, "whole picture (fit + blur)"]]));
   } else if (f.type === "overlay") {
     const ov = overlayOf(f.overlay);
-    acts.appendChild(labelled("overlay", select((S.D.overlays || []).map(o => [o.id, o.name]), f.overlay, { visOverlay: "" },
-                                                "Which overlay", v => v + " (gone)")));
+    acts.appendChild(labelled("overlay", select((S.D.overlays || []).map(o => [o.id, (o.insert ? "⧉ " : "") + o.name]),
+                                                f.overlay, { visOverlay: "" }, "Which overlay (⧉ = brought in for this clip)",
+                                                v => v + " (gone)")));
     acts.appendChild(labelled("plays", select([["both", "picture + sound"], ["sound", "sound only"], ["picture", "picture only"]],
                                               f.mode || "both", { visMode: "" }, "Show its picture, play its sound, or both")));
     if (ov && ov.sound && ovSound(f))
       acts.appendChild(labelled("volume", select([6, 3, 0, -3, -6, -10, -15, -20].map(v => [v, (v > 0 ? "+" : "") + v + " dB"]),
                                                  f.gain || 0, { visGain: "" }, "Its sound's volume")));
-    if (ovPicture(f)) placeControls(box, acts, f, [["full", "whole picture"], ["middle", "middle"]],
-                                    "How wide, as a share of the picture (over 100% spills off the sides)");
+    if (ovPicture(f) && f.at === "fill") {
+      box.appendChild(el("small", "muted", "Shows"));
+      box.appendChild(regionChips("fill", { chipFor: "ovat" }, "", [["fill", "full screen (cutaway)"], ["full", "whole picture"],
+                                                                     ["middle", "middle"]]));
+      box.appendChild(el("p", "faint ed-why", "A cutaway: it fills the screen over a blurred picture, and her voice goes down while its own sound plays."));
+    } else if (ovPicture(f)) placeControls(box, acts, f, [["full", "whole picture"], ["middle", "middle"], ["fill", "full screen (cutaway)"]],
+                                           "How wide, as a share of the picture (over 100% spills off the sides)");
     if (ov && ov.description) box.appendChild(el("p", "faint ed-why", ov.description));
+    const link = el("div", "ed-insert");
+    const url = el("input");
+    Object.assign(url, { type: "url", placeholder: "Bring in an X post, picture or video link…" });
+    url.dataset.insertUrl = "";
+    url.setAttribute("aria-label", "Link to bring in");
+    link.append(url, btn("⤓ bring in", "Download it for this clip and show it full screen here", { insertGo: "" }));
+    box.appendChild(link);
+  } else if (f.type === "layer") {
+    box.appendChild(el("small", "muted", "Shows"));
+    box.appendChild(regionChips(f.region || "", { chipFor: "lysrc" }, ""));
+    acts.appendChild(labelled("opacity", select([0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1].map(v => [v, Math.round(v * 100) + "%"]),
+                                                f.opacity || S.D.layer_info.default_opacity, { layerOpacity: "" },
+                                                "How solid it is (100% hides what's under it)", v => Math.round(v * 100) + "%")));
+    placeControls(box, acts, f, [["middle", "middle"], ["full", "whole picture"]], "How wide, as a share of the picture");
   } else if (f.type === "spot") {
     acts.appendChild(labelled("style", select([["spotlight", "spotlight: dim the rest + ring"], ["circle", "circle: just a ring"],
                                                ["dim", "dim the rest"]], f.style || "spotlight", { spotStyle: "" }, "How it points")));

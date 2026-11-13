@@ -106,7 +106,14 @@
 .ed-subs { position: absolute; pointer-events: none; overflow: hidden; }
 .ed-ovs { position: absolute; pointer-events: none; overflow: hidden; }
 .ed-ovs[hidden] { display: none; }
+.ed-lys { position: absolute; pointer-events: none; overflow: hidden; }
+.ed-lys[hidden] { display: none; }
+.ed-lys > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .ed-ov { position: absolute; max-width: none; background: transparent; border-radius: 0; }
+.ed-ov-blur { position: absolute; inset: 0; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.ed-ov-blur[hidden] { display: none; }
+.ed-insert { display: flex; gap: .4rem; margin: .5rem 0 .2rem; }
+.ed-insert input { flex: 1; min-width: 8rem; }
 .ed-txs { position: absolute; pointer-events: none; overflow: hidden; }
 .ed-txs[hidden] { display: none; }
 .ed-callout { position: absolute; white-space: nowrap; text-align: center; font-weight: 700; paint-order: stroke fill;

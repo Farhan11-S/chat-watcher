@@ -24,6 +24,10 @@ class EditIn(BaseModel):
     layout: Any = None        # a Short's layout (edit.layout); None = keep
 
 
+class InsertIn(BaseModel):
+    url: str
+
+
 class RegionsIn(BaseModel):
     regions: Any = None       # [{name, x, y, w, h}] as fractions of the frame
     kind: str = "long"        # which edit's render state to answer with
@@ -136,6 +140,22 @@ def router(ctx: Ctx) -> APIRouter:
         from chatwatcher.edit.direct import thread
         session, messages = thread(conn, pk, kind_ok(kind))
         return JSONResponse({"ok": True, "session": bool(session), "messages": messages})
+
+    @r.post("/api/moment/{pk}/insert")
+    def api_insert(pk: int, body: InsertIn, conn=Depends(get_conn)):
+        """Download a link (an X post, a picture, a video) into this clip's inserts, for a
+        cutaway (a few seconds; a video up to a minute: the page waits, like Direct)."""
+        from chatwatcher.edit import inserts
+        from chatwatcher.edit.editstore import overlay_list
+        from chatwatcher.edit.service import EditError, clip_ref
+        try:
+            clip_ref(conn, pk)
+            got = inserts.fetch(cfg, conn, pk, body.url)
+        except EditError as e:
+            return edit_error(e)
+        except inserts.InsertError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return JSONResponse({"ok": True, "added": [g["id"] for g in got], "overlays": overlay_list(conn, pk)})
 
     @r.post("/moment/{pk}/subs/polish")
     def subs_polish(pk: int, body: EditIn, conn=Depends(get_conn)):

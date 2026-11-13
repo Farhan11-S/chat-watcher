@@ -1,5 +1,5 @@
-"""Claude's picks → editor effects: sounds, overlays, text callouts, spotlights, shakes
-and flashes, transitions and caption styles. Each builder keeps what lands inside the cut,
+"""Claude's picks → editor effects: sounds, overlays, cutaways (inserts shown full
+screen), text callouts, spotlights, shakes and flashes, transitions and caption styles. Each builder keeps what lands inside the cut,
 snaps it to a loud hit where that fits, and clamps it to what the editor allows."""
 
 from __future__ import annotations
@@ -10,15 +10,18 @@ import secrets
 from typing import Any
 
 from chatwatcher.edit import captions as cap
+from chatwatcher.edit import layers as lyr
 from chatwatcher.edit import overlays as ovl
 from chatwatcher.edit import spots as spt
 from chatwatcher.edit import texts as txt
 from chatwatcher.edit import motion, pieces as pc, service
 from chatwatcher.edit.audio import snap
-from chatwatcher.edit.autoedit.plan import (CENTRE, MAX_CAPTIONS, MAX_OVERLAYS, MAX_SPOTS, MAX_TEXTS, STRENGTHS, parse_range,
-                                           parts)
+from chatwatcher.edit.autoedit.plan import (CENTRE, MAX_CAPTIONS, MAX_CUTAWAYS, MAX_LAYERS, MAX_OVERLAYS, MAX_SPOTS, MAX_TEXTS,
+                                           STRENGTHS, parse_range, parts)
 
-HIT_SNAP_S = 1.0
+HIT_SNAP_S = 1.0         # a shake or flash moves this far onto a loud hit
+SOUND_SNAP_S = 0.4       # a sound or overlay only this far: a meme is timed to the words, not the nearest bang
+CUTAWAY_D = (1.0, 2.0)   # a cutaway lasts at least this long; a post card shows 2+ s even when asked for less
 KINDS = {"punch_in": "punch", "push_in": "push", "shake": "shake", "flash": "flash"}
 CAPTION_LEAD = 0.05      # a caption style starts this long before its first word
 SPOT_PAD = 0.15         # room round a region a spotlight is put round
@@ -43,7 +46,7 @@ def sound_effects(items: list[str], segs: list[list[float]], hits: list[tuple[fl
         k = _inside(t, segs)
         if k is None or sound not in known:
             continue
-        snapped = snap(t, hits, HIT_SNAP_S)
+        snapped = snap(t, hits, SOUND_SNAP_S)
         if _inside(snapped, segs) == k:
             t = snapped
         out.append({"id": "c" + secrets.token_hex(3), "type": "sfx", "t": round(t, 3), "sound": sound,
@@ -69,7 +72,7 @@ def overlay_effects(items: list[str], segs: list[list[float]], hits: list[tuple[
         k = _inside(t, segs)
         if ov is None or k is None:
             continue
-        snapped = snap(t, hits, HIT_SNAP_S)
+        snapped = snap(t, hits, SOUND_SNAP_S)
         if _inside(snapped, segs) == k:
             t = snapped
         at = bits[2].lower() if len(bits) > 2 else "full"
@@ -78,6 +81,73 @@ def overlay_effects(items: list[str], segs: list[list[float]], hits: list[tuple[
                     "d": ov["duration_s"], "at": at, "size": ovl.default_size(at, ov, *out), "gain": 0.0,
                     "by": "claude", "why": " | ".join(bits[3:])[:300]})
     return res[:limit]
+
+
+def layer_size(box: dict[str, float], src: tuple[int, int], out: tuple[int, int],
+               most_w: float = 0.9, most_h: float = 0.45) -> float:
+    """A layer's width (share of the picture's) so it fits inside most_w × most_h of the picture."""
+    aspect = (box["w"] * (src[0] or 1920)) / max(box["h"] * (src[1] or 1080), 1e-6)
+    w = min(most_w, most_h * out[1] / out[0] * aspect)
+    return round(min(max(w, lyr.SIZE_RANGE[0]), lyr.SIZE_RANGE[1]), 2)
+
+
+def layer_effects(items: list[str], segs: list[list[float]], boxes: dict[str, dict[str, float]],
+                  src: tuple[int, int], out: tuple[int, int], limit: int = MAX_LAYERS) -> list[dict[str, Any]]:
+    """Claude's layers ("clip s | seconds | region | where | opacity % | why"): a region of
+    the clip over the picture, see-through, starting inside the cut."""
+    res = []
+    for item in items:
+        bits = parts(item)
+        try:
+            t, d = float(bits[0]), float(bits[1])
+        except (ValueError, IndexError):
+            continue
+        region = bits[2].lower() if len(bits) > 2 else ""
+        if region not in boxes or _inside(t, segs) is None or not math.isfinite(d):
+            continue
+        at = bits[3].lower() if len(bits) > 3 else "middle"
+        at = at if at in ("middle", "full") or at in boxes else "middle"
+        try:
+            opacity = float(bits[4].rstrip("%")) / 100 if len(bits) > 4 else lyr.DEFAULT_OPACITY
+        except ValueError:
+            opacity = lyr.DEFAULT_OPACITY
+        opacity = opacity if math.isfinite(opacity) else lyr.DEFAULT_OPACITY
+        res.append({"id": "c" + secrets.token_hex(3), "type": lyr.LAYER, "t": round(t, 3),
+                    "d": round(min(max(d, lyr.D_LIMITS[1]), lyr.D_LIMITS[2]), 3), "region": region, "at": at,
+                    "dx": 0.0, "dy": 0.0, "size": layer_size(boxes[region], src, out),
+                    "opacity": round(min(max(opacity, lyr.OPACITY_RANGE[0]), lyr.OPACITY_RANGE[1]), 2),
+                    "by": "claude", "why": " | ".join(bits[5:])[:300]})
+    return res[:limit]
+
+
+def cutaway_effects(items: list[str], segs: list[list[float]], inserts: list[dict[str, Any]],
+                    limit: int = MAX_CUTAWAYS) -> list[dict[str, Any]]:
+    """Claude's cutaways ("clip s | seconds | insert id | why") as overlay effects at
+    "fill": inside the cut, as long as asked (but no longer than a video insert)."""
+    known = {o["id"]: o for o in inserts}
+    res = []
+    for item in items:
+        bits = parts(item)
+        try:
+            t, d = float(bits[0]), float(bits[1])
+        except (ValueError, IndexError):
+            continue
+        ins = known.get(bits[2] if len(bits) > 2 else "")
+        if ins is None or _inside(t, segs) is None or not math.isfinite(d):
+            continue
+        still = "video" not in (ins.get("tags") or "")       # a picture or post card (edit.inserts tags them)
+        longest = min(ins["duration_s"], ovl.MAX_EFFECT_S)
+        d = min(max(d, CUTAWAY_D[1] if still else CUTAWAY_D[0]), longest)
+        res.append({"id": "c" + secrets.token_hex(3), "type": ovl.OVERLAY, "overlay": ins["id"], "t": round(t, 3),
+                    "d": round(d, 3), "at": ovl.FILL, "size": 1.0, "gain": 0.0, "mode": "both",
+                    "by": "claude", "why": " | ".join(bits[3:])[:300]})
+    res.sort(key=lambda f: f["t"])
+    out: list[dict[str, Any]] = []
+    for f in res:                       # one at a time
+        if out and f["t"] < out[-1]["t"] + out[-1]["d"]:
+            continue
+        out.append(f)
+    return out[:limit]
 
 
 def text_effects(items: list[str], segs: list[list[float]], boxes: dict[str, dict[str, float]], short: bool,

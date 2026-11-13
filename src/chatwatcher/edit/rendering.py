@@ -12,6 +12,7 @@ from typing import Any, Callable
 from chatwatcher.config import Config
 from chatwatcher.edit import captions as cap
 from chatwatcher.edit import clipref as cr
+from chatwatcher.edit import layers as lyr
 from chatwatcher.edit import layout as lay
 from chatwatcher.edit import overlays as ovl
 from chatwatcher.edit import spots as spt
@@ -53,19 +54,20 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         title = layout["title"]
         # Frame shots: the picture moves to another region for a while, so the cut is split
         # where they start and end, and each part gets its own picture and zoom targets.
-        frames = [f for f in clip_fx if f.get("type") == lay.FRAME and lay.region_box(f.get("region") or "", boxes)]
+        frames = [f for f in clip_fx if f.get("type") == lay.FRAME and lay.shot_panels(f, boxes, sw, sh)]
         segs = split_at(segs, [t for f in frames for t in (f["t"], f["t"] + f["d"])], clip.fps)
         graph, pictures, no_region, ov_lists, ov_missing, text_lists, spot_lists = [], [], set(), [], set(), [], []
-        cap_lists = []
+        cap_lists, layer_lists = [], []
         for s, e, _g in segs:
             fr = lay.frame_at((s + e) / 2, frames)
-            pk = lay.frame_panels(lay.region_box(fr["region"], boxes), sw, sh) if fr else ps
+            pk = (lay.shot_panels(fr, boxes, sw, sh) if fr else None) or ps
             graph.append(lay.graph(pk, sw, sh))
             placed, gone = ovl.placed(cfg, conn, clip_fx, boxes, pk)
             ov_lists.append(placed)
             text_lists.append(txt.placed(clip_fx, boxes, pk))
             spot_lists.append(spt.placed(clip_fx, pk))
             cap_lists.append(cap.placed(clip_fx, boxes, pk))
+            layer_lists.append(lyr.placed(clip_fx, boxes, pk, (sw, sh)))
             ov_missing |= gone
             pics, missing = short_visuals(clip_fx, boxes, pk)
             pictures.append(pics)
@@ -80,6 +82,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         text_lists = [txt.placed(clip_fx, boxes, None)] * len(segs)
         spot_lists = [spt.placed(clip_fx, None)] * len(segs)
         cap_lists = [cap.placed(clip_fx, boxes, None)] * len(segs)
+        layer_lists = [lyr.placed(clip_fx, boxes, None, (clip.width, clip.height))] * len(segs)
         size = (clip.width, clip.height)
     for k, v in motion.transitions(segs, clip_fx):
         pictures[k].append(v)
@@ -113,7 +116,8 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         snd_file = ovl.sound_path(cfg, ov) if ov else None
         if snd_file and snd_file.is_file():
             for at in place(fx["t"], segs, clip.fps):
-                sound_cues.append(SoundCue(at + intro_s, snd_file, fx.get("gain", 0) + ov["gain_db"], 0.0,
+                duck = ovl.FILL_DUCK if fx.get("at") == ovl.FILL else 0.0   # a cutaway video is heard
+                sound_cues.append(SoundCue(at + intro_s, snd_file, fx.get("gain", 0) + ov["gain_db"], duck,
                                            min(fx["d"], ov["duration_s"])))
 
     last = [0.0]
@@ -134,7 +138,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
                    sounds=sound_cues, visuals=pictures, subs=cues if sub_style["on"] else [],
                    sub_style=sub_style, size=size, font=cfg.subtitles.font,
                    intro=intro, intro_s=intro_s, layout=graph, title=title, overlays=ov_lists, texts=text_lists, spots=spot_lists,
-                   captions=cap_lists, on_progress=progress)
+                   captions=cap_lists, layers=layer_lists, on_progress=progress)
     finally:
         conn.execute(f"UPDATE {table} SET render_progress = NULL WHERE moment_id = ?", (moment_pk,))
     # The subtitles as a .srt on the edit's timeline (for YouTube's CC), burned in or not.
@@ -149,7 +153,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
     stream_subs, _ = subs_rendered(cfg, row, clip, kind)
     info = {"segments": stream, "effects": stream_fx, "regions": boxes, "subs": stream_subs, "subs_style": sub_style,
             "duration_s": round(r.duration_s, 2), "size_bytes": r.size_bytes, "sounds": len(sound_cues),
-            "visuals": sum(f.get("type") in (*motion.TYPES, lay.FRAME, "transition", ovl.OVERLAY, txt.TEXT, spt.SPOT, cap.CAPTION) for f in clip_fx if any(s <= f["t"] < e for s, e, _ in segs)), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
+            "visuals": sum(f.get("type") in (*motion.TYPES, lay.FRAME, "transition", ovl.OVERLAY, txt.TEXT, spt.SPOT, cap.CAPTION, lyr.LAYER) for f in clip_fx if any(s <= f["t"] < e for s, e, _ in segs)), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
             "missing": sorted(missing | ov_missing), "missing_regions": sorted(no_region),
             "intro": intro_key, "intro_s": round(intro_s, 3)}
     if short:

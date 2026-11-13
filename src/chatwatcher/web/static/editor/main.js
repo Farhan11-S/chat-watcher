@@ -18,7 +18,7 @@ import { paintButtons, seek, stopEditPlay } from "./playback.js";
 import { drawSubPreview } from "./captions.js";
 import { pollRender, showRender } from "./io.js";
 import { paintNames } from "./editing.js";
-import { drawOverlays, drawSpotHandle, drawTexts } from "./overlays.js";
+import { drawLayers, drawOverlays, drawSpotHandle, drawTexts } from "./overlays.js";
 import { draw, follow, paintTime, resize } from "./timeline.js";
 import { paintLine, paintList, paintTranscript, pollTranscript } from "./transcript.js";
 import {
@@ -65,6 +65,7 @@ function tick() {
       if (!video.paused && !S.drag) follow(t);
       drawStage();
       drawSpotHandle();
+      drawLayers();
       drawOverlays();
       drawSubPreview();
       drawTexts();

@@ -59,6 +59,7 @@ from chatwatcher.edit.autoedit.camera import (  # noqa: F401
     WIDE_PUSH,
     WIDE_PUSH_S,
     camera_track,
+    layout_effects,
 )
 from chatwatcher.edit.autoedit.effects import (  # noqa: F401
     CAPTION_LEAD,
@@ -67,7 +68,9 @@ from chatwatcher.edit.autoedit.effects import (  # noqa: F401
     SPOT_PAD,
     caption_effects,
     captions,
+    cutaway_effects,
     hit_effects,
+    layer_effects,
     overlay_effects,
     sound_effects,
     spot_effects,
@@ -78,6 +81,9 @@ from chatwatcher.edit.autoedit.effects import (  # noqa: F401
 from chatwatcher.edit.autoedit.plan import (  # noqa: F401
     CENTRE,
     MAX_CAPTIONS,
+    MAX_CUTAWAYS,
+    MAX_LAYERS,
+    MAX_LAYOUTS,
     MAX_OVERLAYS,
     MAX_SPOTS,
     MAX_TEXTS,
@@ -93,6 +99,7 @@ from chatwatcher.edit.autoedit.prompt import (  # noqa: F401
     SYSTEM,
     TRANSITION_LIST,
     build_prompt,
+    inserts_text,
     placed_line,
     schema,
 )

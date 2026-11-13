@@ -11,9 +11,12 @@ from typing import Any
 STRENGTHS = {"light": 1, "normal": 2, "heavy": 3}
 CENTRE = "centre"
 MAX_OVERLAYS = 3
+MAX_CUTAWAYS = 3
 MAX_TEXTS = 3
 MAX_SPOTS = 3
 MAX_CAPTIONS = 12
+MAX_LAYERS = 3
+MAX_LAYOUTS = 8
 
 
 class AutoEditError(Exception):

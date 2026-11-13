@@ -41,6 +41,9 @@ class Visual:
     cy: float = 0.5
     strength: int = 2              # shake: 1 light, 2 normal, 3 heavy
     color: str = "white"           # flash
+    box: tuple[float, float, float, float] | None = None   # punch/push in a Short with two pictures
+    # (a stack): the panel it zooms inside, x, y, w, h as fractions of the Short's frame; cx, cy
+    # are then fractions of that panel. None: the whole picture.
 
     def active(self, t: float) -> bool:
         return self.t <= t < self.t + self.d
@@ -186,18 +189,44 @@ def local(visuals: list[Visual], start: float, length: float) -> list[Visual]:
     return [replace(v, t=v.t - start) for v in visuals if v.t < start + length and v.t + v.d > start]
 
 
-def video_filter(visuals: list[Visual], fps: float, length: float) -> str | None:
+def _warp(visuals: list[Visual], fps: float) -> str:
+    """The view of these zooms and shakes as a perspective warp (smooth, sub-pixel)."""
+    xc, yc, h = view_exprs(visuals, f"(in/{fps:.6g})")
+    corners = {"x0": f"W*({xc}-{h})", "y0": f"H*({yc}-{h})", "x1": f"W*({xc}+{h})", "y1": f"H*({yc}-{h})",
+               "x2": f"W*({xc}-{h})", "y2": f"H*({yc}+{h})", "x3": f"W*({xc}+{h})", "y3": f"H*({yc}+{h})"}
+    return "perspective=interpolation=linear:eval=frame:" + ":".join(f"{k}='{v}'" for k, v in corners.items())
+
+
+def _even(v: float) -> int:
+    return int(round(v / 2)) * 2
+
+
+def panel_boxes(visuals: list[Visual]) -> list[tuple[float, float, float, float]]:
+    """The panels that zoom on their own, in a fixed order."""
+    return sorted({v.box for v in visuals if v.box is not None and v.type in ZOOMS})
+
+
+def video_filter(visuals: list[Visual], fps: float, length: float,
+                 size: tuple[int, int] = (1080, 1920)) -> str | None:
     """The -vf chain for one segment, effects in its own time (0 = its first frame), or
-    None when nothing shows in it. The view is a perspective warp (smooth, sub-pixel);
-    each flash is one filled box per frame it shows on."""
+    None when nothing shows in it. Each flash is one filled box per frame it shows on.
+    Zooms with a box (a stack's panel) zoom just that part of the picture: it's cropped
+    off a copy, warped and laid back where it was (size: the picture's width and height).
+    The result can hold labelled branches, so it goes after an input label in a graph
+    (or as a -vf script), never inside a longer chain."""
     fps = fps or 30.0
     parts = []
-    if any(v.type in ZOOMS or v.type == "shake" for v in visuals):
-        xc, yc, h = view_exprs(visuals, f"(in/{fps:.6g})")
-        corners = {"x0": f"W*({xc}-{h})", "y0": f"H*({yc}-{h})", "x1": f"W*({xc}+{h})", "y1": f"H*({yc}-{h})",
-                   "x2": f"W*({xc}-{h})", "y2": f"H*({yc}+{h})", "x3": f"W*({xc}+{h})", "y3": f"H*({yc}+{h})"}
-        parts.append("perspective=interpolation=linear:eval=frame:"
-                     + ":".join(f"{k}='{v}'" for k, v in corners.items()))
+    W, H = size
+    for k, box in enumerate(panel_boxes(visuals)):
+        x0, y0 = min(max(_even(box[0] * W), 0), W - 2), min(max(_even(box[1] * H), 0), H - 2)
+        w = max(2, min(_even((box[0] + box[2]) * W), W) - x0)
+        h = max(2, min(_even((box[1] + box[3]) * H), H) - y0)
+        warp = _warp([v for v in visuals if v.box == box and v.type in ZOOMS], fps)
+        parts.append(f"split[pz{k}m][pz{k}s];[pz{k}s]crop={w}:{h}:{x0}:{y0},{warp}[pz{k}z];"
+                     f"[pz{k}m][pz{k}z]overlay={x0}:{y0}")
+    whole = [v for v in visuals if v.box is None or v.type not in ZOOMS]
+    if any(v.type in ZOOMS or v.type == "shake" for v in whole):
+        parts.append(_warp(whole, fps))
     frames = max(1, round(length * fps))
     for v in visuals:                          # a whip's motion blur
         if v.type == "blur":

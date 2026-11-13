@@ -3,8 +3,8 @@ import {
   $, DRAG_SNAP_S, LINE_SNAP_S, MIN, S, SUB_MIN, SUB_SNAP_S, Y_CAM, Y_FX, Y_RULER, Y_SUBS, Y_VFX,
   call, canvas, root, scroller, ticked, video,
 } from "./state.js";
-import { curFx, curSub, hold, overlayOf, r3, snap, sound } from "./util.js";
-import { fitZoom } from "./preview.js";
+import { curFx, curSub, flash, hold, overlayOf, r3, snap, sound } from "./util.js";
+import { FULL, fitZoom } from "./preview.js";
 import { audio, playSound } from "./audio.js";
 import { playEdit, playFromHere, seek, stopEditPlay, toggle } from "./playback.js";
 import { render, toggleWatch } from "./io.js";
@@ -14,7 +14,7 @@ import {
   setSubMode, setSubStyle, setSubText, setSubTime, setSubVoice, split, splitSub, startOver, subIndex,
   subsChanged,
 } from "./editing.js";
-import { addOverlay, addSpot, addText, ovSize, setOverlay, setSpotRegion, txStyle } from "./overlays.js";
+import { addOverlay, addSpot, addText, bringIn, ovSize, setOverlay, setSpotRegion, txStyle } from "./overlays.js";
 import { T, X, gx, gy, hitFx, hitSeg, hitSubAt, hitVfx, resize } from "./timeline.js";
 import { addSubAfter, giveTicked, lineEnd, linesToSubs, paintList, transcribe } from "./transcript.js";
 import { addPerson, playVoice, setSegRegion, setTransition, setVoice, tagKey } from "./panels.js";
@@ -236,16 +236,33 @@ root.addEventListener("click", ev => {
     if (ds.chipFor === "seg") setSegRegion(ds.chipRegion);
     else if (ds.chipFor === "spot") setSpotRegion(ds.chipRegion);
     else if (ds.chipFor === "capat") editFx({ at: ds.chipRegion });
+    else if (ds.chipFor === "lysrc") { if (ds.chipRegion) editFx({ region: ds.chipRegion }); }
+    else if (ds.chipFor === "top" || ds.chipFor === "bottom") {
+      const f = curFx(), other = ds.chipFor === "top" ? "bottom" : "top", change = { [ds.chipFor]: ds.chipRegion };
+      if (f && !ds.chipRegion && !f[other]) change[other] = Object.keys(S.D.regions)[0] || "";   // a stack needs a region
+      editFx(change);
+    }
     else if (ds.chipFor === "ovat") {
-      const f = curFx(), ov = f && overlayOf(f.overlay);
-      if (f) editFx(ov && (ds.chipRegion === "full") !== (f.at === "full")
+      const f = curFx(), ov = f && overlayOf(f.overlay), big = a => a === "full" || a === "fill";
+      if (f) editFx(ov && (big(ds.chipRegion) || big(f.at)) && ds.chipRegion !== f.at
         ? { at: ds.chipRegion, size: ovSize(ds.chipRegion, ov), dx: 0, dy: 0 } : { at: ds.chipRegion, dx: 0, dy: 0 });
     } else {
       const f = curFx(), change = { region: ds.chipRegion };
       if (f && f.type === "punch" && ds.chipRegion && S.D.regions[ds.chipRegion]) change.zoom = Math.min(fitZoom(ds.chipRegion), 2.5);
       if (f) editFx(change);
     }
+  } else if (ds.shotMode) {
+    const f = curFx();
+    if (!f) return;
+    const names = Object.keys(S.D.regions);
+    if (ds.shotMode === "one") editFx({ top: "", bottom: "", region: f.bottom || f.top || names[0] || FULL });
+    else if (!(f.top || f.bottom)) {
+      const bottom = names.includes("face") ? "face" : names[0] || "";
+      if (!bottom) { flash("Draw regions first: a stack shows two of them."); return; }
+      editFx({ top: f.region && f.region !== FULL && f.region !== bottom ? f.region : "", bottom, split: 0.6, region: "" });
+    }
   } else if (ds.visRecentre !== undefined) editFx({ dx: 0, dy: 0 });
+  else if (ds.insertGo !== undefined) bringIn((b.parentElement.querySelector("[data-insert-url]") || {}).value);
   else if (ds.edKind) switchKind(ds.edKind);
   else if (ds.layType) { if (S.layout && S.layout.type !== ds.layType) setLayout({ type: ds.layType }); }
   else if (ds.layCentre) {
@@ -327,6 +344,8 @@ root.addEventListener("change", ev => {
   else if (t.matches("[data-vis-overlay]")) setOverlay(t.value);
   else if (t.matches("[data-vis-size]")) { S.ovSizing = false; changed(); }
   else if (t.matches("[data-vis-mode]")) editFx({ mode: t.value });
+  else if (t.matches("[data-shot-split]")) editFx({ split: +t.value });
+  else if (t.matches("[data-layer-opacity]")) editFx({ opacity: +t.value });
   else if (t.matches("[data-text-input]")) {
     const f = curFx();
     S.txEditing = false;

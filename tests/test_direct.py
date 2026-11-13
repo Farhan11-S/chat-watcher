@@ -29,9 +29,9 @@ class FakeDirector:
         self.script, self.calls = list(script), []
 
     def run(self, prompt, schema, *, system, cwd, allow_read=False, model=None, effort=None, images=None,
-            session=None, resume=False):
+            session=None, resume=False, tools=None):
         self.calls.append({"prompt": prompt, "schema": schema, "images": images, "session": session,
-                           "resume": resume, "cwd": cwd})
+                           "resume": resume, "cwd": cwd, "tools": tools})
         step = self.script.pop(0)
         if isinstance(step, ClaudeError):
             raise step
@@ -142,3 +142,19 @@ def test_directing_keeps_your_subtitles_and_can_use_overlays(site, tmp_path):  #
     ov = [f for f in after["effects"] if f["type"] == "overlay"]
     assert len(ov) == 1 and ov[0]["overlay"] == "pings" and ov[0]["at"] == "middle" and ov[0]["by"] == "claude"
     assert any(f["type"] == "frame" and f["region"] == "full" for f in after["effects"])     # the whole picture
+
+
+def test_follow_up_tells_of_new_sounds(site):  # noqa: F811
+    cfg, conn, client, deps = site
+    m = mid(conn)
+    (clip_ref(conn, m).folder / "words.json").write_text(json.dumps(WORDS))
+    conn.execute("INSERT INTO sounds (id, name, description, file, duration_s, added_at) "
+                 "VALUES ('old_one', 'old', 'was there', 'old.flac', 1, '2000-01-01 00:00:00')")
+    fake = FakeDirector(answer(["p2-p4"]), answer(["p2-p4"], apply=False))
+    deps.claude = fake
+    assert client.post(f"/moment/{m}/autoedit", json={"segments": [[0, 20, 0]], "kind": "long"}).json()["ok"]
+    conn.execute("UPDATE edit_chats SET created_at = '2001-01-01 00:00:00'")
+    conn.execute("INSERT INTO sounds (id, name, description, file, duration_s) VALUES ('faaah', 'FAAAH', 'cringe', 'f.flac', 1.9)")
+    assert client.post(f"/moment/{m}/direct", json={"kind": "long", "message": "use faah"}).json()["ok"]
+    follow = fake.calls[1]["prompt"]
+    assert "since this conversation started" in follow and "- faaah: FAAAH" in follow and "old_one" not in follow
