@@ -136,6 +136,7 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
            visuals: list[Visual] | None = None, subs: list[dict] | None = None,
            sub_style: dict | None = None, size: tuple[int, int] = (0, 0), font: str | None = None,
            intro: Path | None = None, intro_s: float = 0.0, layout: str | list[str] | None = None, title: str = "",
+           hook: dict | None = None,
            overlays: list[list[Any]] | None = None, texts: list[list[Any]] | None = None,
            spots: list[list[Any]] | None = None, captions: list[list[Any]] | None = None,
            layers: list[list[Any]] | None = None,
@@ -148,7 +149,8 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
     played first (scaled to size, re-encoded like the segments), intro_s of it; sounds
     must already be placed after it. layout: an ffmpeg graph from [0:v] to [base] that
     builds a Short's picture (edit.layout.graph); size is then the Short's, the visuals are
-    in its frame, and title shows in its top band. layout and visuals may instead be lists
+    in its frame, and title is its hook, shown for its first seconds in the style hook
+    (edit.hook). layout and visuals may instead be lists
     with one entry per segment (a Short whose picture changes between parts). overlays:
     green-screen overlays (edit.overlays.Placed, src time) per segment, laid over the
     picture after its zooms and under the subtitles; their sound comes in with `sounds`.
@@ -214,6 +216,9 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             shown = lines.local(subs or [], s, length)
             ass = ""
             callouts = txt.events(txt.local(texts[i], s, length), *size) if texts and i < len(texts) else []
+            if title:                              # the hook: the Short's first seconds only
+                from chatwatcher.edit import hook as hk
+                callouts += hk.events(title, hook or {}, *size, into=done - intro_s, length=length)
             marks = captions[i] if captions and i < len(captions) else []
             if shown and cap.styled(sub_style or {}, marks):
                 w, h = size if size[0] and size[1] else (1280, 720)
@@ -222,7 +227,7 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                 shown = []
             if shown or title or callouts:   # relative name: ffmpeg runs in tmp, so no path escaping in the filter
                 (tmp / f"part{i:03d}.ass").write_text(
-                    lines.ass(shown, sub_style or {}, *size, font=font or lines.FONT, title=title, title_until=length,
+                    lines.ass(shown, sub_style or {}, *size, font=font or lines.FONT, title=title, title_until=0,
                               extra=callouts),
                     encoding="utf-8")
                 ass = f"ass=part{i:03d}.ass:fontsdir=fonts"

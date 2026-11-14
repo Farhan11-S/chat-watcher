@@ -16,6 +16,7 @@ from chatwatcher.edit import spots as spt
 from chatwatcher.edit import texts as txt
 from chatwatcher.edit import motion, pieces as pc, service
 from chatwatcher.edit.audio import snap
+from chatwatcher.edit.inserts import from_clip
 from chatwatcher.edit.autoedit.plan import (CENTRE, MAX_CAPTIONS, MAX_CUTAWAYS, MAX_LAYERS, MAX_OVERLAYS, MAX_SPOTS, MAX_TEXTS,
                                            STRENGTHS, parse_range, parts)
 
@@ -136,10 +137,12 @@ def cutaway_effects(items: list[str], segs: list[list[float]], inserts: list[dic
         if ins is None or _inside(t, segs) is None or not math.isfinite(d):
             continue
         still = "video" not in (ins.get("tags") or "")       # a picture or post card (edit.inserts tags them)
+        mine = from_clip(ins)                                  # the clip's own picture again
         longest = min(ins["duration_s"], ovl.MAX_EFFECT_S)
         d = min(max(d, CUTAWAY_D[1] if still else CUTAWAY_D[0]), longest)
         res.append({"id": "c" + secrets.token_hex(3), "type": ovl.OVERLAY, "overlay": ins["id"], "t": round(t, 3),
-                    "d": round(d, 3), "at": ovl.FILL, "size": 1.0, "gain": 0.0, "mode": "both",
+                    "d": round(d, 3), "at": ovl.FILL, "size": 1.0, "gain": 0.0,
+                    "mode": "picture" if mine else "both",    # a flashback: her talk goes on under it
                     "by": "claude", "why": " | ".join(bits[3:])[:300]})
     res.sort(key=lambda f: f["t"])
     out: list[dict[str, Any]] = []

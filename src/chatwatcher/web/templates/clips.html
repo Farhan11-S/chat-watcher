@@ -49,8 +49,8 @@
         <span class="dur">{{ (m.end_s - m.start_s) | int }}s{% if m.kind == 'song' %} ♪{% endif %}</span>
       </span>
       <span class="clip-body">
-        <span class="clip-title">{{ m.title or ('Moment #' ~ m.rank ~ ' at ' ~ (m.start_s | ts)) }}</span>
-        <span class="meta">{{ m.channel_title or 'Unknown channel' }} · {{ m.stream_at | day }} · {{ m.start_s | ts }}</span>
+        <span class="clip-title">{{ m.title or m.comp_title or ('Moment #' ~ m.rank ~ ' at ' ~ (m.start_s | ts)) }}</span>
+        <span class="meta">{{ m.channel_title or 'Unknown channel' }} · {{ m.stream_at | day }} · {{ 'compilation' if m.kind == 'compilation' else m.start_s | ts }}</span>
         <span class="clip-tags">
           {% if m.category %}<span class="tag">{{ m.category }}</span>{% endif %}
           {% if m.status != 'new' %}{{ moment_status(m.status) }}{% endif %}

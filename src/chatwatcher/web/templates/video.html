@@ -150,6 +150,25 @@
         <span>{{ s.note }}</span></li>
       {% endfor %}
     </ol>
+    {% set made = compile.made.get(c.id) %}
+    <div class="actions">
+      {% if made and made.state == 'ready' %}
+      <a class="btn small primary" href="/moment/{{ made.id }}">Open in the editor →</a>
+      <small class="muted">The pieces are joined into one clip. Press ✨ AI edit there.
+        {% if made.changed %}You changed its pieces: <a href="/moment/{{ made.id }}#pieces">see them</a>.
+        {% else %}<a href="/moment/{{ made.id }}#pieces">Change the pieces</a> when one starts too late or stops too early.{% endif %}</small>
+      {% elif made and made.state == 'busy' %}
+      <span class="pill running">downloading and joining the pieces…</span>
+      <small class="muted"><a href="/moment/{{ made.id }}">Its page</a> has the editor once it's done.</small>
+      {% else %}
+      <form method="post" action="/video/{{ video.video_id }}/stitch" class="inline">
+        <input type="hidden" name="idea" value="{{ c.id }}">
+        <button class="small primary" title="Downloads these pieces (with a few spare seconds each) and joins them into one clip you can AI edit">🎬 {{ 'Try again' if made and made.state == 'error' else 'Make this video' }}</button>
+        <button class="small" name="edit" value="1" title="Change where a piece starts or ends, add or take out pieces, then download">Change the pieces first</button></form>
+      {% if made and made.changed %}<small class="muted">You changed its pieces: this downloads those.</small>{% endif %}
+      {% if made and made.state == 'error' %}<small class="bad">{{ made.error or 'The download failed.' }}</small>{% endif %}
+      {% endif %}
+    </div>
   </div>
   {% else %}
   <p class="empty">Claude found nothing in this stream worth a compilation.</p>
@@ -157,6 +176,13 @@
   <p class="faint"><small>Found {{ run.created_at | when }}{% if run.model %} by {{ run.model }}{% endif %}
     {%- set read = (run.usage.input or 0) + (run.usage.cache_read or 0) + (run.usage.cache_write or 0) %}
     · Claude read {{ '{:,}'.format(read or run.input.est_tokens) }}{{ '' if read else ' (estimated)' }} tokens in one call</small></p>
+  {% endif %}
+  {% if compile.earlier %}
+  <p class="muted" style="margin-bottom:.2rem"><small>Compilation clips made from earlier ideas:</small></p>
+  <ul class="pieces">
+    {% for e in compile.earlier %}<li><a href="/moment/{{ e.id }}">{{ e.title }}</a>
+      {% if e.state == 'busy' %}<span class="pill running">downloading…</span>{% elif e.state != 'ready' %}<span class="pill">not downloaded</span>{% endif %}</li>{% endfor %}
+  </ul>
   {% endif %}
 </div>
 {% endif %}

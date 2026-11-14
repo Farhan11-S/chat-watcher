@@ -4,6 +4,7 @@ uses material / ask / apply to keep a session going."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,7 +12,9 @@ from typing import Any
 from chatwatcher.analyze.claude_runner import ClaudeError, ClaudeRunner
 from chatwatcher.analyze.prompts import compress_chat
 from chatwatcher.analyze.sheet import contact_sheet
+from chatwatcher.clip import stitch
 from chatwatcher.config import Config
+from chatwatcher.edit import hook as hk
 from chatwatcher.edit import layout as lay
 from chatwatcher.edit import overlays as ovl
 from chatwatcher.edit import pieces as pc, regions, service
@@ -79,6 +82,11 @@ class Material:
         return schema(self.max_sounds, self.max_hits, self.max_trans, chat=chat,
                       max_overlays=MAX_OVERLAYS if self.overlays else 0, short=self.kind == "short")
 
+    def cut_now(self) -> list[list[float]]:
+        """The saved cut of this edit (clip time, play order), or the whole clip."""
+        return (service.to_clip(json.loads(self.row["segments_json"]), self.clip) if self.row
+                else service.whole(self.clip))
+
     def out_size(self) -> tuple[int, int]:
         return (lay.OUT_W, lay.OUT_H) if self.kind == "short" else service.size(self.clip)
 
@@ -98,7 +106,8 @@ def material(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = 
     wf = analyse(clip.path, clip.folder / service.WAVEFORM_FILE)
     chat_path = clip.folder / "chat_excerpt.txt"
     chat_text = chat_path.read_text(encoding="utf-8", errors="replace") if chat_path.is_file() else ""
-    ps = pc.build(words, clip.duration_s, wf.hits, pc.chat_times(chat_text))
+    meta = service.meta(clip)
+    ps = pc.build(words, clip.duration_s, wf.hits, pc.chat_times(chat_text), joins=stitch.joins(meta))
     pc.name_voices(ps, words, clip.voices)
     sounds = list_sounds(conn)
     boxes = regions.get(conn, regions.scope_for(conn, moment_pk)[0])
@@ -109,7 +118,6 @@ def material(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = 
     max_sounds = max(1, min(20, round(length_guess / INTENSITY.get(intensity, INTENSITY["normal"])))) if sounds else 0
     max_hits = max(1, min(12, round(length_guess / VISUAL_INTENSITY.get(intensity, VISUAL_INTENSITY["normal"]))))
     max_trans = max(1, min(8, round(length_guess / 8)))
-    meta = service.meta(clip)
     visible = set(boxes)
     if kind == "short":                        # which regions the Short's layout already shows
         sw, sh = service.size(clip)
@@ -134,7 +142,7 @@ def ask(cfg: Config, m: Material, prompt: str, *, runner: ClaudeRunner | None = 
                           system=SYSTEM.format(language=cfg.claude.output_language, transitions=TRANSITION_LIST,
                                              max_texts=MAX_TEXTS, max_spots=MAX_SPOTS, max_captions=MAX_CAPTIONS,
                                              max_cutaways=MAX_CUTAWAYS, max_layers=MAX_LAYERS,
-                                             max_layouts=MAX_LAYOUTS),
+                                             max_layouts=MAX_LAYOUTS, hook_colors=", ".join(hk.COLORS)),
                           cwd=m.clip.folder, model=model, effort=effort or cfg.claude.edit_effort,
                           images=[sheet] if sheet else None, session=session, resume=resume,
                           **({"tools": list(WEB_TOOLS)} if web else {}))
@@ -151,16 +159,25 @@ def apply(cfg: Config, conn: sqlite3.Connection, moment_pk: int, m: Material, d:
     """Turn Claude's answer into the edit (cut, camera, effects, captions, a Short's hook
     title) and save it. Effects you placed yourself are kept. save=False: only return it.
 
+    keep_cut (a director's message that doesn't need a new cut: a text, a cutaway, a
+    sound): the cut stays exactly as it is now, segment for segment, with your own
+    trims, order and volumes; Claude's keep, cold_open and volume are ignored.
+
     Subtitles you changed (retyped lines, who says what, so their colours) are never
     replaced: only subtitles that still follow Whisper's words get Claude's emphasis.
     restyle: also switch them to word-by-word captions in the bubble look (a new AI edit;
     not when you go on directing it, so your caption settings stay). Lines you changed keep
     their words and timing, and only get the look."""
     clip, ps, kind = m.clip, m.ps, m.kind
-    plan = assemble(ps, parse_keep(d.get("keep") or [], len(ps)), parse_range(d.get("cold_open") or "", len(ps)),
-                    clip.duration_s, speech=m.words.get("speech"))
-    segs, volumes = apply_volume(d.get("volume") or [], ps, plan.segments)
-    plan.segments = segs
+    keep_cut = bool(d.get("keep_cut"))
+    if keep_cut:
+        segs, volumes = [[float(v) for v in x] for x in m.cut_now()], 0
+        plan = Plan(segs, 0.0, 0, len(ps))
+    else:
+        plan = assemble(ps, parse_keep(d.get("keep") or [], len(ps)), parse_range(d.get("cold_open") or "", len(ps)),
+                        clip.duration_s, speech=m.words.get("speech"))
+        segs, volumes = apply_volume(d.get("volume") or [], ps, plan.segments)
+        plan.segments = segs
     short = kind == "short"
     scenes = layout_effects(d.get("layouts") or [], ps, segs, m.boxes) if short else []
     cam = scenes + camera_track(d.get("camera") or [], ps, segs, m.boxes, short, m.visible, scenes, service.size(clip))
@@ -174,7 +191,8 @@ def apply(cfg: Config, conn: sqlite3.Connection, moment_pk: int, m: Material, d:
     texts = text_effects(d.get("texts") or [], segs, m.boxes, short)
     spots = spot_effects(d.get("spots") or [], segs, m.boxes)
     caps = caption_effects(d.get("captions") or [], ps, segs, m.boxes, clip.duration_s) if captions_on else []
-    mine = [fx for fx in m.mine if fx.get("type") != "transition"]       # the cuts changed: old ones don't fit
+    # The cuts changed: your old transitions don't fit them (they stay when the cut does).
+    mine = m.mine if keep_cut else [fx for fx in m.mine if fx.get("type") != "transition"]
     effects = (mine + cam + sfx + hits_fx + trans + cuts + ovs + layers + texts + spots + caps)[:service.MAX_EFFECTS]
     # The captions follow Whisper's words (saved as "auto", with Claude's emphasis words in
     # the style), so transcribing again updates them instead of leaving stale lines.
@@ -192,7 +210,8 @@ def apply(cfg: Config, conn: sqlite3.Connection, moment_pk: int, m: Material, d:
         if restyle:                            # …but they get the AI edit's look
             style = old | {"on": True, "look": "bubble"} | ({"size": "large", "position": "top"} if short else {})
     if short:
-        layout = service.current_layout(conn, moment_pk, clip, m.row) | {"title": hook}
+        layout = service.current_layout(conn, moment_pk, clip, m.row) | {"title": hook,
+                                                                         "hook": hk.parse(d.get("hook_style"))}
     total = sum(lengths(segs, clip.fps))
     if short and total > 60:
         plan.warnings.append(f"The cut is {total:.0f} s; Shorts over 60 s lose most viewers.")
@@ -209,13 +228,13 @@ def apply(cfg: Config, conn: sqlite3.Connection, moment_pk: int, m: Material, d:
 
 def _fetch_links(cfg: Config, conn: sqlite3.Connection, moment_pk: int, m: Material, items: list[str],
                  warnings: list[str]) -> list[str]:
-    """Cutaways that give a link instead of an insert id: download it into the clip's
-    inserts (m.inserts grows) and use the first insert it gave."""
+    """Cutaways that give a link (or "clip 52.0", a frame of the clip) instead of an insert
+    id: bring it into the clip's inserts (m.inserts grows) and use the first insert it gave."""
     from chatwatcher.edit import inserts as ins
     out = []
     for item in items[:MAX_CUTAWAYS]:
         bits = parts(item)
-        if len(bits) > 2 and ins.is_link(bits[2]):
+        if len(bits) > 2 and ins.is_source(bits[2]):
             try:
                 got = ins.fetch(cfg, conn, moment_pk, bits[2])
             except ins.InsertError as e:

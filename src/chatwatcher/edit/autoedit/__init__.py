@@ -49,6 +49,7 @@ from chatwatcher.edit.autoedit.assemble import (  # noqa: F401
     VOLUME_RANGE,
     apply_volume,
     assemble,
+    blocks,
 )
 from chatwatcher.edit.autoedit.camera import (  # noqa: F401
     IDLE_MAX,

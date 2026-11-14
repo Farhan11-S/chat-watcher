@@ -1,6 +1,7 @@
-"""The cut of an AI edit: the pieces Claude kept → segments in play order, with the
-hard rules applied (talk starts at once, pauses shrink, the end comes soon after the last
-line), and Claude's volume changes on those segments."""
+"""The cut of an AI edit: the pieces Claude kept → segments in play order (the order it
+listed them in, so a scene can be moved to the front), with the hard rules applied (talk
+starts at once, pauses shrink, the end comes soon after the last line), and Claude's
+volume changes on those segments."""
 
 from __future__ import annotations
 
@@ -73,61 +74,87 @@ def _merge(spans: list[tuple[float, float]]) -> list[list[float]]:
     return out
 
 
+def blocks(keep: dict[int, tuple[str, float | None]]) -> list[list[int]]:
+    """Claude's kept pieces, in the order it listed them, as blocks that each play in time
+    order: listing a piece before an earlier one starts a new block ("p20-p25, p3-p19"
+    plays the bank scene first). Listed in time order, it's one block."""
+    out: list[list[int]] = []
+    for i in keep:                              # a dict keeps the order Claude listed them in
+        if out and i > out[-1][-1]:
+            out[-1].append(i)
+        else:
+            out.append([i])
+    return out
+
+
 def assemble(ps: list[pc.Piece], keep: dict[int, tuple[str, float | None]], cold: list[int],
              duration: float, max_segments: int = service.MAX_SEGMENTS,
              speech: list[list[float]] | None = None) -> Plan:
-    """Kept pieces → segments [start, end, 0] in play order, with the hard rules applied."""
+    """Kept pieces → segments [start, end, 0] in play order (blocks: the order Claude
+    listed them in), with the hard rules applied."""
     warnings = []
-    idx = sorted(keep)
+    order = blocks(keep)
     # The start: drop quiet (non-action) pieces before the first line or hit.
-    while idx and ps[idx[0]].kind == "quiet" and keep[idx[0]][0] != "action" and not ps[idx[0]].hits:
-        idx.pop(0)
+    while order and ps[order[0][0]].kind == "quiet" and keep[order[0][0]][0] != "action" \
+            and not ps[order[0][0]].hits:
+        order[0].pop(0)
+        if not order[0]:
+            order.pop(0)
     # The end: drop quiet pieces after the last line, unless they're action.
-    while idx and ps[idx[-1]].kind == "quiet" and keep[idx[-1]][0] != "action":
-        last = ps[idx[-1]]
-        if last.hits and len(idx) > 1:             # a hit right after the punchline is the reaction
+    while order and ps[order[-1][-1]].kind == "quiet" and keep[order[-1][-1]][0] != "action":
+        last = ps[order[-1][-1]]
+        if last.hits and sum(map(len, order)) > 1:  # a hit right after the punchline is the reaction
             break
-        idx.pop()
-    if not idx:
-        talk = [i for i, p in enumerate(ps) if p.kind == "talk"] or [0]
-        idx = talk
+        order[-1].pop()
+        if not order[-1]:
+            order.pop()
+    if not order:
+        order = [[i for i, p in enumerate(ps) if p.kind == "talk"] or [0]]
         warnings.append("Claude kept nothing usable, so every line was kept.")
     # Two kept sentences with only a quiet piece between them: keep a breath of it, so
     # the lines don't run into each other.
-    kept = set(idx)
-    for i in list(idx):
-        j = i + 2
-        if j in kept and ps[i].kind == "talk" and ps[j].kind == "talk" and ps[i + 1].kind == "quiet" \
-                and i + 1 not in kept:
-            keep = keep | {i + 1: ("beat", min(AUTO_BEAT, ps[i + 1].length))}
-            kept.add(i + 1)
-    idx = sorted(kept)
-    spans = []
-    for i in idx:
-        mode, secs = keep.get(i, ("all", None))
-        lo, hi = _span(ps[i], mode, secs, ps[i - 1] if i else None, ps[i + 1] if i + 1 < len(ps) else None, speech)
-        # Long pauses inside a sentence shrink to a breath (never cutting into her voice).
-        for a, b in ps[i].pauses if ps[i].kind == "talk" else []:
-            if b - a > LONG_PAUSE and mode != "action":
-                cut0 = _clear(a + KEEP_PAUSE / 2, speech or [], a, b)
-                cut1 = _clear(b - KEEP_PAUSE / 2, speech or [], a, b)
-                if cut1 - cut0 >= MIN_JUMP:
-                    spans.append((lo, cut0))
-                    lo = cut1
-        spans.append((lo, hi))
-    story = _merge(spans)
+    for b, idx in enumerate(order):
+        kept = set(idx)
+        for i in list(idx):
+            j = i + 2
+            if j in kept and ps[i].kind == "talk" and ps[j].kind == "talk" and ps[i + 1].kind == "quiet" \
+                    and i + 1 not in kept and all(i + 1 not in o for o in order):
+                keep = keep | {i + 1: ("beat", min(AUTO_BEAT, ps[i + 1].length))}
+                kept.add(i + 1)
+        order[b] = sorted(kept)
+    story: list[tuple[int, list[float]]] = []      # (block, segment)
+    for b, idx in enumerate(order):
+        spans = []
+        for i in idx:
+            mode, secs = keep.get(i, ("all", None))
+            lo, hi = _span(ps[i], mode, secs, ps[i - 1] if i else None, ps[i + 1] if i + 1 < len(ps) else None,
+                           speech)
+            # Long pauses inside a sentence shrink to a breath (never cutting into her voice).
+            for a, e in ps[i].pauses if ps[i].kind == "talk" else []:
+                if e - a > LONG_PAUSE and mode != "action":
+                    cut0 = _clear(a + KEEP_PAUSE / 2, speech or [], a, e)
+                    cut1 = _clear(e - KEEP_PAUSE / 2, speech or [], a, e)
+                    if cut1 - cut0 >= MIN_JUMP:
+                        spans.append((lo, cut0))
+                        lo = cut1
+            spans.append((lo, hi))
+        story += [(b, seg) for seg in _merge(spans)]
     # The tail: at most TAIL_MAX after the last word, unless the last piece is action.
-    last_talk = max((ps[i].w1 for i in idx if ps[i].kind == "talk"), default=None)
-    end_mode, end_secs = keep.get(idx[-1], ("all", None))
+    end = order[-1]
+    last_talk = max((ps[i].w1 for i in end if ps[i].kind == "talk"), default=None)
+    end_mode, end_secs = keep.get(end[-1], ("all", None))
     if last_talk is not None and end_mode != "action":
         tail = max(TAIL_MAX, min(end_secs or 0.0, BEAT_MAX) + PAD_OUT)
-        story[-1][1] = min(story[-1][1], max(last_talk + tail, story[-1][0] + 0.5))
-    # Too many segments for the renderer: close the smallest gaps.
+        story[-1][1][1] = min(story[-1][1][1], max(last_talk + tail, story[-1][1][0] + 0.5))
+    # Too many segments for the renderer: close the smallest gaps (inside a block).
     while len(story) > max_segments - (1 if cold else 0):
-        k = min(range(len(story) - 1), key=lambda j: story[j + 1][0] - story[j][1])
-        story[k][1] = story[k + 1][1]
+        same = [j for j in range(len(story) - 1) if story[j][0] == story[j + 1][0]]
+        if not same:
+            break
+        k = min(same, key=lambda j: story[j + 1][1][0] - story[j][1][1])
+        story[k][1][1] = story[k + 1][1][1]
         del story[k + 1]
-    segs = [[round(s, 3), round(min(e, duration), 3), 0.0] for s, e in story if e - s >= service.MIN_SEGMENT_S]
+    segs = [[round(s, 3), round(min(e, duration), 3), 0.0] for _b, (s, e) in story if e - s >= service.MIN_SEGMENT_S]
     opened = False
     if cold:
         talk = [ps[i] for i in cold if ps[i].kind == "talk"] or [ps[i] for i in cold]
@@ -137,7 +164,8 @@ def assemble(ps: list[pc.Piece], keep: dict[int, tuple[str, float | None]], cold
         if e - s >= 0.5 and not starts_same:
             segs.insert(0, [round(s, 3), round(e, 3), 0.0])
             opened = True
-    return Plan(segs, round(duration - sum(e - s for s, e in story), 1), len(idx), len(ps), opened, warnings)
+    played = sum(e - s for _b, (s, e) in story)
+    return Plan(segs, round(max(duration - played, 0.0), 1), sum(map(len, order)), len(ps), opened, warnings)
 
 
 def apply_volume(items: list[str], ps: list[pc.Piece], segs: list[list[float]]) -> tuple[list[list[float]], int]:

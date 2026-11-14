@@ -5,11 +5,14 @@ this router after editor and brand."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from chatwatcher import jobs
+from chatwatcher.clip import stitch
 from chatwatcher.scoring.moments import fmt_ts
 from chatwatcher.web import listing, queries
 from chatwatcher.web.routes import Ctx, redirect
@@ -43,6 +46,10 @@ def router(ctx: Ctx) -> APIRouter:
         d = queries.moment_detail(conn, pk)
         if d is None:
             raise HTTPException(404, "Unknown moment")
+        if d["moment"]["kind"] == stitch.KIND:
+            d["pieces"] = stitch.pieces(d["moment"].get("compilation") or {})
+            d["has_edit"] = conn.execute("SELECT 1 FROM edits WHERE moment_id = ? UNION ALL "
+                                         "SELECT 1 FROM shorts WHERE moment_id = ?", (pk, pk)).fetchone() is not None
         return render(request, "moment.html", **d)
 
     @r.post("/moment/{pk}/status")
@@ -63,6 +70,45 @@ def router(ctx: Ctx) -> APIRouter:
         return JSONResponse({"ok": True, "status": body.status, "kept": counts["kept"] or 0,
                              "kept_clipped": counts["kept_clipped"] or 0, "to_review": counts["to_review"] or 0})
 
+    @r.post("/moment/{pk}/pieces")
+    def moment_pieces(pk: int, start: list[str] = Form([]), end: list[str] = Form([]), role: list[str] = Form([]),
+                      note: list[str] = Form([]), conn=Depends(get_conn)):
+        """A compilation's pieces, changed on its page: save them and download the clip again
+        (clip.stitch). One row per piece; a row with both times empty is left out."""
+        m = conn.execute("SELECT * FROM moments WHERE id = ?", (pk,)).fetchone()
+        if m is None:
+            raise HTTPException(404)
+        if m["kind"] != stitch.KIND:
+            raise HTTPException(400)
+        back = f"/moment/{pk}#pieces"
+        job = conn.execute("SELECT status FROM jobs WHERE moment_id = ? AND stage = 'clip'", (pk,)).fetchone()
+        if job and job["status"] == "running":
+            return redirect(back, error="Its pieces are being downloaded right now. Change them when that is done.")
+        rows = []
+        for i, (a, b) in enumerate(zip(start, end)):
+            if not a.strip() and not b.strip():
+                continue
+            try:
+                rows.append({"start": _parse_ts(a), "end": _parse_ts(b), "role": role[i] if i < len(role) else "beat",
+                             "note": note[i] if i < len(note) else ""})
+            except ValueError as err:
+                return redirect(back, error=f"Piece {len(rows) + 1}: {err}")
+        v = conn.execute("SELECT duration_s FROM videos WHERE id = ?", (m["video_id"],)).fetchone()
+        try:
+            segments = stitch.check(rows, v["duration_s"] or 0)
+        except ValueError as err:
+            return redirect(back, error=str(err))
+        changed = stitch.set_pieces(conn, pk, segments)
+        clip = conn.execute("SELECT path FROM clips WHERE moment_id = ?", (pk,)).fetchone()
+        had = bool(clip) and Path(clip["path"]).is_file()
+        if had and not changed and not (job and job["status"] == "error"):
+            return redirect(back, msg="These are the pieces the clip already has.")
+        jobs.enqueue(conn, m["video_id"], "clip", moment_pk=pk)
+        ctx.poke()
+        return redirect(f"/moment/{pk}", msg="Saved. The new pieces are being downloaded and joined; the clip below is the old "
+                                             "one until then, and its edit starts over: press ✨ AI edit again after."
+                        if had else "Saved. The pieces are being downloaded and joined into one clip.")
+
     @r.post("/moment/{pk}/{action}")
     def moment_action(pk: int, action: str, start: str = Form(""), end: str = Form(""), conn=Depends(get_conn)):
         m = conn.execute("SELECT * FROM moments WHERE id = ?", (pk,)).fetchone()
@@ -70,6 +116,8 @@ def router(ctx: Ctx) -> APIRouter:
             raise HTTPException(404)
         back = f"/moment/{pk}"
         if action == "cut":
+            if m["kind"] == "compilation":
+                return redirect(back, error="A compilation is several pieces of the stream joined: trim it in the editor.")
             v = conn.execute("SELECT duration_s FROM videos WHERE id = ?", (m["video_id"],)).fetchone()
             try:
                 s, e = _parse_ts(start), _parse_ts(end)

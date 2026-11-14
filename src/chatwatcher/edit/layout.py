@@ -6,7 +6,8 @@ Three layouts:
     stack  two boxes, one above the other: top (e.g. the game) and bottom (her face), each
            a region name or "" for the whole frame. split = the top's share of the height
     fit    the whole frame across the middle, over a blurred, darker copy that fills the screen
-Any layout can have a title in the top band (burned in with the subtitles).
+Any layout can have a title: the hook, shown for the Short's first seconds in the style of
+its "hook" (edit.hook: font, motion, look, colours, place, size, tilt).
 
 A "frame" effect (FRAME) overrides the layout for a while (shot_panels): with top / bottom /
 split it's a stack of two regions (the scene changed: the game feed went away, she's
@@ -51,10 +52,10 @@ def default(boxes: dict[str, dict[str, float]], stream_type: str | None = None) 
     face = boxes.get("face")
     if stream_type == "gaming" and face:
         return {"type": "stack", "top": "game" if "game" in boxes else "", "bottom": "face", "split": 0.6,
-                "x": 0.5, "y": 0.5, "scale": 1.0, "title": ""}
+                "x": 0.5, "y": 0.5, "scale": 1.0, "title": "", "hook": _hook_clean(None)}
     x = round(face["x"] + face["w"] / 2, 4) if face else 0.5
     return {"type": "crop", "x": x, "y": 0.5, "scale": 1.0, "top": "game" if "game" in boxes else "",
-            "bottom": "face" if face else "", "split": 0.6, "title": ""}
+            "bottom": "face" if face else "", "split": 0.6, "title": "", "hook": _hook_clean(None)}
 
 
 def _num(v: Any, default: float, lo: float, hi: float) -> float:
@@ -82,7 +83,13 @@ def clean(raw: Any, fallback: dict[str, Any]) -> dict[str, Any]:
             "top": _region(raw.get("top", f.get("top"))),
             "bottom": _region(raw.get("bottom", f.get("bottom"))),
             "split": _num(raw.get("split", f.get("split")), 0.6, *SPLIT_RANGE),
-            "title": title[:MAX_TITLE]}
+            "title": title[:MAX_TITLE],
+            "hook": _hook_clean(raw.get("hook", f.get("hook")))}
+
+
+def _hook_clean(raw: Any) -> dict[str, Any]:
+    from chatwatcher.edit import hook          # it draws with the captions, which need this module
+    return hook.clean(raw)
 
 
 def used_regions(layout: dict[str, Any]) -> set[str]:

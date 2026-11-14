@@ -45,6 +45,22 @@ def test_assemble_rules():
     assert plan.segments[1][0] < 2.0 < 4.0 < 9.0 < plan.segments[1][1]
 
 
+def test_keep_plays_in_the_order_listed():
+    ps = pc.build(CLIP, 20.0)
+    # In time order it's one block, the same cut as always.
+    assert ae.blocks(ae.parse_keep(["p2-p4"], len(ps))) == [[1, 2, 3]]
+    in_order = ae.assemble(ps, ae.parse_keep(["p2", "p4"], len(ps)), [], 20.0).segments
+    assert in_order[0][0] < 2.0 and in_order[-1][0] > 8.5
+    # The death listed first plays first: a scene moved to the front, each block whole.
+    assert ae.blocks(ae.parse_keep(["p4", "p2"], len(ps))) == [[3], [1]]
+    plan = ae.assemble(ps, ae.parse_keep(["p4", "p2"], len(ps)), [], 20.0)
+    (a0, a1, _), (b0, b1, _) = plan.segments
+    assert 8.5 < a0 < 9.0 and a1 > 11.0 and b0 < 2.0 and 4.0 < b1 < 4.0 + ae.TAIL_MAX
+    # A block's own quiet stays inside it; the segment limit never merges across blocks.
+    plan = ae.assemble(ps, ae.parse_keep(["p4", "p2"], len(ps)), [], 20.0, max_segments=1)
+    assert len(plan.segments) == 2 and plan.segments[0][0] > 8.5
+
+
 def test_no_micro_cuts():
     ps = pc.build(words((1.0, 2.0, "a"), (2.65, 3.5, "b")), 5.0)    # quiet, a, 0.65 s quiet, b, quiet
     plan = ae.assemble(ps, ae.parse_keep(["p2", "p4"], len(ps)), [], 5.0)

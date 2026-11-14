@@ -71,9 +71,10 @@ def _words(data: dict[str, Any] | None) -> list[tuple[float, float, str]]:
     return sorted(out)
 
 
-def _talk_groups(words: list[tuple[float, float, str]]) -> list[list[tuple[float, float, str]]]:
-    """Words → sentences: a new one after a sentence end and a pause, after a long pause, or
-    when one runs too long."""
+def _talk_groups(words: list[tuple[float, float, str]],
+                 joins: list[float] | None = None) -> list[list[tuple[float, float, str]]]:
+    """Words → sentences: a new one after a sentence end and a pause, after a long pause,
+    when one runs too long, or where the clip jumps to another part (joins)."""
     groups: list[list[tuple[float, float, str]]] = []
     cur: list[tuple[float, float, str]] = []
     for w in words:
@@ -82,7 +83,8 @@ def _talk_groups(words: list[tuple[float, float, str]]) -> list[list[tuple[float
             length = cur[-1][1] - cur[0][0]
             ended = bool(_SENTENCE_END.search(last))
             if (gap >= HARD_GAP or (ended and gap >= SENTENCE_GAP) or length >= LONGEST_TALK
-                    or (length >= MAX_TALK and (ended or _COMMA.search(last)))):
+                    or (length >= MAX_TALK and (ended or _COMMA.search(last)))
+                    or any(cur[-1][0] < j <= w[0] for j in joins or [])):
                 groups.append(cur)
                 cur = []
         cur.append(w)
@@ -119,12 +121,42 @@ def chat_times(chat_text: str) -> list[float]:
     return out
 
 
+def _split_at(pieces: list[Piece], j: float) -> None:
+    """Make clip time j (where a joined clip jumps to its next part) a piece edge."""
+    i = next((k for k, p in enumerate(pieces) if p.t0 + 0.05 < j < p.t1 - 0.05), None)
+    if i is None:                          # right beside an edge: move the edge onto it, to the frame
+        k = next((k for k, p in enumerate(pieces[:-1]) if abs(p.t1 - j) <= 0.05), None)
+        if k is not None:
+            a, b = pieces[k], pieces[k + 1]
+            a.t1 = b.t0 = j
+            a.w1, b.w0 = min(a.w1, j), (max(b.w0, j) if b.kind == "talk" else b.w0)
+        return
+    p = pieces[i]
+    if p.kind == "quiet":
+        pieces[i:i + 1] = [Piece("", "quiet", p.t0, j), Piece("", "quiet", j, p.t1)]
+    elif j <= p.w0:                        # in the gap before its first word
+        if i and pieces[i - 1].t1 == p.t0:
+            pieces[i - 1].t1 = j
+        else:
+            pieces.insert(i, Piece("", "quiet", p.t0, j))
+        p.t0 = j
+    else:                                  # in the gap after its last word, or inside that word:
+        p.w1 = min(p.w1, j)                # the jump cut the word off there (Whisper ran it on)
+        if i + 1 < len(pieces):
+            pieces[i + 1].t0 = j
+        else:
+            pieces.append(Piece("", "quiet", j, p.t1))
+        p.t1 = j
+
+
 def build(words_data: dict[str, Any] | None, duration: float, hits: list[tuple[float, float]] | None = None,
-          chat: list[float] | None = None) -> list[Piece]:
-    """words_data's "speech" (subs.align) marks the voice in quiet pieces."""
-    """The clip [0, duration] as talk and quiet pieces, in time order."""
+          chat: list[float] | None = None, joins: list[float] | None = None) -> list[Piece]:
+    """The clip [0, duration] as talk and quiet pieces, in time order. words_data's "speech"
+    (subs.align) marks the voice in quiet pieces. joins: where a clip joined from several
+    parts (clip.stitch) jumps to the next one; no piece runs across a jump."""
+    joins = sorted(j for j in joins or [] if 0 < j < duration)
     raw: list[Piece] = []
-    for g in _talk_groups([w for w in _words(words_data) if w[0] < duration]):
+    for g in _talk_groups([w for w in _words(words_data) if w[0] < duration], joins):
         w0, w1 = max(g[0][0], 0.0), min(g[-1][1], duration)
         gaps = [(a[1], b[0]) for a, b in zip(g, g[1:]) if b[0] - a[1] >= MIN_QUIET]
         raw.append(Piece("", "talk", w0, w1, w0, w1, "".join(w[2] for w in g).strip(), pauses=gaps))
@@ -146,6 +178,8 @@ def build(words_data: dict[str, Any] | None, duration: float, hits: list[tuple[f
         pieces.append(Piece("", "quiet", at, duration))
     else:
         pieces[-1].t1 = duration
+    for j in joins:
+        _split_at(pieces, j)
     rate = len(chat or []) / duration if duration else 0.0
     for i, p in enumerate(pieces, 1):
         p.id = f"p{i}"

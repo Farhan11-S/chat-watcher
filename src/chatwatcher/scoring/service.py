@@ -121,11 +121,12 @@ def score_video(
 
 
 def _guard_existing(conn: sqlite3.Connection, video_pk: int, force: bool) -> None:
-    """Re-scoring replaces moments; don't silently throw away clips or review decisions."""
+    """Re-scoring replaces moments; don't silently throw away clips or review decisions.
+    Compilation clips (clip.stitch) don't come from scoring and stay."""
     row = conn.execute(
         """
         SELECT COUNT(*) AS n FROM moments m
-        WHERE m.video_id = ? AND (m.status != 'new'
+        WHERE m.video_id = ? AND m.kind != 'compilation' AND (m.status != 'new'
             OR EXISTS (SELECT 1 FROM clips c WHERE c.moment_id = m.id)
             OR EXISTS (SELECT 1 FROM analyses a WHERE a.moment_id = m.id))
         """,
@@ -140,7 +141,7 @@ def _save(conn: sqlite3.Connection, video_pk: int, video_id: str, kind: str,
           moments: list[Moment]) -> None:
     from chatwatcher.db import tx
     with tx(conn):
-        conn.execute("DELETE FROM moments WHERE video_id = ?", (video_pk,))
+        conn.execute("DELETE FROM moments WHERE video_id = ? AND kind != 'compilation'", (video_pk,))
         conn.executemany(
             """INSERT INTO moments (video_id, rank, score, start_s, end_s, peak_s, kind, features_json)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",

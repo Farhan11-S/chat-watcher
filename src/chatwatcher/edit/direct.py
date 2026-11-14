@@ -7,7 +7,9 @@ whole material (pieces, chat, frames, library) and makes the edit. Then you writ
 in the same session, so it remembers the clip and what it did. Every message tells it the
 edit as it is now, because you may have changed it by hand since. It answers with the
 whole edit again and apply = true, which replaces the edit (Ctrl+Z in the editor brings
-yours back), or apply = false when it only answers.
+yours back), or apply = false when it only answers. When the change doesn't need a new cut
+(a text, a cutaway, a sound), it answers keep_cut = true and your cut stays exactly as it
+is: segments you trimmed, added or moved by hand are never rebuilt from its pieces.
 
 A session that can't be resumed (the clip was re-cut into another folder, or the CLI's
 history was cleared) is started again with the full material and the recent messages.
@@ -26,6 +28,7 @@ from typing import Any
 
 from chatwatcher.analyze.claude_runner import ClaudeRunner
 from chatwatcher.config import Config
+from chatwatcher.edit import hook as hk
 from chatwatcher.edit import autoedit as ae
 from chatwatcher.edit import service
 
@@ -42,9 +45,14 @@ The edit as it is now (the director may have changed it by hand since your last 
 {state}
 
 If the director asks for a change, answer with apply = true and the whole edit again: \
-change what they ask for and keep the rest as it is now. If they only ask a question, or \
-nothing needs to change, answer with apply = false and put your answer in note. Answer only \
-with the structured output."""
+change what they ask for and keep the rest as it is now. The director may have cut it by \
+hand: segments that start or end inside a piece, or play out of time order. So when the \
+change doesn't need a different cut (a text, a cutaway, a sound, the camera, captions), \
+set keep_cut = true: their cut stays exactly as it is, segment for segment, and your keep, \
+cold_open and volume are ignored. Only set keep_cut = false when they ask to change what \
+is kept or its order, and then rebuild their cut as closely as pieces allow. If they only \
+ask a question, or nothing needs to change, answer with apply = false and put your answer \
+in note. Answer only with the structured output."""
 
 FIRST = """\
 
@@ -93,20 +101,23 @@ def _ids(nums: list[int]) -> str:
 
 
 def describe(m: ae.Material, segments: list[list[float]], effects: list[dict[str, Any]],
-             title: str = "", since: str | None = None) -> str:
+             title: str = "", since: str | None = None, hook_style: dict[str, Any] | None = None) -> str:
     """The edit in the AI edit's own words: kept pieces per segment, in play order, and the
     effects (whose they are)."""
     lines = []
     for s, e, *g in segments:
         inside = [k + 1 for k, p in enumerate(m.ps) if s - 0.05 <= (p.t0 + p.t1) / 2 <= e + 0.05]
         gain = float(g[0]) if g else 0.0
-        part = _ids(inside) if inside else "(part of a piece)"
+        within = [k + 1 for k, p in enumerate(m.ps) if p.t0 < e and s < p.t1]
+        part = _ids(inside) if inside else f"(part of {_ids(within) or 'a piece'})"
         lines.append(f"- {s:.1f}–{e:.1f} s: {part}" + (f" at {gain:+.0f} dB" if gain else ""))
     fx = [ae.placed_line(f) + (" (yours)" if f.get("by") == "claude" else " (placed by the director)") for f in effects]
     out = "Kept, in play order:\n" + ("\n".join(lines) or "(nothing)")
     out += "\nEffects:\n" + ("\n".join(fx) or "(none)")
     if title:
-        out += f"\nShort's title: {title}"
+        out += f"\nShort's hook: {title}"
+        if hook_style is not None:
+            out += f"\nIts hook_style now: {hk.line(hook_style)}"
     lib = [f"- {o['id']}: {o['name']} · {o['duration_s']:.1f} s · {o['description'] or ''}" for o in m.overlays]
     out += "\nOverlay library now (for overlays):\n" + ("\n".join(lib) or "(empty)")
     out += "\nInserts for this clip now (for cutaways):\n" + ae.inserts_text(m.inserts)
@@ -117,6 +128,16 @@ def describe(m: ae.Material, segments: list[list[float]], effects: list[dict[str
             f"- {x['id']}: {x['name']} · {x['duration_s']:.1f} s · default {x['gain_db']:+g} dB · {x['description'] or ''}"
             for x in new)
     return out
+
+
+def _state(conn: sqlite3.Connection, moment_pk: int, kind: str, m: ae.Material,
+           history: list[dict[str, Any]]) -> str:
+    """The edit as it is now, for a message to Claude."""
+    effects = service.effects_to_clip(service.effects(m.base), m.clip)
+    lay_now = service.current_layout(conn, moment_pk, m.clip, m.row) if kind == "short" else {}
+    title = lay_now.get("title") or ""
+    since = history[0]["created_at"] if history else None
+    return describe(m, m.cut_now(), effects, title, since, lay_now.get("hook") if title else None)
 
 
 def _brought(got: list[dict[str, Any]], failed: list[str]) -> str:
@@ -141,7 +162,8 @@ def _say(conn: sqlite3.Connection, moment_pk: int, kind: str, session: str, role
 
 def _summary(r: ae.Result) -> str:
     c, p = r.counts, r.plan
-    bits = [f"cut {p.cut_s:.0f} s" if p.cut_s >= 1 else "",
+    bits = ["your cut kept as it is" if r.raw.get("keep_cut") else "",
+            f"cut {p.cut_s:.0f} s" if p.cut_s >= 1 else "",
             f"{c['camera']} shot{'s' * (c['camera'] != 1)}" if c.get("camera") else "",
             f"{c['sounds']} sound{'s' * (c['sounds'] != 1)}" if c.get("sounds") else "",
             f"{c['hits']} shake/flash" if c.get("hits") else "",
@@ -176,12 +198,7 @@ def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str =
     if not fresh:
         if not message:
             raise DirectError("Write what you want changed.", "invalid")
-        row = service.stored(conn, moment_pk, kind)
-        segs = service.to_clip(json.loads(row["segments_json"]), m.clip) if row else service.whole(m.clip)
-        effects = service.effects_to_clip(service.effects(m.base), m.clip)
-        title = (service.current_layout(conn, moment_pk, m.clip, row).get("title") or "") if kind == "short" else ""
-        since = history[0]["created_at"] if history else None
-        prompt = FOLLOW_UP.format(message=message, state=describe(m, segs, effects, title, since)) + brought
+        prompt = FOLLOW_UP.format(message=message, state=_state(conn, moment_pk, kind, m, history)) + brought
         try:
             res = ae.ask(cfg, m, prompt, runner=runner, images=False, chat=True, session=session, resume=True,
                          web=web)
@@ -194,10 +211,14 @@ def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str =
         if not new and history:
             said = [f"{'Director' if h['role'] == 'user' else 'You'}: {h['text']}" for h in history[-RECAP:]]
             recap = "\n\nEarlier in this conversation (the session was lost):\n" + "\n".join(said)
+            recap += ("\n\nThe edit as it is now (keep_cut = true keeps this cut exactly):\n"
+                      + _state(conn, moment_pk, kind, m, history))
         session = str(uuid.uuid4())
         prompt = m.prompt() + (FIRST.format(message=message) if message else "") + brought + recap
         res = ae.ask(cfg, m, prompt, runner=runner, chat=True, session=session, web=web)
-        res.data["apply"] = True            # a first answer always makes the edit
+        res.data["apply"] = True            # a first answer always makes the edit…
+        if new or not history:
+            res.data["keep_cut"] = False    # …and its own cut (there's no conversation to keep one from)
     assert res is not None and session is not None
     _say(conn, moment_pk, kind, session, "user", message or "✨ Make the edit")
     d = res.data

@@ -332,6 +332,22 @@
     fetch("/storage/drive", { method: "POST" }).finally(() => location.reload());
   }
 
+  // Clip page, a compilation's pieces ([data-pieces]): add an empty row, take a row out.
+  document.addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-piece-add], [data-piece-remove]");
+    if (!btn) return;
+    const rows = btn.closest("[data-pieces]").querySelectorAll("[data-piece]");
+    if (btn.matches("[data-piece-remove]")) {
+      if (rows.length > 1) btn.closest("[data-piece]").remove();
+      return;
+    }
+    const row = rows[rows.length - 1].cloneNode(true);
+    row.querySelectorAll("input").forEach(i => { i.value = i.name === "role" ? "beat" : ""; });
+    row.querySelectorAll("a, .tag").forEach(el => el.remove());
+    rows[rows.length - 1].after(row);
+    row.querySelector("input").focus();
+  });
+
   // [data-seek="12.5"] jumps the clip player to that time.
   document.addEventListener("click", ev => {
     // [data-stream-seek]: a stream time. Plays in the stream page's player; without one the link opens YouTube.

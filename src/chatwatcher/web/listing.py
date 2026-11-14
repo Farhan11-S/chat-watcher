@@ -175,6 +175,7 @@ _MOMENTS_SQL = f"""
          c.title AS channel_title, {_RATING} AS worthiness, {_TITLE} AS title,
          json_extract(a.analysis_json, '$.category') AS category,
          json_extract(a.analysis_json, '$.summary') AS summary,
+         json_extract(m.features_json, '$.compilation.title') AS comp_title,
          cl.id AS clip_id, cl.path AS clip_path, cl.frames_json AS clip_frames, cl.uploaded_at, cl.height,
          p.frames_json AS preview_frames,
          e.rendered_at AS edit_rendered, e.moment_id AS has_edit,

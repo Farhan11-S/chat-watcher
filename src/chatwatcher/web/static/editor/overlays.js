@@ -408,12 +408,16 @@ export function addOverlay() {
   if (ov.sound) buffer("ov:" + ov.id).catch(() => {});
   changed();
 }
-// Bringing in an insert from a link (an X post, a picture, a video): downloaded for this
-// clip (edit/inserts.py), then the picked overlay becomes a cutaway to it.
+// Bringing in an insert from a link (an X post, a picture, a video), or "clip 52" (a still
+// of this clip's frame) / "clip 40-44" (that stretch again): made for this clip
+// (edit/inserts.py), then the picked overlay becomes a cutaway to it.
 export async function bringIn(url) {
   url = (url || "").trim();
-  if (!/^https?:\/\/\S+$/.test(url)) { flash("Paste a link: an X post, a picture or a video."); return; }
-  flash("Downloading… (a video can take a minute)");
+  const own = /^clip\s*@?\s*\d+(\.\d+)?\s*s?\s*([-–]\s*\d+(\.\d+)?\s*s?)?$/i.test(url);
+  if (!own && !/^https?:\/\/\S+$/.test(url)) {
+    flash("Paste a link (an X post, a picture or a video), or clip 52 for this clip's frame at 52 s."); return;
+  }
+  flash(own ? "Taking it from the clip…" : "Downloading… (a video can take a minute)");
   let d;
   try { d = await post(`/api/moment/${pk}/insert`, { url }); } catch (e) { d = { ok: false, error: String(e) }; }
   if (!d.ok) { flash("Couldn't bring it in: " + (d.error || "error")); return; }
@@ -421,12 +425,13 @@ export async function bringIn(url) {
   const ov = overlayOf(d.added[0]), f = curFx();
   if (!ov) return;
   if (f && f.type === "overlay") {
-    editFx({ overlay: ov.id, at: "fill", size: 1, dx: 0, dy: 0, d: r3(Math.min(ov.length, 4, S.D.duration - f.t)) });
+    editFx({ overlay: ov.id, at: "fill", size: 1, dx: 0, dy: 0, d: r3(Math.min(ov.length, 4, S.D.duration - f.t)),
+             ...(own ? { mode: "picture" } : {}) });
   } else {
     const t = video.currentTime;
     const n = { id: "u" + Math.random().toString(36).slice(2, 8), type: "overlay", overlay: ov.id, t: r3(t),
                 d: r3(Math.min(ov.length, 4, S.D.duration - t)), at: "fill", dx: 0, dy: 0, size: 1, gain: 0,
-                mode: "both", by: "you", why: "" };
+                mode: own ? "picture" : "both", by: "you", why: "" };
     if (n.d < 0.1) { flash("Too close to the end of the clip."); return; }
     pushUndo();
     S.fx.push(n);

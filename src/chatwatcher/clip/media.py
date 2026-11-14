@@ -1,4 +1,5 @@
-"""ffprobe / ffmpeg helpers. Everything here is stream copy: no re-encoding, no quality loss."""
+"""ffprobe / ffmpeg helpers. Everything here is stream copy (no re-encoding, no quality loss),
+except concat when the files it joins are not alike."""
 
 from __future__ import annotations
 
@@ -96,6 +97,60 @@ def remux(src: Path, dest_stem: Path, *, trim_start: float = 0.0) -> Path:
         dest.unlink(missing_ok=True)
         last_err = out.stderr.strip()[:300]
     raise MediaError(f"ffmpeg remux failed for {src.name}: {last_err}")
+
+
+def alike(probes: list[Probe]) -> bool:
+    """Can these files be joined by stream copy? (same codecs, picture size and frame rate)"""
+    a = probes[0]
+    return all(p.vcodec == a.vcodec and p.acodec == a.acodec and p.width == a.width and p.height == a.height
+               and abs((p.fps or 0) - (a.fps or 0)) < 0.5 for p in probes[1:])
+
+
+def concat(parts: list[Path], dest: Path, *, copy: bool = True) -> Path:
+    """Join files end to end into dest (.mp4). copy: the picture is stream-copied, for files
+    cut from the same stream in the same format; otherwise (or when the copy fails or comes
+    out the wrong length) everything is re-encoded once at high quality, at the first
+    file's size. Either way the sound runs from 0 to the end with no holes."""
+    probes = [probe(p) for p in parts]
+    total = sum(p.duration_s for p in probes)
+    dest.unlink(missing_ok=True)
+    if copy and alike(probes):
+        # The picture is copied. The sound is encoded once more, because in a file cut from a
+        # stream it starts a second or so after the picture (see AUDIO_FROM_ZERO): copied,
+        # every join would leave a hole in the sound's timestamps, and whatever reads the
+        # sound alone would hear the later parts early.
+        sound = ["-c:a", "aac", "-b:a", "192k", *AUDIO_FROM_ZERO] if any(p.acodec for p in probes) else []
+        listing = dest.with_suffix(".parts.txt")
+        listing.write_text("".join("file '" + str(p.resolve()).replace("'", "'\\''") + "'\n" for p in parts),
+                           encoding="utf-8")
+        try:
+            out = _run([_exe("ffmpeg"), "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+                        "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy", *sound, "-movflags", "+faststart",
+                        str(dest)], timeout=900)
+        finally:
+            listing.unlink(missing_ok=True)
+        if out.returncode == 0 and dest.is_file() and abs(probe(dest).duration_s - total) < 1.0:
+            return dest
+        dest.unlink(missing_ok=True)
+    a = probes[0]
+    w, h, fps = a.width or 1920, a.height or 1080, a.fps or 30
+    sound = all(p.acodec for p in probes)         # one silent part: the joined clip is silent
+    cmd, graph = [_exe("ffmpeg"), "-v", "error", "-y"], []
+    for i, p in enumerate(parts):
+        cmd += ["-i", str(p)]
+        graph.append(f"[{i}:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                     f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps:g},format=yuv420p[v{i}]")
+        if sound:
+            graph.append(f"[{i}:a:0]aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo[a{i}]")
+    pads = "".join(f"[v{i}]" + (f"[a{i}]" if sound else "") for i in range(len(parts)))
+    graph.append(f"{pads}concat=n={len(parts)}:v=1:a={int(sound)}[v]" + ("[a]" if sound else ""))
+    cmd += ["-filter_complex", ";".join(graph), "-map", "[v]"] + (["-map", "[a]", "-c:a", "aac", "-b:a", "192k"] if sound else [])
+    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "16", "-movflags", "+faststart", str(dest)]
+    out = _run(cmd, timeout=max(1800.0, total * 20))
+    if out.returncode != 0 or not dest.is_file() or dest.stat().st_size == 0:
+        dest.unlink(missing_ok=True)
+        raise MediaError(f"ffmpeg could not join the {len(parts)} parts: {out.stderr.strip()[-300:]}")
+    return dest
 
 
 def grab_frame(src: Path, t: float, dest: Path, max_height: int = 720) -> bool:

@@ -38,6 +38,7 @@ export function paintLayout() {
       inp.value = S.layout[k] || "";
     } else if (document.activeElement !== inp) inp.value = S.layout[k] ?? "";
   }
+  paintHook(box);
   const cen = $("[data-lay-centre]");
   cen.textContent = "";
   for (const n of Object.keys(S.D.regions)) cen.appendChild(btn("◎ " + n, `Centre the crop on the ${n} box`, { layCentre: n }));
@@ -48,6 +49,44 @@ export function paintLayout() {
   if (S.layout.type === "stack" && !Object.keys(S.D.regions).length)
     hint.push("Draw a face box (and a game box) with ⋯ More → ▢ Draw regions: until then each half shows the whole frame.");
   $("[data-lay-hint]").textContent = hint.join(" ");
+}
+// The hook's style (edit/hook.py): one select per field, filled from layout_info.hook.
+const HOOK_LABELS = {
+  font: { "": "plain", round: "round", angry: "angry: dripping", scary: "scary", loud: "loud: comic" },
+  fx: { pop: "pop", slam: "slam: stamps in", bounce: "bounce: drops in", shake: "shake", wave: "wave", wobble: "wobble",
+        grow: "grow", none: "none" },
+  look: { outline: "outline", bubble: "bubble", box: "box" },
+  at: { top: "top", upper: "upper", middle: "middle", lower: "lower" },
+};
+function paintHook(box) {
+  const H = S.D.layout_info && S.D.layout_info.hook, row = $("[data-hook-row]");
+  row.hidden = !H;
+  if (!H) return;
+  const st = Object.assign({}, H.default, S.layout.hook || {});
+  const opts = {
+    s: [1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(v => [v, v + " s"]),
+    font: H.fonts.map(v => [v, HOOK_LABELS.font[v] || v]), fx: H.fx.map(v => [v, HOOK_LABELS.fx[v] || v]),
+    look: H.looks.map(v => [v, HOOK_LABELS.look[v] || v]), at: Object.keys(H.places).map(v => [v, HOOK_LABELS.at[v] || v]),
+    size: Object.keys(H.sizes).map(v => [v, v]),
+    color: Object.keys(H.colors).map(v => [v, v]), accent: Object.keys(H.colors).map(v => [v, v]),
+    box: Object.keys(H.colors).map(v => [v, v]),
+  };
+  for (const inp of box.querySelectorAll("[data-hook]")) {
+    const k = inp.dataset.hook;
+    if (inp.tagName === "SELECT" && !inp.options.length) {
+      for (const [v, t] of opts[k]) { const o = el("option", "", t); o.value = String(v); inp.appendChild(o); }
+    }
+    if (inp.tagName === "SELECT" && ![...inp.options].some(o => o.value === String(st[k]))) {
+      const o = el("option", "", String(st[k])); o.value = String(st[k]); inp.appendChild(o);
+    }
+    if (document.activeElement !== inp) inp.value = String(st[k]);
+  }
+  $("[data-hook-box]").hidden = st.look !== "box";
+}
+export function setHook(k, v) {
+  if (!S.layout) return;
+  const H = S.D.layout_info.hook;
+  setLayout({ hook: Object.assign({}, H.default, S.layout.hook || {}, { [k]: k === "s" || k === "tilt" ? +v : v }) });
 }
 export function setLayout(change) {
   pushUndo();

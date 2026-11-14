@@ -12,6 +12,7 @@ from chatwatcher.edit import overlays as ovl
 from chatwatcher.edit import spots as spt
 from chatwatcher.edit import texts as txt
 from chatwatcher.edit import motion, pieces as pc
+from chatwatcher.edit import hook
 from chatwatcher.edit import layers as lyr
 from chatwatcher.edit.autoedit.plan import (CENTRE, MAX_CAPTIONS, MAX_CUTAWAYS, MAX_LAYERS, MAX_LAYOUTS, MAX_OVERLAYS, MAX_SPOTS,
                                            MAX_TEXTS, STRENGTHS)
@@ -42,6 +43,10 @@ repeated lines and anything the payoff doesn't need.
 more (a reaction beat). Keep one whole with "p7!" when something must be watched (a fall, a jump scare, the boss's last \
 hit): look at the loud hits, chat (chat lags the event by 3-10 s) and the frames.
 - End right after the punchline and the first reaction, so the clip loops.
+- keep plays in the order you list it. Normally list it in time order. To move a scene \
+(the director wants it first), list it where it should play: "p20-p26", "p3-p19" plays \
+p20-p26 first, then p3-p19; each run listed in time order plays as one block. Don't \
+scramble the story: move whole scenes, only when it helps.
 - cold_open: optionally one or two pieces (the payoff or the funniest line, under 4 s) \
 played first as a teaser; the story then plays from its start. Use it when the setup \
 is slow; leave it empty when the first line already hooks.
@@ -110,7 +115,11 @@ to. Use one when the viewer has to SEE the thing to get the joke. "41.0 | 4 | in
 why": clip time (when she starts talking about it), seconds (a post card: long enough to \
 read it, 2-6; a video: up to its length), and an insert id from the list. Instead of an id \
 you may give a link (an X post, a picture, a video) and the app downloads it. Never invent \
-a link: only use one the director gave or you found.
+a link: only use one the director gave or you found. When the thing she refers to was on \
+screen earlier in this clip (the character she met, the item she lost), use the clip \
+itself instead of searching the web: "clip 52.0" shows a still of the clip's frame at \
+52.0 s; "clip 40.0-44.0" replays that stretch (a flashback, 1-6 s), picture only, her talk \
+goes on under it. Pick the time from the frames and the pieces.
 
 texts: big text callouts over the picture (at most {max_texts}, often 0-2), for what the viewer \
 would otherwise MISS or for a beat that needs punctuation: a dialog she clicks through, a \
@@ -141,9 +150,25 @@ volume: make pieces quieter or louder, "p12-p14 | -12 | why": tame an ear-splitt
 screech, feedback or a long scream (-8 to -18; keep it audible, the reaction is the joke), \
 or lift a line said too quietly (+3 to +6). Most pieces need nothing.
 
-hook_title: the text over a Short's first seconds: at most 6 words that make the premise \
-clear ("1 HP. One hit left."), in the language of the titles. emphasis: up to 12 words \
-or short phrases from the lines to show bigger in the captions (the punchline words).
+hook_title: a Short's hook, the text over its first seconds (then it's gone and the picture is \
+clear): at most 6 words, in the language of the titles. Its one job is to make a scrolling \
+viewer NEED to see what happens next: a stake ("1 HP. One hit left."), a tension or a \
+question, a deadpan understatement of the chaos about to happen ("She was doing so well."), \
+or what chat already knows and she doesn't. Never a plain summary of the clip, never the \
+stream title, never the punchline itself. *Star* the one or two words that carry it.
+hook_style (Short only): how the hook looks. Style it like a clip channel would for THIS \
+moment, not the same every time: "3 | loud | slam | outline | yellow | red | red | upper | \
+big | -6" = seconds (2-5: long enough to read twice), font (default = the captions' plain \
+font, round, angry: rage and insults, scary: horror, loud: comic hype), motion (pop, slam: \
+a stamp hitting, bounce, shake: chaos or screaming, wave: teasing or sing-song, wobble: \
+confused, grow: dread building, none), look (outline: bold with a black outline, bubble: \
+soft and cute, box: a sticker on a colour block), text colour, *starred* words' colour, box \
+colour (for box), where (top, upper, middle, lower: off her face and off what the viewer must \
+watch in those seconds; a Short's captions sit about 20-35% down, so upper collides with them: \
+use top, or middle / lower), size (small, normal, big, huge), tilt in degrees (-12 to 12: a few \
+degrees reads punchy, 0 calm). Colours: {hook_colors}.
+emphasis: up to 12 words or short phrases from the lines to show bigger in the captions \
+(the punchline words).
 
 captions: the subtitles are big captions, a few words at a time, in a round font in the \
 speaker's colour with a white outline; each one pops in. Style the stretches that need \
@@ -194,7 +219,8 @@ def schema(max_sounds: int, max_hits: int, max_trans: int = 6, chat: bool = Fals
             "hook_title": s,
             "cold_open": {"type": "string", "description": 'e.g. "p14" or "p14-p15"; "" for none.'},
             "keep": {"type": "array", "minItems": 1, "items": s,
-                     "description": 'Piece ids or ranges in time order: "p2-p5", "p7:0.6", "p9!".'},
+                     "description": 'Piece ids or ranges in play order (normally time order): "p2-p5", '
+                                    '"p7:0.6", "p9!".'},
             "camera": {"type": "array", "items": s, "description": '"p2-p4 | region | level | cut|push"'},
             "sounds": {"type": "array", "maxItems": max_sounds, "items": s,
                        "description": '"clip s | sound id | gain dB | duck dB | why"'},
@@ -213,7 +239,7 @@ def schema(max_sounds: int, max_hits: int, max_trans: int = 6, chat: bool = Fals
             "spots": {"type": "array", "maxItems": MAX_SPOTS, "items": s,
                       "description": '"clip s | seconds | region or x 40-60 y 20-35 | spotlight|circle|dim | why"'},
             "cutaways": {"type": "array", "maxItems": MAX_CUTAWAYS, "items": s,
-                         "description": '"clip s | seconds | insert id or link | why"'},
+                         "description": '"clip s | seconds | insert id, link, clip 52.0 or clip 40.0-44.0 | why"'},
             "texts": {"type": "array", "maxItems": MAX_TEXTS, "items": s,
                       "description": '"clip s | seconds | text | pop|stamp|label | middle|region | why"'},
             "layers": {"type": "array", "maxItems": MAX_LAYERS, "items": s,
@@ -221,15 +247,19 @@ def schema(max_sounds: int, max_hits: int, max_trans: int = 6, chat: bool = Fals
         },
     }
     if short:
-        out["required"].append("layouts")
+        out["required"] += ["layouts", "hook_style"]
+        out["properties"]["hook_style"] = {"type": "string", "description": '"' + hook.LINE + '"'}
         out["properties"]["layouts"] = {"type": "array", "maxItems": MAX_LAYOUTS, "items": s,
                                         "description": '"p5-p12 | top / bottom | top %" or "p5-p12 | region" or '
                                                        '"p5-p12 | full"'}
     if chat:
-        out["required"] = ["apply", *out["required"]]
+        out["required"] = ["apply", "keep_cut", *out["required"]]
         out["properties"] = {
             "apply": {"type": "boolean", "description": "true: the edit below replaces the current one. false: "
                                                         "you only answer (the rest of the answer is ignored)."},
+            "keep_cut": {"type": "boolean", "description": "true: the director's cut stays exactly as it is now "
+                                                           "(keep, cold_open and volume are ignored). false: the "
+                                                           "cut is rebuilt from keep."},
             **out["properties"],
             "note": {"type": "string", "description": "Your reply to the director: what you changed and why, or "
                                                       "your answer. Two or three sentences."}}
@@ -263,7 +293,7 @@ def build_prompt(*, meta: dict[str, Any], analysis: dict[str, Any], ps: list[pc.
 Stream: {meta.get('title', '?')} ({meta.get('stream_type', '?')})
 What happens: {analysis.get('summary', '(not analysed)')}
 Why it works: {analysis.get('why_it_works', '')}
-
+{compilation_text(meta.get('compilation'))}
 The clip as pieces (clip seconds; talk is Whisper's text and may mishear; "loud hit" = \
 suddenly louder than her talking):
 {chr(10).join(p.line() for p in ps)}
@@ -295,11 +325,38 @@ Effects the editor already placed (clip seconds; they stay):
 At most {max_sounds} sounds and {max_hits} shakes/flashes. Answer only with the structured output."""
 
 
+COMPILATION_KINDS = {"recurring": "something that keeps happening", "callback": "a setup and its payoff later"}
+
+
+def compilation_text(comp: dict[str, Any] | None) -> str:
+    """For a clip joined from parts of the stream (clip.stitch): the idea and where each
+    part sits, so the cut keeps every part and trims its spare ends."""
+    parts = (comp or {}).get("parts") or []
+    if len(parts) < 2:
+        return ""
+    from chatwatcher.scoring.moments import fmt_ts
+    rows = [f"- part {i} [{p['t0']:.1f}–{p['t1']:.1f}] from {fmt_ts(p['start'])} of the stream"
+            + (f" · {p['role']}" if p.get("role") and p["role"] != "beat" else "")
+            + (f" · {p['note']}" if p.get("note") else "") for i, p in enumerate(parts, 1)]
+    kind = COMPILATION_KINDS.get(comp.get("kind") or "", "")
+    return f"""
+This clip is a COMPILATION: {len(parts)} parts from different places in the stream, joined \
+in this order. The idea: "{comp.get('title') or ''}"{f' ({kind})' if kind else ''}. {comp.get('reason') or ''}
+Parts (clip seconds):
+{chr(10).join(rows)}
+Each part was taken with a few spare seconds at both ends: cut each one down to what its \
+note says, starting just before it and ending right after its reaction. Keep the parts in \
+this order and keep something of every part (the idea needs them all); a piece never runs \
+across two parts. Between parts the stream jumps in time, so the viewer must feel it: a \
+transition into the next part, or a short text when the wait matters ("2 hours later").
+"""
+
+
 def inserts_text(inserts: list[dict[str, Any]]) -> str:
     return ("\n".join(f"- {o['id']}: {'video' if 'video' in (o.get('tags') or '') else 'picture'} · "
                       f"{o['duration_s']:.1f} s · {o['description'] or ''} (from {o.get('source') or '?'})"
                       for o in inserts)
-            or "(none yet: give a link in cutaways to bring one in)")
+            or "(none yet: give a link, or clip 52.0 for a frame of this clip, in cutaways to bring one in)")
 
 
 def placed_line(fx: dict[str, Any]) -> str:

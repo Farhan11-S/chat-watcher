@@ -264,7 +264,7 @@ export function paintVisPanel() {
     if (ov && ov.description) box.appendChild(el("p", "faint ed-why", ov.description));
     const link = el("div", "ed-insert");
     const url = el("input");
-    Object.assign(url, { type: "url", placeholder: "Bring in an X post, picture or video link…" });
+    Object.assign(url, { type: "text", placeholder: "X post, picture or video link, or clip 52 / clip 40-44…" });
     url.dataset.insertUrl = "";
     url.setAttribute("aria-label", "Link to bring in");
     link.append(url, btn("⤓ bring in", "Download it for this clip and show it full screen here", { insertGo: "" }));

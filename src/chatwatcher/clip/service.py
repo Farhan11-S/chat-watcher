@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from chatwatcher import store
+from chatwatcher.clip import stitch
 from chatwatcher.clip.download import ClipFile, download_clip
 from chatwatcher.clip.media import MediaError
 from chatwatcher.clip.package import (
@@ -39,6 +40,7 @@ class ClipOutcome:
     clip: ClipFile | None = None
     folder: Path | None = None
     frames: list[dict] = field(default_factory=list)
+    parts: list[dict] | None = None      # a compilation clip: where its parts are (clip.stitch)
 
 
 @dataclass
@@ -61,6 +63,8 @@ def _moments(conn: sqlite3.Connection, video_pk: int, ranks: list[int] | None,
     for r in rows:
         if ranks and r["rank"] not in ranks:
             continue
+        if not ranks and r["kind"] == stitch.KIND:
+            continue                     # made when you ask for one, never by the automatic download
         out.append(dict(r) | json.loads(r["features_json"] or "{}"))
     return out[:top] if top else out
 
@@ -130,7 +134,19 @@ def clip_video(
     stream_type = row["stream_type"] if row["stream_type"] != "auto" else (row["detected_type"] or "talk")
     title = info.get("title") or video_id
 
+    duration = float(info.get("duration") or row["duration_s"] or 0)
+
     def work(m: dict[str, Any]) -> ClipOutcome:
+        if m["kind"] == stitch.KIND:
+            folder = out_dir / stitch.dirname(m)
+            folder.mkdir(parents=True, exist_ok=True)
+            clip, frame_list, parts = stitch.download(
+                yt, info_json, m, folder, cfg.clip, duration=duration, messages=messages, transcript=transcript,
+                video_id=video_id, title=title, stream_type=stream_type, frames=frames,
+                say=lambda msg: event(m["rank"], msg))
+            from chatwatcher.subs.transcribe import forget
+            forget(folder)
+            return ClipOutcome(m["rank"], m["id"], "done", clip=clip, folder=folder, frames=frame_list, parts=parts)
         folder = out_dir / moment_dirname(m["rank"], m["kind"], m.get("reasons", []), m["start_s"])
         old = existing.get(m["id"])
         if old and old["folder"] and Path(old["folder"]) != folder and Path(old["folder"]).is_dir() \
@@ -161,6 +177,8 @@ def clip_video(
                     outcome = ClipOutcome(m["rank"], m["id"], "error", str(e).strip())
                     event(m["rank"], f"failed: {str(e).strip().splitlines()[0][:150]}")
                 else:
+                    if outcome.parts is not None:
+                        stitch.settle(conn, m, outcome.clip, outcome.parts)
                     _save_clip(conn, m, outcome)
                     from chatwatcher.analyze.service import carry_analysis
                     reused = carry_analysis(conn, m["id"], outcome.folder)

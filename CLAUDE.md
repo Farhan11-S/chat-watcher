@@ -22,7 +22,7 @@ no build step. Read only the feature you are changing; the map below says where 
 | Watching channels | `discover.py` |
 | Ingest (metadata, chat, heatmap) | `ingest/` — `ytdlp.py`, `chat_parser.py`, `captions.py`, `service.py` |
 | Scoring moments | `scoring/` — `features.py`, `lexicons.py`, `presets.py`, `moments.py`, `service.py` |
-| Downloading clips | `clip/` — `download.py`, `media.py` (ffmpeg/ffprobe), `package.py`, `preview.py`, `service.py` |
+| Downloading clips | `clip/` — `download.py`, `media.py` (ffmpeg/ffprobe), `package.py`, `preview.py`, `service.py`, `stitch.py` (a compilation idea as one joined clip: a moment of kind `compilation`, its own clock, downloaded by the per-moment `clip` job) |
 | Claude's analysis of a clip | `analyze/` — `claude_runner.py` (`claude -p`), `prompts.py`, `sheet.py` (contact sheet), `service.py` |
 | Compilation ideas: one Claude call reads a whole stream | `compile/` — `chat.py` (thin the chat), `prompt.py` (timeline, token budget, schema), `parse.py` (check the answer), `service.py` (run, store, load); the on-demand `compile` job (`jobs.VIDEO_STAGES`) |
 | Transcripts and subtitles | `subs/` — `transcribe.py` (Whisper), `align.py`, `lines.py`, `polish.py`, `names.py`, `speakers.py` (VTubers, colours) |

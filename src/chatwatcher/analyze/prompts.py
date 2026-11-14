@@ -165,6 +165,12 @@ def moment_prompt(folder: Path, *, output_language: str, title_languages: list[s
     song_hint = ("This is a karaoke stream and the clip is one song. Identify the song "
                  "(title and artist) from the announcement or lyrics.\n" if meta.get("kind") == "song" else "")
     clip = meta.get("clip", {})
+    comp = meta.get("compilation") or {}
+    if comp.get("parts"):
+        starts = ", ".join(f"{p['t0']:.0f}s" for p in comp["parts"])
+        song_hint += (f"This clip is a compilation: {len(comp['parts'])} parts from different places in the "
+                      f"stream, joined in this order (they start at {starts}). The idea: \"{comp.get('title')}\". "
+                      f"{comp.get('reason') or ''} Rate and describe it as that one video.\n")
     return f"""\
 Rate and describe this clip from a VTuber stream.
 

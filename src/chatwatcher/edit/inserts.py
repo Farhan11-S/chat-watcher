@@ -13,7 +13,10 @@ fetch() takes:
   a second insert;
 - a link to a picture (png, jpg, webp);
 - anything else yt-dlp can download (YouTube, TikTok, a video post): up to MAX_VIDEO_S,
-  from the link's t= when it has one."""
+  from the link's t= when it has one;
+- the clip itself, "clip 52.0" (a still of its frame at 52.0 s) or "clip 40-44" (that
+  stretch again, a flashback): to show what she refers to when it was on screen earlier
+  (the character she met, the item she lost). Its cutaway shows only the picture."""
 
 from __future__ import annotations
 
@@ -46,6 +49,9 @@ _X = re.compile(r"^https?://(?:www\.|mobile\.)?(?:x|twitter|fxtwitter|vxtwitter|
                 r"(?:[^/?#]+|i(?:/web)?)/status(?:es)?/(\d+)", re.I)
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+")   # no font here draws them
 _PICTURE = re.compile(r"\.(png|jpe?g|webp)(?:$|\?)", re.I)
+_CLIP = re.compile(r"^\s*clip\s*(?:@|at)?\s*(\d+(?:\.\d+)?)\s*s?\s*(?:(?:[-–]|to)\s*(\d+(?:\.\d+)?)\s*s?)?\s*$", re.I)
+MIN_FLASHBACK_S = 0.5
+CLIP_TAG = "clip"             # in tags: an insert made from the clip itself
 
 
 class InsertError(Exception):
@@ -64,6 +70,24 @@ def links(text: str) -> list[str]:
 
 def is_link(text: str) -> bool:
     return bool(_URL.fullmatch((text or "").strip()))
+
+
+def clip_spot(text: str) -> tuple[float, float | None] | None:
+    """"clip 52.0" → (52.0, None), a still; "clip 40-44" → (40.0, 44.0), a stretch; else None."""
+    m = _CLIP.match(text or "")
+    if not m:
+        return None
+    a, b = float(m[1]), float(m[2]) if m[2] else None
+    return (min(a, b), max(a, b)) if b is not None else (a, None)
+
+
+def is_source(text: str) -> bool:
+    """Something fetch() takes: a link or a spot in the clip."""
+    return is_link(text) or clip_spot(text) is not None
+
+
+def from_clip(ins: dict[str, Any]) -> bool:
+    return CLIP_TAG in [t.strip() for t in str(ins.get("tags") or "").split(",")]
 
 
 def x_post_id(url: str) -> str | None:
@@ -230,10 +254,10 @@ def _start_of(url: str) -> float:
     return h * 3600 + mi * 60 + s
 
 
-def _video(src: Path, dest: Path, start: float = 0.0) -> None:
-    """Up to MAX_VIDEO_S of a video as an mp4, at most 720 tall, with its sound."""
-    _ffmpeg(["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{MAX_VIDEO_S:g}", "-map", "0:v:0", "-map", "0:a:0?",
-             "-vf", "scale=-2:'min(720,ih)',scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+def _video(src: Path, dest: Path, start: float = 0.0, length: float = MAX_VIDEO_S, tall: int = 720) -> None:
+    """Up to MAX_VIDEO_S of a video as an mp4, at most tall pixels high, with its sound."""
+    _ffmpeg(["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{min(length, MAX_VIDEO_S):g}", "-map", "0:v:0",
+             "-map", "0:a:0?", "-vf", f"scale=-2:'min({tall},ih)',scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-c:a", "aac", "-b:a", "160k",
              "-movflags", "+faststart", str(dest)], timeout=600)
 
@@ -284,7 +308,11 @@ def fetch(cfg: Config, conn: sqlite3.Connection, moment_pk: int, url: str) -> li
     """Download what a link points at into this clip's inserts (a link fetched before
     gives what it gave then). Raises InsertError."""
     url = url.strip()
-    if not is_link(url):
+    spot = clip_spot(url)
+    if spot:
+        a, b = spot
+        url = f"clip {a:g}" if b is None else f"clip {a:g}-{b:g}"
+    elif not is_link(url):
         raise InsertError(f"not a link: {url[:80]}")
     had = [dict(r) for r in conn.execute("SELECT * FROM overlays WHERE moment_id = ? AND source = ? ORDER BY id",
                                          (moment_pk, url[:300]))]
@@ -293,6 +321,8 @@ def fetch(cfg: Config, conn: sqlite3.Connection, moment_pk: int, url: str) -> li
     with tempfile.TemporaryDirectory(prefix="insert_", dir=ovl.overlays_dir(cfg).parent
                                      if ovl.overlays_dir(cfg).parent.is_dir() else None) as tmp:
         folder = Path(tmp)
+        if spot:
+            return [_clip_insert(cfg, conn, moment_pk, url, spot, folder)]
         pid = x_post_id(url)
         if pid:
             return _x_post(cfg, conn, moment_pk, url, pid, folder)
@@ -305,6 +335,32 @@ def fetch(cfg: Config, conn: sqlite3.Connection, moment_pk: int, url: str) -> li
         _video(src, folder / "made.mp4", 0.0)
         return [_add(cfg, conn, moment_pk, folder / "made.mp4", name=f"video {src.stem}"[:60],
                      description=f"A video from {urllib.parse.urlparse(url).netloc}.", url=url, tags="insert, video")]
+
+
+def _clip_insert(cfg: Config, conn: sqlite3.Connection, moment_pk: int, ref: str,
+                 spot: tuple[float, float | None], folder: Path) -> dict[str, Any]:
+    """A still of the clip's frame, or a stretch of it again, as this clip's insert."""
+    from chatwatcher.edit.clipref import EditError, clip_ref
+    try:
+        clip = clip_ref(conn, moment_pk)
+    except EditError as e:
+        raise InsertError(str(e)) from e
+    a, b = spot
+    if not 0 <= a < clip.duration_s:
+        raise InsertError(f"{ref}: the clip is only {clip.duration_s:.1f} s long")
+    if b is None:
+        _ffmpeg(["-ss", f"{a:.3f}", "-i", str(clip.path), "-frames:v", "1", str(folder / "frame.png")])
+        _still((folder / "frame.png").read_bytes(), folder / "made.mp4")
+        return _add(cfg, conn, moment_pk, folder / "made.mp4", name=f"clip frame {a:g} s",
+                    description=f"A still of this clip's own frame at {a:g} s.", url=ref,
+                    tags=f"insert, picture, {CLIP_TAG}")
+    b = min(b, clip.duration_s, a + MAX_VIDEO_S)
+    if b - a < MIN_FLASHBACK_S:
+        raise InsertError(f"{ref}: a stretch needs at least {MIN_FLASHBACK_S:g} s")
+    _video(clip.path, folder / "made.mp4", a, b - a, tall=max(720, min(clip.height or 1080, 1080)))
+    return _add(cfg, conn, moment_pk, folder / "made.mp4", name=f"clip {a:g}-{b:g} s",
+                description=f"This clip's own {a:g}-{b:g} s again (a flashback; its cutaway shows only the picture).",
+                url=ref, tags=f"insert, video, {CLIP_TAG}")
 
 
 def _x_post(cfg: Config, conn: sqlite3.Connection, moment_pk: int, url: str, pid: str,

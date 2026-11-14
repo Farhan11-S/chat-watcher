@@ -61,7 +61,8 @@ def preview_video(cfg: Config, conn: sqlite3.Connection, url_or_id: str, *,
     rows = conn.execute(
         """SELECT m.*, c.folder AS clip_folder, p.folder AS preview_folder
            FROM moments m LEFT JOIN clips c ON c.moment_id = m.id LEFT JOIN previews p ON p.moment_id = m.id
-           WHERE m.video_id = ? AND m.status != 'rejected' ORDER BY m.rank""", (row["id"],)).fetchall()
+           WHERE m.video_id = ? AND m.status != 'rejected' AND m.kind != 'compilation'
+           ORDER BY m.rank""", (row["id"],)).fetchall()      # a compilation is not one stretch of the stream
     run = PreviewRun(video_id=video_id)
     todo = []
     for r in rows:

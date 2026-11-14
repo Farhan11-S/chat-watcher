@@ -11,6 +11,7 @@ from typing import Any
 from chatwatcher.config import Config
 from chatwatcher.edit import captions as cap
 from chatwatcher.edit import clipref as cr
+from chatwatcher.edit import hook
 from chatwatcher.edit import layers as lyr
 from chatwatcher.edit import layout as lay
 from chatwatcher.edit import overlays as ovl
@@ -103,7 +104,7 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
                                 "split": lay.SPLIT_RANGE, "max_title": lay.MAX_TITLE, "dark": lay.BG_DARK,
                                 "blur_down": lay.BLUR_DOWN, "src": [sw, sh],
                                 "frame": {"margin": lay.FRAME_MARGIN, "wide": lay.FRAME_WIDE,
-                                          "limits": lay.FRAME_LIMITS}},
+                                          "limits": lay.FRAME_LIMITS}, "hook": hook.info()},
                 "titles": [t for t in (a.get("titles") or []) if isinstance(t, str)][:3]}
     return out
 

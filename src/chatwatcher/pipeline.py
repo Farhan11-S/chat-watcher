@@ -130,7 +130,7 @@ def _clip(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
     if kept_only:
         ranks = [r["rank"] for r in conn.execute(
             "SELECT m.rank FROM moments m JOIN videos v ON v.id = m.video_id "
-            "WHERE v.video_id = ? AND m.status = 'approved' ORDER BY m.rank", (video_id,))]
+            "WHERE v.video_id = ? AND m.status = 'approved' AND m.kind != 'compilation' ORDER BY m.rank", (video_id,))]
         if not ranks:
             return StageOutcome("done", "nothing to clip: no moments are marked Keep", details={"stop": True})
     try:

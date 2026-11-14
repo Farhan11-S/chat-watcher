@@ -1,16 +1,17 @@
 {% extends "base.html" %}
 {% from "_macros.html" import status_pill, moment_status, flag %}
-{% block title %}#{{ moment.rank }} · {{ video.title }}{% endblock %}
+{% block title %}{{ moment.compilation.title if moment.kind == 'compilation' else '#' ~ moment.rank }} · {{ video.title }}{% endblock %}
 {% block shell %}compact{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ asset('editor.css') }}">{% endblock %}
 {% block content %}
 {% set a = analysis %}
-<nav class="crumbs" aria-label="Where you are"><a href="/">Streams</a><span>›</span><a href="/video/{{ video.video_id }}">{{ (video.title or video.video_id)[:80] }}</a><span>›</span>Moment #{{ moment.rank }}</nav>
+{% set comp = moment.compilation if moment.kind == 'compilation' else none %}
+<nav class="crumbs" aria-label="Where you are"><a href="/">Streams</a><span>›</span><a href="/video/{{ video.video_id }}">{{ (video.title or video.video_id)[:80] }}</a><span>›</span>{{ 'Compilation' if comp else 'Moment #' ~ moment.rank }}</nav>
 <div class="page-head">
   <div>
-    <h1>{{ (a.titles[0].text if a and a.titles else 'Moment #' ~ moment.rank ~ ' · ' ~ (moment.start_s | ts) ~ '–' ~ (moment.end_s | ts)) }}</h1>
+    <h1>{{ (a.titles[0].text if a and a.titles else comp.title if comp else 'Moment #' ~ moment.rank ~ ' · ' ~ (moment.start_s | ts) ~ '–' ~ (moment.end_s | ts)) }}</h1>
     <div class="actions">
-      <span class="pill">#{{ moment.rank }}</span>
+      {% if comp %}<span class="pill" title="Pieces from different parts of the stream, joined into one clip">compilation · {{ comp.segments | length }} pieces</span>{% else %}<span class="pill">#{{ moment.rank }}</span>{% endif %}
       {{ moment_status(moment.status) }}
       {% if a %}<span class="pill"><b>{{ a.clip_worthiness }}/10</b>&nbsp;{{ a.category }}</span><span class="pill">{{ a.format }}</span>{% endif %}
       {% if moment.kind == 'song' %}<span class="pill">♪ song</span>{% endif %}
@@ -20,8 +21,13 @@
     </div>
   </div>
   <div class="actions">
+    {% if comp %}
+    {% if prev %}<a class="btn" href="/moment/{{ prev }}">← Compilation before</a>{% endif %}
+    {% if next %}<a class="btn" href="/moment/{{ next }}">Next compilation →</a>{% endif %}
+    {% else %}
     {% if prev %}<a class="btn" href="/moment/{{ prev }}" title="The stream's moment #{{ moment.rank - 1 }}">← #{{ moment.rank - 1 }}</a>{% endif %}
     {% if next %}<a class="btn" href="/moment/{{ next }}" title="The stream's moment #{{ moment.rank + 1 }}">#{{ moment.rank + 1 }} →</a>{% endif %}
+    {% endif %}
   </div>
 </div>
 
@@ -143,8 +149,20 @@
           </div>
           <div class="ed-lay-row">
             <label class="ed-lay-title"><small>Hook text</small><input type="text" maxlength="100" data-lay="title"
-                   placeholder="Text over the top of the Short" title="*stars* around a word make it yellow"></label>
+                   placeholder="Text over the Short's first seconds" title="*stars* around a word give it the ★ colour"></label>
             <span class="actions" data-lay-titles></span>
+          </div>
+          <div class="ed-lay-row ed-hook-style" data-hook-row>
+            <label><small>Shows</small><select data-hook="s" aria-label="How long the hook shows"></select></label>
+            <label><small>Font</small><select data-hook="font" aria-label="Hook font"></select></label>
+            <label><small>Motion</small><select data-hook="fx" aria-label="How the hook comes in and moves"></select></label>
+            <label><small>Look</small><select data-hook="look" aria-label="Outline, bubble or box"></select></label>
+            <label><small>Colour</small><select data-hook="color" aria-label="Hook text colour"></select></label>
+            <label><small>★ words</small><select data-hook="accent" aria-label="Colour of the starred words"></select></label>
+            <label data-hook-box><small>Box</small><select data-hook="box" aria-label="Box colour"></select></label>
+            <label><small>Where</small><select data-hook="at" aria-label="How far down the hook sits"></select></label>
+            <label><small>Size</small><select data-hook="size" aria-label="Hook size"></select></label>
+            <label><small>Tilt</small><input type="range" min="-12" max="12" step="1" data-hook="tilt" aria-label="Hook tilt"></label>
           </div>
           <small class="faint" data-lay-hint></small>
         </div>
@@ -342,8 +360,9 @@
       {% endif %}
       <p class="muted" style="margin:{{ '0' if clip.exists else '.5rem 0 0' }}"><small>
         {{ clip.width }}×{{ clip.height }} {{ clip.fps | int }}fps · {{ clip.vcodec }}/{{ clip.acodec }} · {{ clip.size_bytes | mb }}
-        · stream {{ clip.zero_s | ts }}–{{ (clip.zero_s + clip.duration_s) | ts }}
-        · <a href="https://youtu.be/{{ video.video_id }}?t={{ clip.zero_s | int }}" target="_blank" rel="noopener">YouTube ↗</a>
+        {% if comp %}· {{ (comp.parts or comp.segments) | length }} parts joined, {{ clip.duration_s | ts }} long
+        {% else %}· stream {{ clip.zero_s | ts }}–{{ (clip.zero_s + clip.duration_s) | ts }}
+        · <a href="https://youtu.be/{{ video.video_id }}?t={{ clip.zero_s | int }}" target="_blank" rel="noopener">YouTube ↗</a>{% endif %}
         {% if clip.uploaded_at %}· ☁ on Drive since {{ clip.uploaded_at | when }}{% if video.drive_url and video.drive_url.startswith('https://') %} (<a href="{{ video.drive_url }}" target="_blank" rel="noopener">open stream folder ↗</a>){% endif %}{% endif %}
         <br>📁 <span class="mono">{{ clip.path }}</span> <button class="small" data-copy="{{ clip.path }}">copy path</button>
       </small></p>
@@ -364,9 +383,40 @@
       </div>
       <p class="faint" style="margin:.3rem 0 0"><small>Click a frame to watch that moment on YouTube. Times are from the start of the moment.</small></p>
       {% else %}
-      <p class="empty">Not clipped yet.</p>
+      <p class="empty">{{ 'The pieces are not downloaded yet.' if comp else 'Not clipped yet.' }}</p>
       {% endif %}
 
+      {% if comp %}
+      <p class="muted" style="margin:.8rem 0 .2rem">{{ comp.reason }}</p>
+      <form method="post" action="/moment/{{ moment.id }}/pieces" id="pieces" class="piece-form" data-pieces
+            {% if clip and has_edit %}onsubmit="return confirm('The clip is downloaded again with these pieces, and the edit you have for it (cuts, subtitles, effects, renders) starts over. Continue?')"{% endif %}>
+        <ol class="pieces">
+          {% for p in pieces %}
+          <li data-piece><div class="piece-row">
+            <input type="text" name="start" value="{{ p.start | ts }}" aria-label="This piece starts at (stream time)" title="Starts at (stream time)">
+            <span class="muted">–</span>
+            <input type="text" name="end" value="{{ p.end | ts }}" aria-label="This piece ends at (stream time)" title="Ends at (stream time)">
+            <input type="hidden" name="role" value="{{ p.role }}">
+            <input type="text" name="note" value="{{ p.note }}" class="piece-note" aria-label="What happens in this piece"
+                   placeholder="what happens in it (the AI edit reads this)">
+            <a href="https://youtu.be/{{ video.video_id }}?t={{ p.start | int }}" target="_blank" rel="noopener"
+               title="Watch this piece on YouTube to find the right times">YouTube ↗</a>
+            {% if p.role != 'beat' %}<span class="tag">{{ p.role }}</span>{% endif %}
+            {% if clip and p.at is not none %}<span class="tag">at {{ p.at | ts }} in the clip</span>
+            {% elif clip %}<span class="tag" title="Press Save and download again">not in the clip yet</span>{% endif %}
+            <button type="button" class="small" data-piece-remove title="Take this piece out" aria-label="Take this piece out">✕</button>
+          </div></li>
+          {% endfor %}
+        </ol>
+        <div class="actions">
+          <button type="button" class="small" data-piece-add>+ Add a piece</button>
+          <button class="small primary">{{ 'Save and download again' if clip else 'Save and download' }}</button>
+        </div>
+      </form>
+      <p class="faint" style="margin:.4rem 0 0"><small>Stream times (h:mm:ss), played in this order. When a piece starts too late
+        or stops too early, change its times here: the pieces are downloaded again, each with 4 spare seconds at both ends,
+        and joined into a new clip. To trim inside the clip, use the editor above.</small></p>
+      {% else %}
       <form method="post" action="/moment/{{ moment.id }}/cut" class="actions" style="margin-top:.8rem">
         <label>start <input type="text" name="start" value="{{ moment.start_s | ts }}" style="width:6.5rem"></label>
         <label>end <input type="text" name="end" value="{{ moment.end_s | ts }}" style="width:6.5rem"></label>
@@ -374,6 +424,7 @@
       </form>
       <p class="faint" style="margin:.4rem 0 0"><small>Stream times (h:mm:ss). Use this when the moment needs more of the stream
         than was downloaded: it downloads the new range and has Claude re-analyse it. To trim inside the clip, use the editor above.</small></p>
+      {% endif %}
       <div class="actions" style="margin-top:.6rem">
         <form method="post" action="/moment/{{ moment.id }}/reclip" class="inline"><button class="small">Re-download</button></form>
         {% if cfg.drive.enabled and clip %}<form method="post" action="/moment/{{ moment.id }}/upload" class="inline">

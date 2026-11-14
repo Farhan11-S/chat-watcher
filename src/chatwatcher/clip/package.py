@@ -82,31 +82,44 @@ def _clip_ts(t: float) -> str:
     return f"{int(t // 60):02d}:{t % 60:04.1f}"
 
 
-def write_chat_excerpt(path: Path, messages: list[ChatMessage], clip: ClipFile) -> int:
-    """Every chat message during the clip, timed in clip time."""
-    end = clip.zero_s + clip.duration_s
+def chat_lines(messages: list[ChatMessage], zero_s: float, duration_s: float, offset: float = 0.0) -> list[str]:
+    """Chat during [zero_s, zero_s + duration_s] of the stream, timed from zero_s (+ offset:
+    where that stretch starts in a clip joined from several, clip.stitch)."""
     lines = []
     for m in messages:
-        if clip.zero_s <= m.t <= end:
+        if zero_s <= m.t <= zero_s + duration_s:
             tag = {"superchat": f" [SC {m.amount_text or ''}]", "sticker": f" [sticker {m.amount_text or ''}]",
                    "member_new": " [new member]", "member_milestone": " [member milestone]",
                    "gift": f" [gifted {m.gift_count}]", "jewel_gift": " [gift]"}.get(m.kind, "")
             role = " (streamer)" if m.is_owner else " (mod)" if m.is_mod else ""
-            lines.append(f"[{_clip_ts(clip.to_clip_time(m.t))}] {m.author}{role}{tag}: {m.text}")
+            lines.append(f"[{_clip_ts(round(m.t - zero_s + offset, 3))}] {m.author}{role}{tag}: {m.text}")
+    return lines
+
+
+def transcript_lines(transcript: list[Segment], zero_s: float, duration_s: float, offset: float = 0.0) -> list[str]:
+    end = zero_s + duration_s
+    return [f"[{_clip_ts(round(s.start - zero_s + offset, 3))}] {s.text}"
+            for s in sentences(transcript) if s.end > zero_s and s.start < end]
+
+
+def write_lines(path: Path, lines: list[str]) -> int:
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return len(lines)
+
+
+def write_chat_excerpt(path: Path, messages: list[ChatMessage], clip: ClipFile) -> int:
+    """Every chat message during the clip, timed in clip time."""
+    return write_lines(path, chat_lines(messages, clip.zero_s, clip.duration_s))
 
 
 def write_transcript_excerpt(path: Path, transcript: list[Segment], clip: ClipFile) -> int:
-    end = clip.zero_s + clip.duration_s
-    sents = [s for s in sentences(transcript) if s.end > clip.zero_s and s.start < end]
-    lines = [f"[{_clip_ts(clip.to_clip_time(s.start))}] {s.text}" for s in sents]
-    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    return len(lines)
+    return write_lines(path, transcript_lines(transcript, clip.zero_s, clip.duration_s))
 
 
 def write_moment_json(path: Path, *, video_id: str, title: str, stream_type: str,
-                      moment: dict[str, Any], clip: ClipFile, frames: list[dict]) -> None:
+                      moment: dict[str, Any], clip: ClipFile, frames: list[dict],
+                      extra: dict[str, Any] | None = None) -> None:
+    """extra: fields added or replaced (a joined clip says where its parts came from)."""
     data = {
         "video_id": video_id, "title": title, "stream_type": stream_type,
         "rank": moment["rank"], "kind": moment["kind"], "score": moment["score"],
@@ -120,5 +133,5 @@ def write_moment_json(path: Path, *, video_id: str, title: str, stream_type: str
         "reasons": moment.get("reasons", []),
         "top_chat": moment.get("top_messages", []),
         "frames": frames,
-    }
+    } | (extra or {})
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -16,10 +16,11 @@ WORDS = {"language": "en", "lines": [
      "words": [[9.0, 9.5, " No", 0.9], [9.5, 10.0, " way.", 0.9], [10.2, 10.6, " I", 0.9], [10.6, 11.0, " died.", 0.9]]}]}
 
 
-def answer(keep, note="Cut the dead air.", apply=True, cold_open="", overlays=(), camera=()):
-    return {"apply": apply, "note": note, "hook_title": "", "cold_open": cold_open, "keep": keep,
-            "camera": list(camera), "sounds": [], "hits": [], "volume": [], "transitions": [], "emphasis": [],
-            "overlays": list(overlays)}
+def answer(keep, note="Cut the dead air.", apply=True, cold_open="", overlays=(), camera=(), keep_cut=False,
+           texts=(), cutaways=()):
+    return {"apply": apply, "keep_cut": keep_cut, "note": note, "hook_title": "", "cold_open": cold_open,
+            "keep": keep, "camera": list(camera), "sounds": [], "hits": [], "volume": [], "transitions": [],
+            "emphasis": [], "overlays": list(overlays), "texts": list(texts), "cutaways": list(cutaways)}
 
 
 class FakeDirector:
@@ -91,6 +92,40 @@ def test_directing_the_ai_edit(site):  # noqa: F811
     assert d["fresh"] and "couldn't be resumed" not in d["reply"] and fake.calls[5]["session"] != again["session"]
     assert client.get(f"/api/moment/{m}/direct?kind=short").json()["messages"] == []
     assert client.post(f"/moment/{m}/direct", json={"kind": "long", "message": "  "}).status_code == 400
+
+
+def test_directing_keeps_your_hand_cut(site):  # noqa: F811
+    cfg, conn, client, deps = site
+    m = mid(conn)
+    clip = clip_ref(conn, m)
+    (clip.folder / "words.json").write_text(json.dumps(WORDS))
+    fake = FakeDirector(answer(["p2-p4"]),
+                        answer(["p2-p4"], keep_cut=True, texts=["10.0 | 1.5 | DEAD | stamp | middle | the death"]),
+                        answer(["p2-p4"], keep_cut=True))
+    deps.claude = fake
+    assert client.post(f"/moment/{m}/autoedit", json={"segments": [[0, 20, 0]], "kind": "long"}).json()["ok"]
+    # Your cut: the death first, trimmed inside its sentence, then the setup, quieter.
+    hand = [[9.4, 11.3, 0.0], [2.0, 3.6, -4.0]]
+    d = client.post(f"/moment/{m}/direct", json={"segments": hand, "kind": "long", "message": "Stamp DEAD on it"}).json()
+    call = fake.calls[1]
+    assert call["schema"]["properties"]["keep_cut"]["type"] == "boolean"
+    assert "keep_cut = true" in call["prompt"] and "- 9.4–11.3 s:" in call["prompt"]
+    assert d["applied"] and "your cut kept as it is" in d["reply"]
+    assert _segments(conn, m) == [[s + clip.zero_s, e + clip.zero_s, g] for s, e, g in hand]
+    after = client.get(f"/api/moment/{m}/edit?kind=long").json()
+    assert any(f["type"] == "text" and f["text"] == "DEAD" for f in after["effects"])
+
+    # A lost session starts again, is told the cut, and may keep it too.
+    fake.script = [ClaudeError("No conversation found with session ID: x", kind="no_session"),
+                   answer(["p2-p4"], keep_cut=True)]
+    d = client.post(f"/moment/{m}/direct", json={"kind": "long", "message": "Louder stamp"}).json()
+    assert "The edit as it is now" in fake.calls[-1]["prompt"] and d["fresh"]
+    assert _segments(conn, m) == [[s + clip.zero_s, e + clip.zero_s, g] for s, e, g in hand]
+
+    # A new session on purpose makes its own cut, whatever it says.
+    fake.script = [answer(["p2"], keep_cut=True)]
+    client.post(f"/moment/{m}/direct", json={"kind": "long", "message": "Start over", "new": True})
+    assert len(_segments(conn, m)) == 1 and _segments(conn, m)[0][1] - clip.zero_s < 5
 
 
 def test_session_flags():

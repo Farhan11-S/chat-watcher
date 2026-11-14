@@ -61,6 +61,37 @@ def test_post_card_draws_the_post():
     assert card.getpixel((inserts.CARD_W // 2, card.height - 200))[0] > 150      # the photo, near the bottom
 
 
+def test_clip_spots():
+    assert inserts.clip_spot("clip 52") == (52.0, None) and inserts.clip_spot("clip@52.5s") == (52.5, None)
+    assert inserts.clip_spot("clip 44-40") == (40.0, 44.0) and inserts.clip_spot("Clip 40.0 – 44.5") == (40.0, 44.5)
+    assert inserts.clip_spot("clip") is None and inserts.clip_spot("https://x.com/a") is None
+    assert inserts.is_source("clip 3") and inserts.is_source("https://example.com/a.png")
+    assert not inserts.is_source("x_post")
+
+
+@needs_ffmpeg
+def test_insert_from_the_clip_itself(site):  # noqa: F811
+    cfg, conn, client, deps = site
+    m = mid(conn)
+    still = inserts.fetch(cfg, conn, m, "clip 3")
+    assert len(still) == 1 and inserts.from_clip(still[0]) and "video" not in still[0]["tags"]
+    assert still[0]["source"] == "clip 3" and still[0]["duration_s"] == pytest.approx(inserts.MAX_STILL_S, abs=0.2)
+    assert inserts.fetch(cfg, conn, m, "clip 3.0") == still                         # made once
+    back = inserts.fetch(cfg, conn, m, "clip 2-4")[0]
+    assert "video" in back["tags"] and back["duration_s"] == pytest.approx(2.0, abs=0.2)
+    with pytest.raises(inserts.InsertError):
+        inserts.fetch(cfg, conn, m, "clip 500")
+    with pytest.raises(inserts.InsertError):
+        inserts.fetch(cfg, conn, m, "clip 2-2.1")
+    # From the editor's box too.
+    r = client.post(f"/api/moment/{m}/insert", json={"url": "clip 5"}).json()
+    assert r["ok"] and r["added"][0] in [o["id"] for o in r["overlays"]]
+    # Claude's cutaway to the clip shows only its picture (her talk goes on under it).
+    fx = ae.cutaway_effects([f"6 | 2 | {back['id']} | the banker again", f"9 | 2 | {still[0]['id']} | him"],
+                            [[0, 20]], [back, still[0]])
+    assert [f["mode"] for f in fx] == ["picture", "picture"]
+
+
 def test_cutaways_from_claude():
     ins = [{"id": "x_post", "duration_s": 15.0, "tags": "insert, x post"},
            {"id": "clip", "duration_s": 3.0, "tags": "insert, video"}]

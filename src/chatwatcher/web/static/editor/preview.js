@@ -222,30 +222,116 @@ function drawShort() {
     sctx.fillStyle = `rgba(${rgb.join(",")},${alpha})`;
     sctx.fillRect(0, 0, cw, ch);
   }
-  drawTitle(cw, ch);
+  drawHook(cw, ch);
 }
-function drawTitle(cw, ch) {
-  if (!S.layout.title) return;
-  const L = S.D.sub_layout, size = L.title_size * cw;        // libass size: the line's height
+// The hook (edit/hook.py): the layout's title over the Short's first seconds, in its style.
+// Shown while the edit's own time is under its seconds, and always while the Layout tab is
+// open (so you see what you're styling).
+function editTime(t) {
+  if (S.editPlay && S.segs[S.editPlay.i]) {
+    const i = S.editPlay.i;
+    return S.segs.slice(0, i).reduce((n, s) => n + s[1] - s[0], 0) + Math.max(0, t - S.segs[i][0]);
+  }
+  let before = 0;
+  for (const s of S.segs) {
+    if (t >= s[0] && t < s[1]) return before + t - s[0];
+    before += s[1] - s[0];
+  }
+  return null;
+}
+const hookHex = name => (S.D.layout_info.hook.colors[name] || "FFFFFF");
+function hookDark(rgb) {           // hook._dark: the ring round a bubble hook's white outline
+  const r = parseInt(rgb.slice(0, 2), 16) / 255, g = parseInt(rgb.slice(2, 4), 16) / 255, b = parseInt(rgb.slice(4, 6), 16) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+  const sat = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  if (sat < 0.12) return "1A1A1A";
+  const k = (Math.min(l, 0.5) * 0.38) / Math.max(l, 1e-6);
+  return [r, g, b].map(v => Math.round(Math.min(1, v * k) * 255).toString(16).padStart(2, "0")).join("");
+}
+function drawHook(cw, ch) {
+  const text = S.layout.title, H = S.D.layout_info.hook;
+  if (!text || !H) return;
+  const st = Object.assign({}, H.default, S.layout.hook || {});
+  const pane = document.querySelector('[data-ed-pane="lay"]'), styling = pane && !pane.hidden;
+  const et = editTime(video.currentTime);
+  const showing = et !== null && et < st.s;
+  if (!showing && !styling) return;
+  const u = showing ? et * 1000 : 900, dur = st.s * 1000;          // ms into the hook
+  const C = S.D.sub_layout.captions, L = S.D.sub_layout, k = H.sizes[st.size] || 1;
+  const size = L.title_size * cw * k, lineH = size * C.line_h;
+  const rows = wrapSub(text, Math.max(6, Math.floor(L.title_line / Math.max(k, 1))), 3);
+  const x = cw / 2, y = H.places[st.at] * ch + rows.length * lineH / 2;
+  const fam = st.font ? `"${C.fonts[st.font]}", ` : `"${L.font}", `;
+  const font = sz => `700 ${sz * ASS_TO_CSS}px ${fam}"Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif`;
+  // The motion: the same steps as captions.events / hook.events.
+  const P = C.pop_ms, h = P / 2;
+  let sc = 1, dx = 0, dy = 0, rot = st.fx === "shake" || st.fx === "wobble" || st.fx === "wave" ? 0 : st.tilt, alpha = 1;
+  if (["pop", "shake", "wave", "wobble", "grow"].includes(st.fx) && u < P) sc = u < h ? 0.4 + 0.75 * u / h : 1.15 - 0.15 * (u - h) / h;
+  if (st.fx === "grow" && u >= P) sc = 1 + (C.grow_to - 1) * Math.min(1, (u - P) / Math.max(1, dur - P));
+  if (st.fx === "slam" && u < H.slam_ms) { sc = 2.6 - 1.6 * u / H.slam_ms; alpha = u / H.slam_ms; }
+  let sx = sc, sy = sc;
+  if (st.fx === "bounce") {
+    const B = C.bounce_ms;
+    if (u < B) dy = -size * 1.2 * (1 - u / B);
+    else if (u < B + 60) { const q = (u - B) / 60; sx = 1 + 0.25 * q; sy = 1 - 0.22 * q; }
+    else if (u < B + 170) { const q = (u - B - 60) / 110; sx = 1.25 - 0.25 * q; sy = 0.78 + 0.22 * q; }
+  }
+  if (st.fx === "shake" && u >= P) {
+    const [step, amp, tilt] = C.shake, n = Math.floor((u - P) / step);
+    const j = m => { const v = Math.sin(7 * 12.9898 + n * 78.233 + m * 37.719) * 43758.5453; return (v - Math.floor(v)) * 2 - 1; };
+    dx = j(1) * amp * size; dy = j(2) * amp * size; rot = j(3) * tilt;
+  }
+  if (st.fx === "wobble") rot = C.wobble[0] * Math.sin(2 * Math.PI * u / C.wobble[1]);
+  const fade = Math.min(H.fade_ms, dur / 2);
+  if (showing && dur - u < fade) alpha *= Math.max(0, (dur - u) / fade);
+  // Lay the runs out: *starred* runs are hi_scale bigger and in the accent colour.
+  const lines = [];
+  let on = false;
   sctx.save();
-  sctx.font = `700 ${size * ASS_TO_CSS}px "${L.font}", "Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif`;
+  for (const row of rows) {
+    const [pieces, after] = runsOf(row, on);
+    on = after;
+    const runs = pieces.map(([t, hi]) => { sctx.font = font(size * (hi ? C.hi_scale : 1)); return { t, hi, w: sctx.measureText(t).width }; });
+    lines.push({ runs, w: runs.reduce((a, r) => a + r.w, 0) });
+  }
+  sctx.translate(x + dx, y + dy);
+  sctx.rotate(-rot * Math.PI / 180);                 // ASS \frz turns anticlockwise
+  sctx.scale(sx, sy);
+  sctx.globalAlpha = alpha;
   sctx.textBaseline = "middle";
   sctx.lineJoin = "round";
-  let y = ch * 0.06 + size / 2, on = false;
-  for (const line of wrapSub(S.layout.title, L.title_line, 3)) {
-    const [pieces, after] = runsOf(line, on);
-    on = after;
-    const widths = pieces.map(([t]) => sctx.measureText(t).width);
-    let x = cw / 2 - widths.reduce((a, b) => a + b, 0) / 2;
-    pieces.forEach(([t, hi], k) => {
-      sctx.lineWidth = size * 0.24;
-      sctx.strokeStyle = "#000";
-      sctx.strokeText(t, x, y);
-      sctx.fillStyle = hi ? "#" + L.highlight : "#fff";
-      sctx.fillText(t, x, y);
-      x += widths[k];
+  const top = -lines.length * lineH / 2, fill = hookHex(st.color), hi = hookHex(st.accent);
+  const passes = st.look === "bubble" ? [["stroke", size * C.outer * 2, hookDark(fill)], ["stroke", size * C.inner * 2, "FFFFFF"], ["fill"]]
+    : st.look === "box" ? [["box"], ["fill"]] : [["shadow"], ["stroke", size * 0.24, "000000"], ["fill"]];
+  for (const [kind, lw, col] of passes) {
+    lines.forEach((ln, r) => {
+      const cy = top + lineH * (r + 0.5);
+      if (kind === "box") {
+        const pad = size * 0.28;
+        sctx.fillStyle = "#" + hookHex(st.box);
+        sctx.fillRect(-ln.w / 2 - pad, cy - lineH / 2 - pad * 0.4, ln.w + 2 * pad, lineH + pad * 0.8);
+        return;
+      }
+      let cx = -ln.w / 2;
+      for (const run of ln.runs) {
+        const t = run.t;
+        sctx.font = font(size * (run.hi ? C.hi_scale : 1));
+        const wob = st.fx === "wave";
+        const draw = (fn, s0, x0) => {
+          if (!wob) { fn(s0, x0, cy); return; }
+          let xx = x0;
+          [...s0].forEach((c, i) => {
+            const off = -C.wave[0] * size * Math.sin(2 * Math.PI * u / C.wave[1] - i * C.wave[2]);
+            fn(c, xx, cy + off);
+            xx += sctx.measureText(c).width;
+          });
+        };
+        if (kind === "shadow") { sctx.fillStyle = "rgba(0,0,0,.5)"; draw((c, a, b) => sctx.fillText(c, a, b), t, cx + size * 0.05); }
+        else if (kind === "stroke") { sctx.lineWidth = lw; sctx.strokeStyle = "#" + col; draw((c, a, b) => sctx.strokeText(c, a, b), t, cx); }
+        else { sctx.fillStyle = "#" + (run.hi ? hi : fill); draw((c, a, b) => sctx.fillText(c, a, b), t, cx); }
+        cx += run.w;
+      }
     });
-    y += size;
   }
   sctx.restore();
 }

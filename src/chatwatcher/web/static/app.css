@@ -532,3 +532,10 @@ input.hex:invalid, input.hex.bad { outline: 2px solid var(--bad); }
 .compilation > p { margin: .4rem 0; }
 .pieces { margin: .3rem 0 .4rem; padding-left: 1.5rem; display: grid; gap: .2rem; }
 .pieces a { font-variant-numeric: tabular-nums; white-space: nowrap; margin-right: .3rem; }
+/* Clip page: a compilation's pieces, editable (clip/stitch.py) */
+.piece-row { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+.piece-row input[name=start], .piece-row input[name=end] { width: 5.4rem; font-variant-numeric: tabular-nums; }
+.piece-row .piece-note { flex: 1 1 100%; order: 9; }            /* its own line: the card is narrow */
+.piece-row a { margin-right: 0; }
+.piece-row [data-piece-remove] { margin-left: auto; }
+.piece-form .pieces { gap: .55rem; }

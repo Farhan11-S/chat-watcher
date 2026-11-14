@@ -45,13 +45,13 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
     stream_fx = cr.effects(row)
     clip_fx = cr.effects_to_clip(stream_fx, clip)
     cues, _source, sub_style = current_subs(cfg, row, clip, kind)
-    graph, layout, title = None, None, ""
+    graph, layout, title, hook = None, None, "", None
     if short:
         layout = current_layout(conn, moment_pk, clip, row)
         boxes = short_regions(conn, moment_pk, stream_fx, layout)
         sw, sh = cr.size(clip)
         ps = lay.panels(layout, boxes, sw, sh)
-        title = layout["title"]
+        title, hook = layout["title"], layout.get("hook")
         # Frame shots: the picture moves to another region for a while, so the cut is split
         # where they start and end, and each part gets its own picture and zoom targets.
         frames = [f for f in clip_fx if f.get("type") == lay.FRAME and lay.shot_panels(f, boxes, sw, sh)]
@@ -137,7 +137,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         r = render(cfg.edit, clip.path, segs, clip.out_path(kind), fps=clip.fps, has_audio=clip.has_audio,
                    sounds=sound_cues, visuals=pictures, subs=cues if sub_style["on"] else [],
                    sub_style=sub_style, size=size, font=cfg.subtitles.font,
-                   intro=intro, intro_s=intro_s, layout=graph, title=title, overlays=ov_lists, texts=text_lists, spots=spot_lists,
+                   intro=intro, intro_s=intro_s, layout=graph, title=title, hook=hook, overlays=ov_lists, texts=text_lists, spots=spot_lists,
                    captions=cap_lists, layers=layer_lists, on_progress=progress)
     finally:
         conn.execute(f"UPDATE {table} SET render_progress = NULL WHERE moment_id = ?", (moment_pk,))

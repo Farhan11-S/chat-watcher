@@ -19,7 +19,7 @@ import { T, X, gx, gy, hitFx, hitSeg, hitSubAt, hitVfx, resize } from "./timelin
 import { addSubAfter, giveTicked, lineEnd, linesToSubs, paintList, transcribe } from "./transcript.js";
 import { addPerson, playVoice, setSegRegion, setTransition, setVoice, tagKey } from "./panels.js";
 import { deleteRegion, renameRegion, toggleRegions } from "./regions.js";
-import { setLayout, switchKind } from "./layout.js";
+import { setHook, setLayout, switchKind } from "./layout.js";
 import { autoEdit, clearClaude, newChat } from "./ai.js";
 
 canvas.addEventListener("pointerdown", ev => {
@@ -345,6 +345,7 @@ root.addEventListener("change", ev => {
   else if (t.matches("[data-vis-size]")) { S.ovSizing = false; changed(); }
   else if (t.matches("[data-vis-mode]")) editFx({ mode: t.value });
   else if (t.matches("[data-shot-split]")) editFx({ split: +t.value });
+  else if (t.matches("[data-hook]")) setHook(t.dataset.hook, t.value);
   else if (t.matches("[data-layer-opacity]")) editFx({ opacity: +t.value });
   else if (t.matches("[data-text-input]")) {
     const f = curFx();

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -76,6 +77,8 @@ def router(ctx: Ctx) -> APIRouter:
         if d is None:
             raise HTTPException(404, "Unknown video")
         files = vod_files(cfg, video_id)
+        # Compilation clips (clip.stitch) are not stretches of the stream: they have their own card.
+        d["moments"] = [m for m in d["moments"] if m["kind"] != "compilation"]
         chart = heat = None
         duration = d["video"]["duration_s"] or 0
         if files.scores.is_file():
@@ -92,7 +95,7 @@ def router(ctx: Ctx) -> APIRouter:
 
     @r.post("/video/{video_id}/{action}")
     def video_action(video_id: str, action: str, stream_type: str = Form("auto"), kept_only: str = Form(""),
-                     back_to: str = Form(""), conn=Depends(get_conn)):
+                     back_to: str = Form(""), idea: str = Form(""), edit: str = Form(""), conn=Depends(get_conn)):
         v = store.get_video(conn, video_id)
         if v is None:
             raise HTTPException(404)
@@ -112,8 +115,8 @@ def router(ctx: Ctx) -> APIRouter:
             store.upsert_video(conn, video_id, status="processing", error=None)
             return redirect(back, msg="Queued again.")
         if action == "clip":
-            n = conn.execute("SELECT COUNT(*) FROM moments WHERE video_id = ? AND status = 'approved'",
-                             (v["id"],)).fetchone()[0]
+            n = conn.execute("SELECT COUNT(*) FROM moments WHERE video_id = ? AND status = 'approved' "
+                             "AND kind != 'compilation'", (v["id"],)).fetchone()[0]
             if not n:
                 return redirect(back, error="Mark the moments you want with ✓ Keep first.")
             jobs.enqueue(conn, v["id"], "clip", params={"kept_only": True})
@@ -140,6 +143,25 @@ def router(ctx: Ctx) -> APIRouter:
             ctx.poke()
             return redirect(back + "#compilations",
                             msg="Queued. Claude reads the whole stream once; this takes a few minutes.")
+        if action == "stitch":
+            # One idea → one clip of its pieces joined (clip.stitch), downloaded by the clip job.
+            from chatwatcher.clip import stitch
+            if not vod_files(cfg, video_id).info.is_file():
+                return redirect(back + "#compilations", error="This stream hasn't been fetched yet.")
+            pk = stitch.create(conn, v["id"], listing.to_int(idea))
+            if pk is None:
+                return redirect(back + "#compilations", error="That idea is gone (Claude has looked again since). "
+                                                              "Pick one from the list below.")
+            if edit:                                   # change its pieces first: its page downloads it
+                return redirect(f"/moment/{pk}#pieces")
+            clip = conn.execute("SELECT path FROM clips WHERE moment_id = ?", (pk,)).fetchone()
+            if clip and Path(clip["path"]).is_file():
+                return redirect(f"/moment/{pk}")
+            if jobs.enqueue(conn, v["id"], "clip", moment_pk=pk) is None:
+                return redirect(back + "#compilations", error="Its pieces are being downloaded right now.")
+            ctx.poke()
+            return redirect(back + "#compilations",
+                            msg="Queued. The pieces are downloaded and joined into one clip; then open it and press ✨ AI edit.")
         if action == "rescore":
             from chatwatcher.scoring.service import ScoreError, score_video
             if stream_type in discover.STREAM_TYPES:
@@ -162,7 +184,29 @@ def _compile_state(conn, video_pk: int, has_captions: bool) -> dict[str, Any]:
     from chatwatcher.compile.service import load
     job = conn.execute("SELECT status, message, error, run_after FROM jobs WHERE video_id = ? AND stage = 'compile'",
                        (video_pk,)).fetchone()
-    return {"run": load(conn, video_pk), "job": dict(job) if job else None, "has_captions": has_captions}
+    run = load(conn, video_pk)
+    from chatwatcher.clip import stitch
+    made, earlier = {}, []
+    ideas = {stitch.key(c["title"], c["segments"]): c["id"] for c in run["candidates"]} if run else {}
+    for m in conn.execute(
+            """SELECT m.id, m.features_json, c.path,
+                      (SELECT j.status FROM jobs j WHERE j.moment_id = m.id AND j.stage = 'clip') AS job,
+                      (SELECT COALESCE(j.error, j.message) FROM jobs j WHERE j.moment_id = m.id AND j.stage = 'clip') AS said
+               FROM moments m LEFT JOIN clips c ON c.moment_id = m.id
+               WHERE m.video_id = ? AND m.kind = 'compilation' ORDER BY m.rank""", (video_pk,)):
+        comp = json.loads(m["features_json"] or "{}").get("compilation") or {}
+        state = ("busy" if m["job"] in ("pending", "running") else "ready" if m["path"] and Path(m["path"]).is_file()
+                 else "error" if m["job"] == "error" else "none")
+        item = {"id": m["id"], "title": comp.get("title") or "Compilation", "state": state,
+                "changed": stitch.moment_key(m["features_json"]) != stitch.key(comp.get("title") or "", comp.get("segments") or []),
+                "error": (m["said"] or "").splitlines()[0][:300] if state == "error" and m["said"] else ""}
+        idea = ideas.get(stitch.moment_key(m["features_json"]))
+        if idea is not None:
+            made[idea] = item
+        else:
+            earlier.append(item)                 # its idea was replaced by a later look
+    return {"run": run, "job": dict(job) if job else None, "has_captions": has_captions,
+            "made": made, "earlier": earlier}
 
 
 def _review_items(moments: list[dict[str, Any]]) -> list[dict[str, Any]]:

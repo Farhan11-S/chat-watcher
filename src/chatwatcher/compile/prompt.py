@@ -168,6 +168,10 @@ Rules:
 - Every piece is a time range copied from the timeline, long enough to make sense on its \
 own (usually 5-60 seconds): start a little before the line where it begins and end after \
 the reaction.
+- A piece holds what causes the reaction, not only the reaction. If she is angry about a \
+tiny reward, start where she does what she is paid for (the deposit, the purchase, the \
+quest), even when that is 30 seconds before the line you noticed. Someone who has not \
+seen the stream must be able to follow every piece.
 - Pieces of one compilation must come from different parts of the stream, not one \
 continuous scene (that is a normal clip, not a compilation).
 - Only list what you would really publish: rating 5 or more. Fewer good ones beat many \
