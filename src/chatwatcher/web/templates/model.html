@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.name }} · Models · chat-watcher{% endblock %}
+{% block autorefresh %}0{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ asset('stage/stage.css') }}">
+<script type="importmap">{"imports": {"three": "/static/vendor/three-0.171/build/three.module.js",
+                                     "three/addons/": "/static/vendor/three-0.171/jsm/"}}</script>
+<script src="/static/vendor/three-0.171/jsm/libs/ammo.wasm.js"></script>
+{% endblock %}
+{% block content %}
+<nav class="crumbs" aria-label="Where you are"><a href="/models">Models</a><span>›</span>{{ profile.name }}</nav>
+<div class="page-head">
+  <div>
+    <h1>{{ profile.name }}</h1>
+    <p class="sub">How she sits, poses and makes each face on the 3D stage. Anything wrong here is wrong in every scene:
+      fix it below (her own expressions for a face, parts to pin or keep moving when she sits), then tick <b>Checked</b>.</p>
+  </div>
+</div>
+<div class="mc" id="mc" data-slug="{{ profile.slug }}" data-url="{{ model_url }}">
+  <div>
+    <p class="st-status" id="mc-status">Loading…</p>
+    <h3>Poses</h3><div class="mc-grid" id="mc-poses"></div>
+    <h3>Faces</h3><div class="mc-grid" id="mc-faces"></div>
+    <h3>Mouth</h3><div class="mc-grid" id="mc-mouth"></div>
+    <h3>Cartoon actions</h3><div class="mc-strips" id="mc-actions"></div>
+  </div>
+  <aside class="st-side">
+    <section class="card">
+      <h2>Profile</h2>
+      <form class="st-form" id="mc-form">
+        <label>Name <input type="text" id="mc-name" value="{{ profile.name }}" maxlength="60"></label>
+        <label>VTuber (her name on the VTubers list) <input type="text" id="mc-vtuber" value="{{ profile.vtuber }}" maxlength="60"></label>
+        <label>Model file <select id="mc-pmx">{% for p in profile.pmx_all %}<option {{ 'selected' if p == profile.pmx }}>{{ p }}</option>{% endfor %}</select></label>
+        <label>When she sits <textarea id="mc-seated" rows="4" spellcheck="false">{{ profile.seated | tojson }}</textarea>
+          <small class="muted">pin: "lower" (skirts and tails under 下半身) or a list of bone patterns; keep: patterns to keep moving; fold: {bone: [x, y, z]} degrees</small></label>
+        <label>Her own faces <textarea id="mc-faces-json" rows="3" spellcheck="false">{{ profile.faces | tojson }}</textarea>
+          <small class="muted">{"smug": [["にやり", 0.8], ["じと目", 0.5]]} replaces that face for this model</small></label>
+        <label>Mouth strength <input type="number" id="mc-mouth-gain" min="0.5" max="2" step="0.05" value="{{ profile.mouth or 1 }}">
+          <small class="muted">1 = as her voice says; more opens her mouth wider on every word (some models' あ is small)</small></label>
+        <label>Notes <textarea id="mc-notes" rows="2" maxlength="2000">{{ profile.notes }}</textarea></label>
+        <label class="st-row"><span><input type="checkbox" id="mc-checked" {{ 'checked' if profile.checked }}> Checked: she looks right</span></label>
+        <div class="st-row"><button class="primary">Save</button><span class="st-status" id="mc-save-status"></span></div>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Physics while seated</h2>
+      <p class="st-status">Parts still moving after she has sat still for 3 s (model units per frame). Above ~0.02 it thrashes: pin it, or keep it moving if it should.</p>
+      <pre id="mc-probe">…</pre>
+    </section>
+    <details class="card"><summary>Everything in the model</summary><pre id="mc-info"></pre></details>
+  </aside>
+</div>
+<script type="application/json" id="mc-profile">{{ profile | tojson }}</script>
+<script type="application/json" id="mc-vocab">{{ vocab | tojson }}</script>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('stage/check.js') }}"></script>{% endblock %}

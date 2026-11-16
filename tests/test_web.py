@@ -57,6 +57,8 @@ def test_pages_render(site):
     assert r.status_code == 200
     for part in ("<video", "ぺこら爆笑", "What happens", "Re-cut clip", "/media/frame/", "Analyse again"):
         assert part in r.text
+    assert "YouTube description" in r.text and 'data-copy-from="#yt-desc"' in r.text
+    assert "Pekora vs. one (1) wall: the wall won." in r.text and "unofficial fan-made clip" in r.text
     for gone in ("Storyboard", "Ask Claude", 'name="model"', "/approve"):
         assert gone not in r.text
     assert client.get("/channels").status_code == 200

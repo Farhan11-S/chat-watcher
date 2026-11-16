@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Models · chat-watcher{% endblock %}
+{% block autorefresh %}0{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('stage/stage.css') }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Models</h1>
+    <p class="sub">Official hololive MMD models for the 3D stage. Download a talent's zip from
+      <a href="https://www.mmd.hololive.tv/" target="_blank" rel="noopener">mmd.hololive.tv</a> (it links to her Niconico Solid page) and import it here.
+      Files stay in <code>{{ folder }}</code> and are only sent to this dashboard: the terms forbid passing the model on.</p>
+  </div>
+</div>
+<div class="card">
+  <form method="post" action="/models/import" enctype="multipart/form-data" class="st-row">
+    <input type="file" name="file" accept=".zip,application/zip" required>
+    <button class="primary">Import zip</button>
+    <span class="muted"><small>Over the tunnel, zips over 100 MB can't be uploaded: use a folder on this computer instead.</small></span>
+  </form>
+  <form method="post" action="/models/import-folder" class="st-row" style="margin-top:.7rem">
+    <input type="text" name="folder" value="{{ default_folder }}" size="60" aria-label="Folder on this computer">
+    <button>Import every new zip in this folder</button>
+  </form>
+</div>
+{% if models %}
+<div class="card flush">
+  <table class="table">
+    <thead><tr><th>Model</th><th>VTuber</th><th>File</th><th>Checked</th><th></th></tr></thead>
+    <tbody>
+    {% for m in models %}
+    <tr>
+      <td><a href="/models/{{ m.slug }}"><b>{{ m.name }}</b></a></td>
+      <td>{{ m.vtuber or '—' }}</td>
+      <td><small class="muted">{{ m.pmx }}</small></td>
+      <td>{% if m.checked %}<span class="pill done">checked</span>{% else %}<span class="pill pending">not yet</span>{% endif %}</td>
+      <td><a class="btn small" href="/models/{{ m.slug }}">Check</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card"><p class="muted">No models yet.</p></div>
+{% endif %}
+{% endblock %}

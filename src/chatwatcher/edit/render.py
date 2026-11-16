@@ -3,7 +3,10 @@ volume, zooms, shakes and flashes, subtitles, sound effects, then the whole thin
 levelled to a target loudness.
 
 Each segment is encoded to its own file first and the files are joined without
-re-encoding. (One big filter graph would have to hold decoded frames in memory when
+re-encoding. Every part's picture starts at exactly 0 (a cut lands between two source
+frames, and the first one kept would otherwise come up to a frame late: a dropped frame at
+the join), and the parts are .mov with a fine track clock (Matroska counts whole
+milliseconds, so 60 fps would play as uneven 16 / 17 ms frames: judder). (One big filter graph would have to hold decoded frames in memory when
 segments play out of order, e.g. a cold open that shows the payoff first.) Audio stays
 uncompressed until the last step, so the joins are sample-exact and never click.
 """
@@ -44,6 +47,8 @@ class SoundCue:
 SOUND_LEVEL = -14.0            # sounds in the library are levelled to this (see edit.sounds)
 _DUCK_RAMP = 0.06
 JOIN_FADE = 0.008         # fade at a split that isn't a cut (no click, no dip)
+TIMESCALE = ["-video_track_timescale", "120000"]   # exact for 23.976, 24, 25, 29.97, 30, 50, 59.94, 60 fps
+PIN = "setpts=PTS-STARTPTS"   # a part's first frame at 0 (see the module's docstring)
 
 
 def lengths(segments: list[list[float]], fps: float) -> list[float]:
@@ -188,7 +193,7 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
         done = 0.0
         parts = []
         if intro:
-            part = tmp / "intro.mkv"
+            part = tmp / "intro.mov"
             w, h = size if size[0] and size[1] else (probe(src).width, probe(src).height)
             args = ["-v", "error", "-i", str(intro), "-t", f"{intro_s:.6f}", "-map", "0:v:0",
                     "-vf", f"scale={w}:{h}:flags=lanczos,setsar=1,fps={fps:.6g}",
@@ -196,14 +201,14 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             if has_audio:
                 args += ["-map", "0:a:0", "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
                          "-af", f"apad,atrim=0:{intro_s:.6f}"]
-            _ffmpeg(args + [str(part)], timeout=600)
+            _ffmpeg(args + TIMESCALE + [str(part)], timeout=600)
             parts.append(part)
             done = intro_s
             report(done / total * encode_share)
         per_layout = isinstance(layout, list)
         per_visual = bool(visuals) and isinstance(visuals[0], list)
         for i, ((s, _e, gain), length) in enumerate(zip(segments, seg_lengths)):
-            part = tmp / f"part{i:03d}.mkv"
+            part = tmp / f"part{i:03d}.mov"
             seg_layout = layout[i] if per_layout else layout
             seg_visuals = (visuals[i] if per_visual else visuals) or []
             # Parts that play on from the one before (a split, not a cut) only get a tiny fade.
@@ -244,11 +249,12 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             script = tmp / f"part{i:03d}.vf"      # in a file: the expressions can be longer than a command line allows
             if ov_items or sp_items or ly_items:
                 picture = seg_layout or "[0:v]null[base]"
-                graph, cur = [], "[base]"
+                graph = [f"[0:v]{PIN}[src]"]
+                cur = "[base]"
                 if ly_items:                       # a copy of the clip for the layers to cut from
-                    graph.append("[0:v]split=2[lyin][lysrc]")
+                    graph.append("[src]split=2[lyin][lysrc]")
                     picture = picture.replace("[0:v]", "[lyin]")
-                graph.append(picture)
+                graph.append(picture.replace("[0:v]", "[src]"))
                 if sp_items:
                     spf, cur = spt.filter_graph(cur, sp_items, 1 + len(ov_items))
                     graph.append(spf)
@@ -266,11 +272,12 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                 args += ["-/filter_complex", str(script)]
             elif seg_layout:
                 vf = ",".join(x for x in (vf, ass) if x)
-                script.write_text(f"{seg_layout};[base]{vf or 'null'}[v]", encoding="utf-8")
+                script.write_text(f"[0:v]{PIN}[src];{seg_layout.replace('[0:v]', '[src]')};[base]{vf or 'null'}[v]",
+                                  encoding="utf-8")
                 args[args.index("0:v:0")] = "[v]"
                 args += ["-/filter_complex", str(script)]
-            elif vf or ass:
-                script.write_text(",".join(x for x in (vf, ass) if x), encoding="utf-8")
+            else:                                  # the first filter, so vf's branches stay after it
+                script.write_text(",".join(x for x in (PIN, vf, ass) if x), encoding="utf-8")
                 args += ["-/vf", str(script)]
             if has_audio:
                 f = min(fade, length / 3)
@@ -288,7 +295,7 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             def seg_progress(frac: float, base: float = base, length: float = length) -> None:
                 report((base + frac * length) / total * encode_share)
 
-            _ffmpeg(args + [str(part)], timeout=max(300.0, length * 30), total_s=length,
+            _ffmpeg(args + TIMESCALE + [str(part)], timeout=max(300.0, length * 30), total_s=length,
                     on_progress=seg_progress, cwd=tmp)
             parts.append(part)
             done += length
@@ -296,11 +303,11 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
 
         listing = tmp / "parts.txt"
         listing.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
-        joined = tmp / "joined.mkv"
+        joined = tmp / "joined.mov"
         # Relative names, run inside tmp: the concat demuxer resolves the parts against the
         # list's path as if it were a URL, so a "#" (or "?") in a folder name breaks it.
-        _ffmpeg(["-v", "error", "-f", "concat", "-safe", "0", "-i", listing.name, "-c", "copy", joined.name], cwd=tmp,
-                timeout=600)
+        _ffmpeg(["-v", "error", "-f", "concat", "-safe", "0", "-i", listing.name, "-c", "copy", *TIMESCALE, joined.name],
+                cwd=tmp, timeout=600)
 
         out = tmp / "out.mp4"
         slow = max(300.0, total * 5)
@@ -332,7 +339,7 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             final += ["-c:a", "aac", "-b:a", cfg.audio_bitrate]
         else:
             final += ["-map", "0"]
-        final += ["-c:v", "copy", "-movflags", "+faststart"]
+        final += ["-c:v", "copy", *TIMESCALE, "-movflags", "+faststart"]
         _ffmpeg(final + [str(out)], timeout=slow)
         out.replace(dest)
         report(1.0)

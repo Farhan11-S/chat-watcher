@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 # type: (default length, shortest, longest) in seconds
 TYPES: dict[str, tuple[float, float, float]] = {
     "punch": (1.5, 0.2, 10.0),     # instant zoom on a region, then straight back
-    "push": (3.0, 0.5, 15.0),      # slow zoom towards a region, eased; back at the end
+    "push": (3.0, 0.5, 15.0),      # slow zoom towards a region, eased (from z0); back at the end
     "shake": (0.6, 0.1, 3.0),      # camera shake, strongest at the start
     "flash": (0.3, 0.05, 1.5),     # a colour over the picture, fading out
 }
@@ -37,6 +37,9 @@ class Visual:
     t: float
     d: float
     zoom: float = 1.0              # punch: the zoom; push: the zoom it ends at
+    z0: float = 1.0                # push: the zoom it starts at. Above 1 it starts on the region
+    # itself (cx, cy), so a push can carry on from a punch-in on it: punch 3×, push 3× → 4×,
+    # punch 4×. 1: it starts on the whole frame and drifts to the region as it zooms.
     cx: float = 0.5                # punch/push: the region's centre
     cy: float = 0.5
     strength: int = 2              # shake: 1 light, 2 normal, 3 heavy
@@ -63,6 +66,11 @@ def _wave(tau: float, waves) -> float:
     return sum(w * math.sin(2 * math.pi * hz * tau + ph) for w, hz, ph in waves)
 
 
+def start_view(v: Visual) -> tuple[float, float, float]:
+    """(zoom, cx, cy) a push or pull starts from (pull: where it ends)."""
+    return (v.z0, v.cx, v.cy) if v.z0 > 1.0 else (1.0, 0.5, 0.5)
+
+
 def camera(t: float, visuals: list[Visual]) -> tuple[float, float, float]:
     """(xc, yc, h) on screen at time t."""
     z, cx, cy = 1.0, 0.5, 0.5
@@ -73,7 +81,8 @@ def camera(t: float, visuals: list[Visual]) -> tuple[float, float, float]:
     if zoom:
         q = _smooth(min(max((t - zoom.t) / zoom.d, 0.0), 1.0))
         p = 1.0 if zoom.type == "punch" else 1 - q if zoom.type == "pull" else q
-        z, cx, cy = 1 + (zoom.zoom - 1) * p, 0.5 + (zoom.cx - 0.5) * p, 0.5 + (zoom.cy - 0.5) * p
+        z0, x0, y0 = start_view(zoom)
+        z, cx, cy = z0 + (zoom.zoom - z0) * p, x0 + (zoom.cx - x0) * p, y0 + (zoom.cy - y0) * p
     a = dx = dy = 0.0
     for v in visuals:
         if v.type == "shake" and v.active(t):
@@ -162,9 +171,10 @@ def view_exprs(visuals: list[Visual], tv: str) -> tuple[str, str, str]:
             p = f"({q}*{q}*(3-2*{q}))"
             if v.type == "pull":
                 p = f"(1-{p})"
-        Z = f"if({gate},(1+{_n(v.zoom - 1)}*{p}),{Z})"
-        CX = f"if({gate},(0.5+{_n(v.cx - 0.5)}*{p}),{CX})"
-        CY = f"if({gate},(0.5+{_n(v.cy - 0.5)}*{p}),{CY})"
+        z0, x0, y0 = start_view(v)
+        Z = f"if({gate},({_n(z0)}+{_n(v.zoom - z0)}*{p}),{Z})"
+        CX = f"if({gate},({_n(x0)}+{_n(v.cx - x0)}*{p}),{CX})"
+        CY = f"if({gate},({_n(y0)}+{_n(v.cy - y0)}*{p}),{CY})"
     A, DX, DY = ["0"], ["0"], ["0"]
     for v in visuals:
         if v.type != "shake":

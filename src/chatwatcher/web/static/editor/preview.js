@@ -96,8 +96,9 @@ export function viewPanels(t) {
     if (!on.has(p)) return p;
     const [f, rx, ry] = on.get(p);
     const q = Math.min(Math.max((t - f.t) / f.d, 0), 1), sq = q * q * (3 - 2 * q), k = f.type === "punch" ? 1 : sq;
-    const z = 1 + (f.zoom - 1) * k, h = 0.5 / z;
-    const cx = Math.min(Math.max(0.5 + (rx - 0.5) * k, h), 1 - h), cy = Math.min(Math.max(0.5 + (ry - 0.5) * k, h), 1 - h);
+    const [z0, x0, y0] = startView(f, rx, ry);
+    const z = z0 + (f.zoom - z0) * k, h = 0.5 / z;
+    const cx = Math.min(Math.max(x0 + (rx - x0) * k, h), 1 - h), cy = Math.min(Math.max(y0 + (ry - y0) * k, h), 1 - h);
     const [sx, sy, sw, sh] = p.src;
     return { ...p, src: [sx + (cx - h) * sw, sy + (cy - h) * sh, 2 * h * sw, 2 * h * sh] };
   });
@@ -117,6 +118,8 @@ export function fitZoom(name) {
   return Math.round(Math.min(Math.max(Math.min(1 / Math.max(b.w, 1e-3), 1 / Math.max(b.h, 1e-3)), lo), hi) * 100) / 100;
 }
 const active = (f, t) => f.t <= t && t < f.t + f.d;
+// Where a push starts (motion.start_view): from_zoom above 1 starts on the region itself.
+const startView = (f, rx, ry) => f.type === "push" && f.from_zoom > 1 ? [f.from_zoom, rx, ry] : [1, 0.5, 0.5];
 // Transitions on real cuts → camera / flash / blur pieces in clip time (motion.transitions).
 function transVis() {
   const out = [], T = S.D.visual.transitions, [dlo, dhi] = S.D.visual.transition_d;
@@ -147,7 +150,8 @@ export function camera(t) {
     const q = Math.min(Math.max((t - zf.t) / zf.d, 0), 1), sq = q * q * (3 - 2 * q);
     const p = zf.type === "punch" ? 1 : zf.type === "pull" ? 1 - sq : sq;
     const [rx, ry] = zf.cx !== undefined ? [zf.cx, zf.cy] : centre(zf.region);
-    z = 1 + (zf.zoom - 1) * p; cx = 0.5 + (rx - 0.5) * p; cy = 0.5 + (ry - 0.5) * p;
+    const [z0, x0, y0] = startView(zf, rx, ry);
+    z = z0 + (zf.zoom - z0) * p; cx = x0 + (rx - x0) * p; cy = y0 + (ry - y0) * p;
   }
   let a = 0, dx = 0, dy = 0;
   for (const f of S.fx) {

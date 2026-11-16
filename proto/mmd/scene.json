@@ -1,0 +1,56 @@
+{
+  "model": "model/HakosBaelz/PMX/HakosBaelz.pmx",
+  "audio": "media/audio.m4a",
+  "track": "media/track.json",
+  "note": "Times are seconds from the start of the Short's cut. This file is the part Claude would write. outside.cloud: -1 = cloud still ahead (city lights show), 0 = inside it (dark), 1 = it has slid away behind.",
+  "shots": [
+    {"t": 0.0, "shot": "medium", "yaw": -20, "push": 0.06},
+    {"t": 4.41, "shot": "over", "push": 0.1},
+    {"t": 6.35, "shot": "pov", "push": 0.1},
+    {"t": 8.5, "shot": "medium", "yaw": 10, "push": 0.05},
+    {"t": 12.85, "shot": "close", "yaw": -16, "push": 0.04},
+    {"t": 15.6, "shot": "pov", "push": 0.05},
+    {"t": 17.99, "shot": "medium", "yaw": 0, "push": 0.22},
+    {"t": 20.4, "shot": "face", "yaw": 14, "push": 0.08},
+    {"t": 23.59, "shot": "medium", "yaw": -22, "push": 0.05},
+    {"t": 26.95, "shot": "over", "push": 0.12},
+    {"t": 30.45, "shot": "face", "yaw": 0, "push": 0.1},
+    {"t": 33.0, "shot": "wide", "yaw": -24, "push": 0.04},
+    {"t": 36.25, "shot": "pov", "push": 0.08},
+    {"t": 40.5, "shot": "medium", "yaw": 6, "push": 0.05},
+    {"t": 44.79, "shot": "medium", "yaw": -18, "push": 0.05},
+    {"t": 47.99, "shot": "close", "yaw": -8, "push": 0.08}
+  ],
+  "poses": [
+    {"t": 0.0, "pose": "rest"},
+    {"t": 4.41, "pose": "window", "ease": 0.5},
+    {"t": 8.5, "pose": "rest", "ease": 0.5},
+    {"t": 12.85, "pose": "explain"},
+    {"t": 15.6, "pose": "window", "ease": 0.4},
+    {"t": 17.99, "pose": "shock", "ease": 0.18},
+    {"t": 23.59, "pose": "phone", "ease": 0.4},
+    {"t": 33.0, "pose": "rest", "ease": 0.6},
+    {"t": 36.25, "pose": "window", "ease": 0.5},
+    {"t": 40.5, "pose": "laugh"},
+    {"t": 44.79, "pose": "explain"},
+    {"t": 47.99, "pose": "sheepish", "ease": 0.5}
+  ],
+  "faces": [
+    {"t": 0.0, "face": "sheepish"},
+    {"t": 4.4, "face": "smile"},
+    {"t": 8.5, "face": "neutral"},
+    {"t": 15.99, "face": "worried"},
+    {"t": 17.99, "face": "shock", "ease": 0.12},
+    {"t": 23.59, "face": "excited"},
+    {"t": 33.0, "face": "neutral"},
+    {"t": 36.25, "face": "worried"},
+    {"t": 39.6, "face": "laugh", "ease": 0.2},
+    {"t": 44.79, "face": "smile"},
+    {"t": 47.99, "face": "sheepish"}
+  ],
+  "outside": [
+    {"t": 0.0, "cloud": -1},
+    {"t": 16.25, "cloud": 0, "ease": 0.5},
+    {"t": 36.7, "cloud": 1, "ease": 3.6}
+  ]
+}

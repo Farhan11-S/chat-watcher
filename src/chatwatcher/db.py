@@ -556,6 +556,70 @@ MIGRATIONS: list[str] = [
     CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
     CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
     """,
+    # 25 — 3D stage (stage/): a moment re-enacted by an MMD model in a set, the script Claude
+    # writes for it and your messages about it, and a '3d' job that exports it to stage.mp4
+    # (jobs rebuilt, as in 8)
+    """
+    CREATE TABLE stages (
+        moment_id        INTEGER PRIMARY KEY REFERENCES moments(id) ON DELETE CASCADE,
+        model            TEXT,                -- folder name in <data_dir>/mmd (stage.models)
+        set_name         TEXT NOT NULL DEFAULT 'room',
+        shape            TEXT NOT NULL DEFAULT 'short' CHECK (shape IN ('short', 'long')),
+        segments_json    TEXT NOT NULL,       -- the cut it re-enacts, [[start, end], …] stream time
+        scene_json       TEXT,                -- the script: shots, poses, faces, set cues (cut time)
+        rendered_json    TEXT,                -- what stage.mp4 was made from
+        render_progress  REAL,
+        rendered_at      TEXT,
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE stage_chats (
+        id          INTEGER PRIMARY KEY,
+        moment_id   INTEGER NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+        session_id  TEXT NOT NULL,            -- the claude CLI session it belongs to
+        role        TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        text        TEXT NOT NULL,
+        applied     INTEGER NOT NULL DEFAULT 0,
+        model       TEXT,
+        usage_json  TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_stage_chats ON stage_chats(moment_id, id);
+    CREATE TABLE jobs_new (
+        id          INTEGER PRIMARY KEY,
+        video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        moment_id   INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+        stage       TEXT NOT NULL
+                    CHECK (stage IN ('ingest','score','clip','transcribe','frames','analyze','digest','upload',
+                                     'render','intro','short','compile','thumb','3d')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        run_after   TEXT NOT NULL DEFAULT (datetime('now')),
+        error       TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at  TEXT,
+        finished_at TEXT,
+        message     TEXT,
+        params_json TEXT
+    );
+    INSERT INTO jobs_new (id, video_id, moment_id, stage, status, attempts, run_after, error,
+                          created_at, updated_at, started_at, finished_at, message, params_json)
+        SELECT id, video_id, moment_id, stage, status, attempts, run_after, error,
+               created_at, updated_at, started_at, finished_at, message, params_json FROM jobs;
+    DROP TABLE jobs;
+    ALTER TABLE jobs_new RENAME TO jobs;
+    CREATE UNIQUE INDEX uq_jobs_key ON jobs(video_id, stage, COALESCE(moment_id, 0));
+    CREATE INDEX idx_jobs_queue ON jobs(status, stage, run_after);
+    """,
+    # 26 — one read of a whole stream also gives its context (for every clip analysis
+    # after it) and the moments chat missed (made into moments of kind 'missed');
+    # source = what it read: captions, or Whisper on the whole audio (compile.speech)
+    """
+    ALTER TABLE compile_runs ADD COLUMN context_json TEXT;
+    ALTER TABLE compile_runs ADD COLUMN missed_json TEXT;
+    ALTER TABLE compile_runs ADD COLUMN source TEXT;
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -15,8 +15,9 @@ ids, so it chooses and the code does the timing:
 
 Then hard rules the prompt can't be trusted with: talk starts within half a second, no
 quiet longer than QUIET_MAX unless Claude marked it as action, the end comes soon after
-the last line, and the picture never holds still longer than IDLE_MAX (a long shot gets
-a small re-frame, a long wide stretch a slow push-in), like the clip channels do.
+the last line, and the picture never holds still longer than IDLE_MAX (a long shot glides
+to a small re-frame and back, a long wide stretch gets a slow push-in), like the clip
+channels do.
 
 The answer schema has no nested objects: models sometimes slip out of JSON inside them
 (see analyze.prompts.nest), so lists are of "a | b | c" strings.
@@ -55,6 +56,9 @@ from chatwatcher.edit.autoedit.camera import (  # noqa: F401
     IDLE_MAX,
     LEVELS,
     MOVES,
+    GLIDE_S,
+    HOLD_S,
+    PUSH_STEP,
     REFRAME,
     SHOT_SNAP,
     WIDE_PUSH,

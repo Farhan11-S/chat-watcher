@@ -27,16 +27,16 @@ from chatwatcher.config import Config
 from chatwatcher.pipeline import Deps
 from chatwatcher.scoring.moments import fmt_ts
 from chatwatcher.web import listing
-from chatwatcher.web.routes import (Ctx, brand, channels, clips, editor, library, media, queue,
+from chatwatcher.web.routes import (Ctx, brand, channels, clips, editor, library, media, queue, stage,
                                     storage as storage_routes, streams, vtubers)
 from chatwatcher.web.routes.clips import _parse_ts  # noqa: F401  (tests import it from here)
 
 log = logging.getLogger("chatwatcher.web")
 HERE = Path(__file__).parent
 
-# The order routes are matched in. clips goes after editor and brand: its POST
+# The order routes are matched in. clips goes after editor, brand and stage: its POST
 # /moment/{pk}/{action} would otherwise take /moment/{pk}/edit, /render, /intro, /thumb, …
-ROUTERS = (streams, channels, editor, brand, clips, storage_routes, vtubers, library, media, queue)
+ROUTERS = (streams, channels, editor, brand, stage, clips, storage_routes, vtubers, library, media, queue)
 
 
 def external_worker_running(cfg: Config) -> bool:
@@ -53,13 +53,15 @@ def external_worker_running(cfg: Config) -> bool:
 
 
 class Static(StaticFiles):
-    """Static files. The editor's modules (static/editor/) import each other by plain paths,
-    so asset()'s ?v= only covers editor/main.js: they're sent with no-cache, which has the
-    browser ask each time whether its copy is still the newest (a 304 when it is)."""
+    """Static files. The editor's and the 3D stage's modules (static/editor/, static/stage/)
+    import each other by plain paths, so asset()'s ?v= only covers their main.js: they're
+    sent with no-cache, which has the browser ask each time whether its copy is still the
+    newest (a 304 when it is)."""
 
     def file_response(self, full_path, *args, **kwargs):
         response = super().file_response(full_path, *args, **kwargs)
-        if Path(full_path).parent.name == "editor":
+        parts = Path(full_path).parts
+        if Path(full_path).parent.name == "editor" or "stage" in parts[-3:-1]:
             response.headers["Cache-Control"] = "no-cache"
         return response
 

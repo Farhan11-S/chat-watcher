@@ -28,6 +28,7 @@
     {% if prev %}<a class="btn" href="/moment/{{ prev }}" title="The stream's moment #{{ moment.rank - 1 }}">← #{{ moment.rank - 1 }}</a>{% endif %}
     {% if next %}<a class="btn" href="/moment/{{ next }}" title="The stream's moment #{{ moment.rank + 1 }}">#{{ moment.rank + 1 }} →</a>{% endif %}
     {% endif %}
+    {% if clip and clip.exists %}<a class="btn" href="/moment/{{ moment.id }}/3d" title="Her official 3D model acts this moment out">3D</a>{% endif %}
   </div>
 </div>
 
@@ -342,6 +343,13 @@
       <p><b>{{ a.thumbnail.text }}</b> <button class="small" data-copy="{{ a.thumbnail.text }}">copy</button><br><small class="muted">{{ a.thumbnail.notes }}</small></p>{% endif %}
       {% if a.tags %}<h3>Tags</h3><p><small>{{ a.tags | join(', ') }}</small> <button class="small" data-copy="{{ a.tags | join(', ') }}">copy</button></p>{% endif %}
     </div>
+    {% if yt_description %}
+    <div class="card yt-desc">
+      <h2>YouTube description <button class="small" data-copy-from="#yt-desc">copy</button></h2>
+      {% if not a.yt_hook %}<p class="faint"><small>Analysed before descriptions had a hook: re-analyse for the funny first line.</small></p>{% endif %}
+      <textarea id="yt-desc" rows="14" spellcheck="false" aria-label="YouTube description">{{ yt_description }}</textarea>
+    </div>
+    {% endif %}
     {% else %}
     <div class="card"><p class="empty">No Claude analysis yet{% if not clip %} (clip it first){% endif %}.</p></div>
     {% endif %}

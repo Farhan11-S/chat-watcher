@@ -231,6 +231,8 @@ def analyze_video(
                            "terminal (it uses your Claude subscription).", kind="auth")
 
     run = AnalyzeRun(video_id=video_id)
+    from chatwatcher.compile.service import context as stream_context, context_text
+    ctx = stream_context(conn, video["id"])        # from ✨ Read the whole stream, if it ran
     cap, hours = cfg.claude.moment_cap, cfg.claude.moment_cap_hours
     used = len(recent_analyses(conn, hours))
     stop_reason: str | None = None
@@ -254,8 +256,10 @@ def analyze_video(
 
         event(r["rank"], "asking Claude…")
         meta = json.loads((folder / "moment.json").read_text(encoding="utf-8"))
+        own_clock = r["kind"] == "compilation"          # its times are not stream times
+        context = context_text(ctx, None if own_clock else r["start_s"], None if own_clock else r["end_s"])
         prompt = moment_prompt(folder, output_language=cfg.claude.output_language,
-                               title_languages=cfg.claude.title_languages)
+                               title_languages=cfg.claude.title_languages, stream_context=context)
         sheet = contact_sheet(folder, meta.get("frames", []))
         try:
             res = _call(runner, prompt, MOMENT_SCHEMA, system=SYSTEM_PROMPT, cwd=folder,
@@ -275,7 +279,7 @@ def analyze_video(
         run.add_usage(res)
         a = sanitize(nest(res.data), meta)
         a["_meta"] = {"model": res.model, "effort": effort or cfg.claude.effort,
-                      "duration_ms": res.duration_ms, "usage": res.usage,
+                      "duration_ms": res.duration_ms, "usage": res.usage, "stream_context": bool(context),
                       # what it was made from, so a later full-quality download can reuse it
                       "range": [r["start_s"], r["end_s"]], "zero_s": meta["clip"]["zero_s"],
                       "source": "clip" if folder == (Path(r["clip_folder"]) if r["clip_folder"] else None) else "preview",

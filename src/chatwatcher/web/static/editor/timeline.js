@@ -178,7 +178,8 @@ function drawFx(x, t0, t1, w) {
 // The picture lane: punch-ins as blocks, push-ins as ramps, shakes as zigzags, flashes as
 // fading bars. Drag one to move it, drag its right end to change its length.
 function visLabel(f) {
-  if (ZOOMS.includes(f.type)) return `${f.type === "punch" ? "punch" : "push"} ${f.region || "centre"} ${nice(f.zoom)}×`;
+  if (ZOOMS.includes(f.type)) return `${f.type === "punch" ? "punch" : "push"} ${f.region || "centre"} `
+    + (f.type === "push" && f.from_zoom > 1 ? `${nice(f.from_zoom)}→` : "") + `${nice(f.zoom)}×`;
   if (f.type === "shake") return "shake " + (STRENGTH[f.strength] || "");
   if (f.type === "frame") return f.top || f.bottom ? `${f.top || "whole"} / ${f.bottom || "whole"}`
                                                   : f.region === FULL ? "whole picture" : "show " + (f.region || "?");

@@ -220,6 +220,12 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
             if kind in motion.ZOOMS:
                 e |= {"region": regions.normal_name(fx.get("region")),
                       "zoom": round(min(max(zoom, motion.ZOOM_RANGE[0]), motion.ZOOM_RANGE[1]), 2)}
+                try:                                 # a push can start zoomed in (motion.Visual.z0)
+                    z0 = float(fx.get("from_zoom") or 1.0)
+                except (TypeError, ValueError):
+                    z0 = 1.0
+                if kind == "push" and math.isfinite(z0) and z0 > 1.0:
+                    e["from_zoom"] = round(min(max(z0, motion.ZOOM_RANGE[0]), motion.ZOOM_RANGE[1]), 2)
             elif kind == "shake":
                 e["strength"] = min(max(strength, 1), 3)
             else:
@@ -265,6 +271,8 @@ def visuals(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]]) -
         v = motion.Visual(kind, fx["t"], fx["d"], strength=fx.get("strength", 2), color=fx.get("color", "white"))
         if kind in motion.ZOOMS:
             v.zoom = fx.get("zoom", 1.5)
+            if kind == "push":
+                v.z0 = fx.get("from_zoom") or 1.0
             box = boxes.get(fx.get("region") or "")
             if box:
                 v.cx, v.cy = box["x"] + box["w"] / 2, box["y"] + box["h"] / 2

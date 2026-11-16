@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}3D · Moment #{{ moment.rank }} · {{ moment.video_title }}{% endblock %}
+{% block shell %}compact{% endblock %}
+{% block autorefresh %}0{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ asset('stage/stage.css') }}">
+<script type="importmap">{"imports": {"three": "/static/vendor/three-0.171/build/three.module.js",
+                                     "three/addons/": "/static/vendor/three-0.171/jsm/"}}</script>
+<script src="/static/vendor/three-0.171/jsm/libs/ammo.wasm.js"></script>
+{% endblock %}
+{% block content %}
+<nav class="crumbs" aria-label="Where you are"><a href="/">Streams</a><span>›</span><a href="/video/{{ moment.yt_id }}">{{ (moment.video_title or moment.yt_id)[:80] }}</a><span>›</span><a href="/moment/{{ moment.id }}">Moment #{{ moment.rank }}</a><span>›</span>3D</nav>
+<div class="page-head">
+  <div>
+    <h1>3D stage</h1>
+    <p class="sub">Her official 3D model acts the moment out to the clip's own sound: lip-sync and laughs from her voice,
+      the camera, poses and faces from the scene Claude writes. The model is COVER's: keep the "© COVER" credit on anything you post.</p>
+  </div>
+  <div class="actions"><a class="btn" href="/moment/{{ moment.id }}">← Editor</a><a class="btn" href="/models">Models</a></div>
+</div>
+{% if not clipped %}
+<div class="card"><p>This moment isn't downloaded yet. Download it on its page first.</p></div>
+{% else %}
+<div class="st" id="st" data-moment="{{ moment.id }}">
+  <div class="st-col">
+    <div class="st-stage" id="st-stage">
+      <div class="st-msg" id="st-msg">Loading…</div>
+      <div class="st-caption" id="st-caption"></div>
+      <div class="st-credit">© COVER</div>
+    </div>
+    <div class="st-bar">
+      <button type="button" class="primary" id="st-play" disabled>Play</button>
+      <input type="range" id="st-seek" min="0" max="1" step="0.01" value="0" aria-label="Time">
+      <span class="mono" id="st-clock">0.0</span>
+    </div>
+    <p class="st-warn" id="st-warn" hidden></p>
+  </div>
+  <aside class="st-side">
+    <section class="card">
+      <h2>Stage</h2>
+      <form class="st-form" id="st-setup">
+        <label>Model <select id="st-model"></select></label>
+        <label>Set <select id="st-set"></select></label>
+        <div class="st-row">
+          <span class="segmented" role="radiogroup" aria-label="Shape">
+            <label><input type="radio" name="st-shape" value="short"> Short 9:16</label>
+            <label><input type="radio" name="st-shape" value="long"> Video 16:9</label>
+          </span>
+        </div>
+        <label class="st-row"><span><input type="checkbox" id="st-recut"> Take the cut from the editor again</span></label>
+        <div class="st-row"><button class="primary" id="st-setup-go">Set up</button><span class="st-status" id="st-setup-status"></span></div>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Scene</h2>
+      <div class="st-row">
+        <button type="button" class="primary" id="st-write">✨ Write the scene</button>
+        <label class="st-status"><input type="checkbox" id="st-over"> start over (drop your changes)</label>
+      </div>
+      <div class="st-thread" id="st-thread"></div>
+      <form id="st-direct" class="st-form">
+        <textarea id="st-say" rows="2" maxlength="2000" placeholder="e.g. hold the window shot longer; more shocked at 18s"></textarea>
+        <div class="st-row"><button id="st-send">Send</button><span class="st-status" id="st-direct-status"></span></div>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Export</h2>
+      <div class="st-row">
+        <button type="button" id="st-export">Export stage.mp4</button>
+        <a class="btn small" id="st-watch" target="_blank" hidden>Watch</a>
+        <a class="btn small" id="st-dl" hidden>Download</a>
+      </div>
+      <p class="st-status" id="st-render-status"></p>
+    </section>
+    <details class="card">
+      <summary>Scene as JSON</summary>
+      <textarea id="st-json" rows="14" spellcheck="false"></textarea>
+      <div class="st-row"><button type="button" class="small" id="st-json-save">Save</button><span class="st-status" id="st-json-status"></span></div>
+    </details>
+    <details class="card">
+      <summary>Model and voice track</summary>
+      <pre id="st-info"></pre>
+    </details>
+  </aside>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}{% if clipped %}<script type="module" src="{{ asset('stage/main.js') }}"></script>{% endif %}{% endblock %}

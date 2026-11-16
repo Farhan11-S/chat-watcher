@@ -339,6 +339,7 @@ root.addEventListener("change", ev => {
     if (f.type === "punch" && t.value && S.D.regions[t.value]) change.zoom = Math.min(fitZoom(t.value), 2.5);
     editFx(change);
   } else if (t.matches("[data-vis-zoom]")) editFx({ zoom: +t.value });
+  else if (t.matches("[data-vis-from]")) editFx({ from_zoom: +t.value > 1 ? +t.value : undefined });
   else if (t.matches("[data-vis-strength]")) editFx({ strength: +t.value });
   else if (t.matches("[data-vis-color]")) editFx({ color: t.value });
   else if (t.matches("[data-vis-overlay]")) setOverlay(t.value);

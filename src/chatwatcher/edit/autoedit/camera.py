@@ -1,5 +1,6 @@
 """The camera of an AI edit: Claude's shots ("p2-p4 | face | close | cut") as held
-punch-ins and push-ins on the kept segments, re-framed so the picture never sits still;
+punch-ins joined by short glides (pushes that start where the hold before ends), so the
+picture never sits still and never snaps between sizes of the same shot;
 and, in a Short, its layouts ("p5-p12 | chat / face | 55"): the picture for a stretch,
 when the scene changes (the game feed goes away, she's chatting now)."""
 
@@ -16,6 +17,11 @@ from chatwatcher.edit.autoedit.plan import CENTRE, parse_range, parts
 SHOT_SNAP = 0.35         # a shot this close to a part's edge starts / ends with the part
 IDLE_MAX = 2.5           # the picture changes at least this often
 REFRAME = 1.22           # a long shot's re-frame: this much tighter (enough to read as a new shot)
+HOLD_S = 1.4             # a long shot holds this long between re-frames…
+GLIDE_S = 0.7            # …and glides this long to the next size (a push from the size before)
+PUSH_STEP = 1.3          # a push shot: punch in at its size, glide this much tighter, hold
+PUSH_LEAD = 0.5          # how long it holds before the glide
+PUSH_GLIDE = (0.8, 2.5)  # how long the glide takes (45% of the shot, within this)
 WIDE_PUSH = 1.08         # a long wide stretch creeps in this far…
 WIDE_PUSH_S = 12.0       # …over at most this long
 LEVELS = ("wide", "medium", "close", "tight")
@@ -34,6 +40,32 @@ def _zoom(level: str, box: dict[str, float] | None, short: bool) -> float:
         z = {"medium": 1 + (fit - 1) * 0.5, "close": fit, "tight": fit * 1.3}[level]
         z = max(z, {"medium": 1.15, "close": 1.3, "tight": 1.6}[level])
     return round(min(max(z, motion.ZOOM_RANGE[0]), 3.0), 2)
+
+
+def _moves(a: float, b: float, zoom: float, push: bool) -> list[tuple[str, float, float, float, float]]:
+    """One shot on [a, b) as (kind, t, d, zoom, from_zoom): punch-ins joined by pushes that
+    start where the punch before them is (no snap back to the whole frame between them).
+    A cut shot holds, then glides REFRAME tighter and back every HOLD_S + GLIDE_S; a push
+    shot holds PUSH_LEAD, glides PUSH_STEP tighter, then holds and re-frames the same way."""
+    top = motion.ZOOM_RANGE[1] if push else 3.0
+    other = round(min(zoom * (PUSH_STEP if push else REFRAME), top), 2)
+    if push and b - a < PUSH_LEAD + PUSH_GLIDE[0] + 0.3:        # too short to hold first: one glide
+        return [("push", a, b - a, other, zoom)]
+    out: list[tuple[str, float, float, float, float]] = []
+    cur, nxt, t = zoom, other, a
+    hold = PUSH_LEAD if push else HOLD_S
+    glide = min(max((b - a) * 0.45, PUSH_GLIDE[0]), PUSH_GLIDE[1]) if push else GLIDE_S
+    while b - t > 0.05:
+        h = hold if b - (t + hold) >= glide + 0.3 else b - t    # no room to glide and hold again: to the end
+        out.append(("punch", t, h, cur, cur))
+        t += h
+        if b - t <= 0.05 or abs(nxt - cur) < 0.01:
+            break
+        g = glide if b - (t + glide) >= 0.3 else b - t
+        out.append(("push", t, g, nxt, cur))
+        t += g
+        cur, nxt, hold, glide = nxt, cur, HOLD_S, GLIDE_S
+    return out
 
 
 def _clip_to(t0: float, t1: float, segs: list[list[float]]) -> list[tuple[float, float]]:
@@ -122,13 +154,16 @@ def camera_track(items: list[str], ps: list[pc.Piece], segs: list[list[float]],
         shots.append((ps[rng[0]].t0, ps[rng[-1]].t1, region, level, move))
     out: list[dict[str, Any]] = []
 
-    def add(kind: str, t: float, d: float, region: str, zoom: float, why: str) -> None:
+    def add(kind: str, t: float, d: float, region: str, zoom: float, why: str, start: float = 1.0) -> None:
         if d < 0.2 or zoom <= 1.0:
             return
         default, shortest, longest = motion.TYPES[kind]
-        out.append({"id": "c" + secrets.token_hex(3), "type": kind, "t": round(t, 3),
-                    "d": round(min(max(d, shortest), longest), 3), "region": "" if region == CENTRE else region,
-                    "zoom": zoom, "by": "claude", "why": why})
+        fx = {"id": "c" + secrets.token_hex(3), "type": kind, "t": round(t, 3),
+              "d": round(min(max(d, shortest), longest), 3), "region": "" if region == CENTRE else region,
+              "zoom": zoom, "by": "claude", "why": why}
+        if kind == "push" and start > 1.0:
+            fx["from_zoom"] = start
+        out.append(fx)
 
     for s, e, _ in segs:
         cursor = s
@@ -146,18 +181,10 @@ def camera_track(items: list[str], ps: list[pc.Piece], segs: list[list[float]],
             if zoom <= 1.0:
                 cursor = max(cursor, b)
                 continue
-            kind = "push" if move == "push" else "punch"
-            if kind == "push":
-                add("push", a, b - a, region, zoom, f"push in on {region}")
-            else:                                   # long holds get a small re-frame
-                t, flip = a, False
-                while t < b - 0.05:
-                    d = min(IDLE_MAX - 0.4, b - t)
-                    if b - (t + d) < 0.8:
-                        d = b - t
-                    add("punch", t, d, region, round(min(zoom * REFRAME, 3.0), 2) if flip else zoom,
-                        f"{level} on {region}")
-                    t, flip = t + d, not flip
+            for kind, t, d, z, z0 in _moves(a, b, zoom, move == "push"):
+                why = (f"{level} on {region}" if kind == "punch" else
+                       f"push in on {region}" if move == "push" and t - a < 0.6 else f"re-frame {region}")
+                add(kind, t, d, region, z, why, z0)
             cursor = max(cursor, b)
     # Wide stretches that run long get a slow push-in on the centre, so nothing sits still.
     for s, e, _ in segs:

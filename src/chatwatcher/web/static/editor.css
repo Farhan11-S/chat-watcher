@@ -318,3 +318,7 @@
 .ed-extras[open] > summary { margin-bottom: .8rem; }
 .ed-extras .maker-row .card { margin: 0; }
 .ed-chips[hidden] { display: none; }
+
+/* The clip page's YouTube description (moment.html) */
+.yt-desc h2 { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.yt-desc textarea { width: 100%; box-sizing: border-box; resize: vertical; font-size: .85rem; line-height: 1.4; }

@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from chatwatcher import jobs
+from chatwatcher.analyze import description
 from chatwatcher.clip import stitch
 from chatwatcher.scoring.moments import fmt_ts
 from chatwatcher.web import listing, queries
@@ -46,6 +47,7 @@ def router(ctx: Ctx) -> APIRouter:
         d = queries.moment_detail(conn, pk)
         if d is None:
             raise HTTPException(404, "Unknown moment")
+        d["yt_description"] = description.for_moment(conn, d["moment"], d["video"], d["analysis"])
         if d["moment"]["kind"] == stitch.KIND:
             d["pieces"] = stitch.pieces(d["moment"].get("compilation") or {})
             d["has_edit"] = conn.execute("SELECT 1 FROM edits WHERE moment_id = ? UNION ALL "

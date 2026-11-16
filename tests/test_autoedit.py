@@ -1,5 +1,7 @@
 """AI edit: pieces, the cut's hard rules, the camera track and word captions."""
 
+import pytest
+
 from chatwatcher.edit import autoedit as ae
 from chatwatcher.edit import pieces as pc
 from chatwatcher.subs import lines
@@ -77,10 +79,26 @@ def test_camera_never_idle():
     assert all(fx["d"] <= ae.IDLE_MAX for fx in cam if fx["type"] == "punch")
     assert {fx["region"] for fx in cam} == {"face"}
     zooms = sorted({fx["zoom"] for fx in cam})
-    assert len(zooms) >= 2                                          # long holds re-frame
+    assert len(zooms) >= 2                                          # long holds re-frame…
+    for prev, fx in zip(cam, cam[1:]):                              # …by gliding, never snapping
+        if fx["type"] == "push" and abs(prev["t"] + prev["d"] - fx["t"]) < 1e-6:
+            assert fx["from_zoom"] == prev["zoom"] != fx["zoom"]
     # A long wide stretch gets one slow push, not a snap every few seconds.
     wide = ae.camera_track(["p1-p5 | face | wide"], ps, [[0.0, 10.0, 0.0]], boxes, short=False)
     assert len(wide) == 1 and wide[0]["type"] == "push" and wide[0]["d"] == 10.0
+
+
+def test_push_shot_punches_glides_and_holds():
+    ps = pc.build(CLIP, 20.0)
+    boxes = {"face": {"x": 0.6, "y": 0.5, "w": 0.3, "h": 0.4}}
+    cam = ae.camera_track(["p2 | face | close | push"], ps, [[1.9, 4.2, 0.0]], boxes, short=False)
+    kinds = [(fx["type"], fx["zoom"], fx.get("from_zoom")) for fx in cam]
+    z = cam[0]["zoom"]
+    assert kinds[:3] == [("punch", z, None), ("push", round(z * ae.PUSH_STEP, 2), z), ("punch", round(z * ae.PUSH_STEP, 2), None)]
+    assert all(abs(a["t"] + a["d"] - b["t"]) < 1e-6 for a, b in zip(cam, cam[1:]))          # back to back
+    assert cam[0]["t"] == 1.9 and cam[-1]["t"] + cam[-1]["d"] == pytest.approx(4.2)
+    short = ae.camera_track(["p2 | face | close | push"], ps, [[1.9, 3.0, 0.0]], boxes, short=False)
+    assert [(fx["type"], fx.get("from_zoom")) for fx in short] == [("push", z)]              # too short to hold first
 
 
 def test_effects_inside_the_cut():

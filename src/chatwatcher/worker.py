@@ -144,7 +144,9 @@ class Worker:
         vid, stage, moment_pk = video["video_id"], job["stage"], job["moment_id"]
         label = f"{vid} {stage}" + (f" (moment {moment_pk})" if moment_pk else "")
         log.info("▶ %s (attempt %d) — %s", label, job["attempts"], (video["title"] or "")[:60])
-        set_video_status(conn, vid, "processing")
+        extra = stage in jobs.VIDEO_STAGES      # asked for on the stream page: the stream's own status is left alone
+        if not extra:
+            set_video_status(conn, vid, "processing")
         try:
             out = run_stage(self.cfg, conn, vid, stage, attempt=job["attempts"], moment_id=moment_pk,
                             deps=self.deps, params=jobs.job_params(job),
@@ -152,20 +154,23 @@ class Worker:
         except Exception as e:  # a bug or an unexpected tool failure: record it, keep the worker alive
             log.exception("✗ %s crashed", label)
             jobs.finish(conn, job["id"], ok=False, message=f"{type(e).__name__}: {e}")
-            set_video_status(conn, vid, "error", f"{stage}: {e}")
+            if not extra:
+                set_video_status(conn, vid, "error", f"{stage}: {e}")
             return
 
         if out.status == "retry":
             log.info("↻ %s: %s — retrying in %s", label, out.message.splitlines()[0][:200],
                      _fmt_delta(out.retry_in))
             jobs.finish(conn, job["id"], ok=False, message=out.message, retry_in=out.retry_in)
-            set_video_status(conn, vid, "processing", f"{stage}: waiting — {out.message.splitlines()[0][:300]}")
+            if out.details.get("paused"):      # gave way to other work: not a failed attempt
+                conn.execute("UPDATE jobs SET attempts = MAX(0, attempts - 1) WHERE id = ?", (job["id"],))
+            if not extra:
+                set_video_status(conn, vid, "processing", f"{stage}: waiting — {out.message.splitlines()[0][:300]}")
             return
         if out.status == "error":
             log.warning("✗ %s: %s", label, out.message.splitlines()[0][:300])
             jobs.finish(conn, job["id"], ok=False, message=out.message)
-            if stage in jobs.VIDEO_STAGES:     # an extra you asked for: the stream itself is fine
-                self._settle(conn, video)
+            if extra:                          # an extra you asked for: the stream itself is fine
                 return
             set_video_status(conn, vid, "error", f"{stage}: {out.message[:500]}")
             return
@@ -190,8 +195,7 @@ class Worker:
                                 (video["id"],)).fetchone()
             set_video_status(conn, vid, "processing" if busy else "done")
             return
-        if stage in jobs.VIDEO_STAGES:     # asked for on the stream page, outside the pipeline
-            self._settle(conn, video)
+        if extra:                          # asked for on the stream page, outside the pipeline
             return
         nxt = None if out.details.get("stop") else jobs.next_stage(stage)
 
@@ -205,18 +209,12 @@ class Worker:
                 break
             nxt = jobs.next_stage(nxt)
         if nxt:
-            jobs.enqueue(conn, video["id"], nxt)
+            if not conn.execute("SELECT 1 FROM jobs WHERE video_id = ? AND stage = ? AND moment_id IS NULL "
+                                "AND status = 'pending'", (video["id"], nxt)).fetchone():
+                jobs.enqueue(conn, video["id"], nxt)   # one already queued keeps its options (e.g. redo)
             set_video_status(conn, vid, "processing")
         else:
             set_video_status(conn, vid, "done")
-
-    @staticmethod
-    def _settle(conn: sqlite3.Connection, video: sqlite3.Row) -> None:
-        """After an on-demand stage: the stream goes back to what it was before the job
-        (still processing if the pipeline has work queued for it)."""
-        busy = conn.execute("SELECT 1 FROM jobs WHERE video_id = ? AND status IN ('pending', 'running')",
-                            (video["id"],)).fetchone()
-        set_video_status(conn, video["video_id"], "processing" if busy else video["status"], video["error"])
 
 
 def _fmt_delta(d) -> str:

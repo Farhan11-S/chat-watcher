@@ -73,6 +73,8 @@ def run_stage(cfg: Config, conn: sqlite3.Connection, video_id: str, stage: str, 
             return _intro(cfg, conn, moment_id, say)
         if stage == "thumb":
             return _thumb(cfg, conn, moment_id, attempt, deps, say, shape=params.get("shape", "wide"))
+        if stage == "3d":
+            return _stage3d(cfg, conn, moment_id, say)
         return {"clip": _clip, "transcribe": _transcribe, "analyze": _analyze, "upload": _upload}[stage](
             cfg, conn, video_id, attempt, deps, say, rank=row["rank"], **_opts(stage, params))
     fn = {"ingest": _ingest, "score": _score, "clip": _clip, "transcribe": _transcribe, "frames": _frames,
@@ -83,7 +85,7 @@ def run_stage(cfg: Config, conn: sqlite3.Connection, video_id: str, stage: str, 
 def _opts(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     """The job options each stage understands; anything else is ignored."""
     keys = {"analyze": ("model", "effort", "redo"), "upload": ("kept_only",),
-            "clip": ("kept_only",)}.get(stage, ())
+            "clip": ("kept_only",), "compile": ("listen", "analyze_new", "reanalyze")}.get(stage, ())
     return {k: params[k] for k in keys if params.get(k) is not None}
 
 
@@ -256,25 +258,59 @@ def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
     return StageOutcome("done" if (done or not errors) else "error", msg)
 
 
-def _compile(cfg, conn, video_id, attempt, deps, say) -> StageOutcome:
-    """One Claude call over the whole stream: compilation candidates (compile/). Asked for
-    on the stream page. A failed call is not repeated by itself: each try reads the whole
-    stream again."""
+def _compile(cfg, conn, video_id, attempt, deps, say, listen: bool = False, analyze_new: bool = False,
+             reanalyze: bool = False) -> StageOutcome:
+    """✨ Read the whole stream (compile/): one Claude call for compilation ideas, the
+    stream's context and the moments chat missed. Asked for on the stream page.
+    listen: Whisper on the stream's audio first, part by part, giving way to any other due
+    job between parts. analyze_new: then analyse the moments chat missed (previews first);
+    reanalyze: then analyse the stream's moments again, with the context. A failed call is
+    not repeated by itself: each try reads the whole stream again."""
     from chatwatcher.compile.service import CompileError, compile_video
     if not cfg.claude.enabled:
         return StageOutcome("skip", "claude.enabled is false")
+
+    def other_work() -> bool:
+        return conn.execute("SELECT 1 FROM jobs WHERE status = 'pending' AND run_after <= datetime('now') "
+                            "AND stage != 'compile' LIMIT 1").fetchone() is not None
     try:
-        run = compile_video(cfg, conn, video_id, runner=deps.claude, ytdlp=deps.ytdlp, on_step=say)
+        run = compile_video(cfg, conn, video_id, runner=deps.claude, ytdlp=deps.ytdlp, on_step=say,
+                            listen=listen, whisper=deps.whisper, should_pause=other_work)
     except CompileError as e:
         if e.kind in ("auth", "missing") and attempt < 48:
             return StageOutcome("retry", str(e), timedelta(hours=1))   # nothing was sent yet
         if e.kind == "usage_limit" and attempt < 6:
             return StageOutcome("retry", str(e), usage_reset_delay(str(e)))
+        if e.retryable and attempt < 4:                                  # the audio download
+            return StageOutcome("retry", str(e), _backoff(attempt, 10, 120))
         return StageOutcome("error", str(e))
-    n = len(run.candidates)
+    if run is None:
+        from chatwatcher.compile.speech import progress
+        from chatwatcher.paths import vod_files
+        row = store.get_video(conn, video_id)
+        p = progress(vod_files(cfg, video_id), float(row["duration_s"] or 0), cfg.compile.part_s)
+        return StageOutcome("retry", f"listening: {p['done']} of {p['total']} parts done; other work first",
+                            timedelta(seconds=1), details={"paused": True})
+    n, added = len(run.candidates), [m for m in run.missed if m.get("moment_id")]
     read = f"Claude read {run.input_tokens:,} tokens" if run.input_tokens else \
         f"about {run.size.get('est_tokens', 0):,} tokens sent"
-    return StageOutcome("done", f"{n} compilation idea{'s' * (n != 1)} ({read}, {run.size.get('chars', 0):,} characters)")
+    msg = (f"{n} compilation idea{'s' * (n != 1)}, {len(added)} moment{'s' * (len(added) != 1)} chat missed "
+           f"({read} from the {'Whisper transcript' if run.source == 'whisper' else 'captions'}, "
+           f"{run.size.get('chars', 0):,} characters)")
+    video_pk = store.get_video(conn, video_id)["id"]
+    from chatwatcher import jobs
+    if reanalyze:
+        jobs.enqueue(conn, video_pk, "analyze", params={"redo": True})
+        msg += "; analysing the moments again with the context"
+    elif analyze_new and added:
+        if stage_enabled(cfg, "frames"):
+            jobs.enqueue(conn, video_pk, "frames")          # previews, then the analysis of what has none
+            msg += "; analysing the new moments"
+        else:
+            msg += "; the new moments are analysed once downloaded (previews are off)"
+    if reanalyze and added and stage_enabled(cfg, "frames"):
+        jobs.enqueue(conn, video_pk, "frames")              # the redo above then covers them too
+    return StageOutcome("done", msg)
 
 
 def _upload(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
@@ -361,6 +397,18 @@ def _thumb(cfg, conn, moment_id: int, attempt: int, deps, say, shape: str = "wid
         return StageOutcome("error", str(e))
     skipped = f", {r['warnings']} line(s) skipped" if r["warnings"] else ""
     return StageOutcome("done", f"{r['versions']} thumbnail version(s){skipped}")
+
+
+def _stage3d(cfg, conn, moment_id: int, say) -> StageOutcome:
+    """The 3D stage (stage/) → stage.mp4 next to clip.mp4: the dashboard's 3D page, played
+    frame by frame in headless Chromium."""
+    from chatwatcher.stage.export import ExportError, export
+    try:
+        r = export(cfg, conn, moment_id, say=say)
+    except ExportError as e:
+        return StageOutcome("error", str(e))
+    return StageOutcome("done", f"3D stage exported: {r['duration_s']:.1f}s, {r['frames']} frames in "
+                                f"{r['took_s']:.0f}s, {r['size_bytes'] / 1_048_576:.1f} MB")
 
 
 # ── bookkeeping shared by the worker and `cw run` ─────────────────────────────

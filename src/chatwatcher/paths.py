@@ -29,6 +29,14 @@ class VodFiles:
         return self.root / "transcript.jsonl"
 
     @property
+    def speech(self) -> Path:        # Whisper on the whole stream's audio (compile.speech), like transcript
+        return self.root / "speech.jsonl"
+
+    @property
+    def listen(self) -> Path:        # its work folder: the audio and the finished parts
+        return self.root / "listen"
+
+    @property
     def heatmap(self) -> Path:       # YouTube "Most replayed" curve
         return self.root / "heatmap.json"
 

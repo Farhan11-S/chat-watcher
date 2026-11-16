@@ -254,8 +254,8 @@ def test_compile_stage(env):
     ingest_fake(cfg, conn)
     fc, said = FakeClaude(), []
     out = run_stage(cfg, conn, VID, "compile", deps=Deps(claude=fc), log=said.append)
-    assert out.status == "done" and out.message.startswith("3 compilation ideas (Claude read 1,500 tokens")
-    assert len(fc.calls) == 1 and any("input:" in m for m in said)
+    assert out.status == "done" and out.message.startswith("3 compilation ideas, 0 moments chat missed (Claude read 1,500 tokens from the captions")
+    assert len(fc.calls) == 1 and any("input (captions):" in m for m in said)
 
     # a bad answer is an error, not another call
     bad = FakeClaude(error=ClaudeError("claude returned no structured output", kind="bad_output"))
@@ -302,7 +302,7 @@ def test_compile_job_runs_alone_and_leaves_the_stream_as_it_was(env):
 def test_stream_page_button_queues_one_job_and_lists_candidates(site):
     cfg, conn, client, deps = site
     r = client.get(f"/video/{VID}")
-    assert "Compilation ideas" in r.text and "Find compilation ideas" in r.text
+    assert "Read the whole stream" in r.text and "✨ Read the whole stream" in r.text
     assert f'action="/video/{VID}/compile"' in r.text and "data-stream-seek" not in r.text
 
     r = client.post(f"/video/{VID}/compile", follow_redirects=False)
@@ -320,9 +320,9 @@ def test_stream_page_button_queues_one_job_and_lists_candidates(site):
     for part in ("She sneezes 10 times", "keeps happening", "setup and payoff", "Flu stream. Chat counts every sneeze.",
                  f'href="https://youtu.be/{VID}?t=600"', 'data-stream-seek="600.0"', "▶ 10:00–10:15",
                  '<span class="tag">setup</span>', '<span class="tag">payoff</span>', "the scream",
-                 "3 pieces", "Look again", "Claude read 1,500 tokens in one call"):
+                 "3 pieces", "Read again", "Claude read 1,500 tokens in one call", "Compilation ideas"):
         assert part in page, part
-    assert "Find compilation ideas" not in page and "waiting in the queue" not in page
+    assert "✨ Read the whole stream" not in page and "waiting in the queue" not in page
 
     # a failure shows on the card, with the old ideas kept
     jobs.enqueue(conn, store.get_video(conn, VID)["id"], "compile")
@@ -333,7 +333,7 @@ def test_stream_page_button_queues_one_job_and_lists_candidates(site):
     cfg.claude.enabled = False
     r = client.post(f"/video/{VID}/compile", follow_redirects=False)
     assert "error=" in r.headers["location"]
-    assert "Compilation ideas" not in client.get(f"/video/{VID}").text
+    assert "Read the whole stream" not in client.get(f"/video/{VID}").text
     assert client.post("/video/zzzzzzzzzzz/compile").status_code == 404
 
 
@@ -342,9 +342,10 @@ def test_migration_keeps_jobs_and_allows_compile(tmp_path):
     conn.executescript("BEGIN;" + "".join(db.MIGRATIONS[:21]) + "PRAGMA user_version = 21; COMMIT;")
     v = conn.execute("INSERT INTO videos (video_id) VALUES ('abcdefghijk')").lastrowid
     conn.execute("INSERT INTO jobs (video_id, stage, message, params_json) VALUES (?, 'clip', 'm', '{\"a\": 1}')", (v,))
-    assert db.migrate(conn) == [22, 23, 24]
+    assert db.migrate(conn) == [22, 23, 24, 25, 26]
     row = conn.execute("SELECT * FROM jobs").fetchone()
     assert (row["stage"], row["message"], json.loads(row["params_json"])) == ("clip", "m", {"a": 1})
     conn.execute("INSERT INTO jobs (video_id, stage) VALUES (?, 'compile')", (v,))
     conn.execute("INSERT INTO jobs (video_id, stage) VALUES (?, 'thumb')", (v,))          # 24: Claude's thumbnails
+    conn.execute("INSERT INTO jobs (video_id, stage) VALUES (?, '3d')", (v,))             # 25: the 3D stage's export
     conn.close()

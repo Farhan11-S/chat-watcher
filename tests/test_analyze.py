@@ -31,6 +31,8 @@ def sample_analysis(title="ぺこら爆笑", frame="frames/01_00m02s.jpg"):
         "storyboard": [{"start": 2, "end": 8, "beat": "setup"}, {"start": 8, "end": 18, "beat": "payoff"}],
         "music_copyright": {"risk": "none", "note": ""},
         "tags": ["pekora", "horror"],
+        "yt_hook": "Pekora vs. one (1) wall: the wall won.",
+        "yt_summary": "Usada Pekora plays a haunted apartment horror game. Her neighbour bangs on the wall and the game glitches.",
     }
 
 
@@ -344,3 +346,56 @@ def test_flat_answer_is_nested_for_storage():
         "12-18.5 | payoff", "20–24 | wat | extra parts are ignored", "junk"]})
     assert b["titles"] == [{"lang": "en", "text": "She Lost It"}, {"lang": "ja", "text": "発狂"}]
     assert b["storyboard"] == [{"start": 12.0, "end": 18.5, "beat": "payoff"}, {"start": 20.0, "end": 24.0, "beat": "build"}]
+
+
+# ── YouTube description ──────────────────────────────────────────────────────
+
+def test_description_has_one_fixed_format():
+    from chatwatcher.analyze.description import build
+    video = {"video_id": "abcdefghijk", "title": "【Horror】Haunted flat", "published_at": "2026-11-07T18:54:56Z"}
+    channel = {"channel_id": "UC1", "handle": "@usadapekora", "title": "Pekora Ch. 兎田ぺこら"}
+    d = build(sample_analysis(), video=video, moment={"start_s": 1234.6, "kind": "reaction"},
+              channel=channel, talent="Usada Pekora", featuring=["Usada Pekora", "Houshou Marine"])
+    lines = d.split("\n")
+    assert lines[0] == "Pekora vs. one (1) wall: the wall won."           # the funny first sentence
+    assert lines[2].startswith("Usada Pekora plays") and "Featuring: Houshou Marine" in d
+    assert "https://www.youtube.com/watch?v=abcdefghijk&t=1234s" in d and "Streamed on November 7, 2026" in d
+    assert "▶ Usada Pekora\nhttps://www.youtube.com/@usadapekora" in d
+    assert "COVER Corporation" in d and "https://hololivepro.com/en/terms/" in d
+    assert lines[-1] == "#hololive #UsadaPekora #HoushouMarine #Pekora #Horror"
+    # Same shape for another clip: only Claude's two parts change.
+    other = sample_analysis() | {"yt_hook": "Hook two.", "yt_summary": "Summary two.", "tags": []}
+    d2 = build(other, video=video, moment={"start_s": 1234.6, "kind": "reaction"},
+               channel=channel, talent="Usada Pekora", featuring=["Houshou Marine"])
+    assert d2.split("\n\n")[2:-1] == d.split("\n\n")[2:-1] and d2.startswith("Hook two.\n\nSummary two.")
+    # An analysis from before the hook existed still gets one, from its summary.
+    old = {k: v for k, v in sample_analysis().items() if not k.startswith("yt_")}
+    d3 = build(old, video=video, moment={"start_s": 5, "kind": "reaction"})
+    assert d3.startswith("Pekora's neighbour bangs on the wall") and "&t=5s" in d3
+    # A compilation lists each piece's time in the stream.
+    comp = {"kind": "compilation", "start_s": 5700, "compilation": {"segments": [{"start": 5700}, {"start": 7675}]}}
+    d4 = build(sample_analysis(), video=video, moment=comp, talent="Usada Pekora")
+    assert "1:35:00 https://www.youtube.com/watch?v=abcdefghijk&t=5700s" in d4 and "&t=7675s" in d4
+
+
+def test_talent_from_channel_title():
+    from chatwatcher.analyze.description import hashtag, talent_name
+    master = {"kobo kanaeru": {"name": "Kobo Kanaeru"}, "moona hoshinova": {"name": "Moona Hoshinova"},
+              "shiori novella": {"name": "Shiori Novella"}}
+    assert talent_name("Kobo Kanaeru Ch. hololive-ID", master) == "Kobo Kanaeru"
+    assert talent_name("Moona Hoshinova hololive-ID", master) == "Moona Hoshinova"
+    assert talent_name("【Shiori Novella】 hololive-EN", master) == "Shiori Novella"
+    assert talent_name("Someone Else", master) == "Someone Else" and talent_name(None, master) == ""
+    assert hashtag("kobo kanaeru") == "#KoboKanaeru" and hashtag("兎田ぺこら") == "#兎田ぺこら" and hashtag("!!") == ""
+
+
+def test_moment_page_shows_the_description(clipped):
+    from chatwatcher.analyze.description import for_moment
+    from chatwatcher.web import queries
+    cfg, conn = clipped
+    analyze_video(cfg, conn, VID, runner=FakeRunner(), top=1)
+    m = conn.execute("SELECT id FROM moments WHERE rank = 1").fetchone()["id"]
+    d = queries.moment_detail(conn, m)
+    text = for_moment(conn, d["moment"], d["video"], d["analysis"])
+    assert text.startswith("Pekora vs. one (1) wall") and f"watch?v={VID}&t=" in text
+    assert for_moment(conn, d["moment"], d["video"], None) == ""

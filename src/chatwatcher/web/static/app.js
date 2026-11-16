@@ -363,9 +363,11 @@
       const v = document.querySelector("video");
       if (v) { v.currentTime = parseFloat(el.dataset.seek); v.play(); }
     }
-    const c = ev.target.closest("[data-copy]");
+    const c = ev.target.closest("[data-copy], [data-copy-from]");
     if (c) {
-      navigator.clipboard.writeText(c.dataset.copy).then(() => {
+      // data-copy-from: copy what is in that box now (it may have been edited)
+      const text = c.dataset.copyFrom ? document.querySelector(c.dataset.copyFrom)?.value ?? "" : c.dataset.copy;
+      navigator.clipboard.writeText(text).then(() => {
         const old = c.textContent; c.textContent = "copied ✓"; setTimeout(() => c.textContent = old, 1200);
       });
     }

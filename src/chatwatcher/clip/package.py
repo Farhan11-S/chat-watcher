@@ -133,5 +133,5 @@ def write_moment_json(path: Path, *, video_id: str, title: str, stream_type: str
         "reasons": moment.get("reasons", []),
         "top_chat": moment.get("top_messages", []),
         "frames": frames,
-    } | (extra or {})
+    } | ({"missed": moment["missed"]} if moment.get("missed") else {}) | (extra or {})
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")

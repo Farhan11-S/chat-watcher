@@ -70,6 +70,14 @@ model = "large-v3-turbo"       # or "small": about a third faster, more misheard
 language = ""                  # "" = detect per line (mixed English/Indonesian is fine); or "en", "id", "ja"
 threads = 0                    # CPU threads; 0 = all
 
+[compile]                      # ✨ Read the whole stream (stream page, only when you ask): one Claude call
+whisper_model = ""             # "Listen first": Whisper on the whole stream's audio; "" = transcribe.model
+beam_size = 1                  # 1 = greedy, about twice as fast; fine for Claude to read
+part_s = 600                   # transcribed 10 minutes at a time; a restart carries on from there
+audio_format = "ba[abr<=96]/ba"  # audio only (~40 MB an hour)
+keep_audio = false             # the audio is deleted once transcribed
+max_missed = 8                 # moments chat missed, at most, per read
+
 [subtitles]                    # burned into the editor's render, from Whisper's word timings
 on = true                      # for new edits (karaoke clips start off); each edit has its own switch
 size = "normal"                # small | normal | large

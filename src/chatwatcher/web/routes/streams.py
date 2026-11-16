@@ -91,11 +91,12 @@ def router(ctx: Ctx) -> APIRouter:
         return render(request, "video.html", **d, chart=chart, heat=heat, kept=kept,
                       kept_all=kept_all, review=_review_items(d["moments"]),
                       auto_upload=prefs.auto_upload(cfg, conn),
-                      compile=_compile_state(conn, d["video"]["id"], files.transcript.is_file()))
+                      compile=_compile_state(cfg, conn, d["video"], files))
 
     @r.post("/video/{video_id}/{action}")
     def video_action(video_id: str, action: str, stream_type: str = Form("auto"), kept_only: str = Form(""),
-                     back_to: str = Form(""), idea: str = Form(""), edit: str = Form(""), conn=Depends(get_conn)):
+                     back_to: str = Form(""), idea: str = Form(""), edit: str = Form(""), listen: str = Form(""),
+                     analyze_new: str = Form(""), reanalyze: str = Form(""), conn=Depends(get_conn)):
         v = store.get_video(conn, video_id)
         if v is None:
             raise HTTPException(404)
@@ -138,11 +139,19 @@ def router(ctx: Ctx) -> APIRouter:
                 return redirect(back + "#compilations", error="Claude is switched off (claude.enabled = false in config.toml).")
             if not vod_files(cfg, video_id).info.is_file():
                 return redirect(back + "#compilations", error="This stream hasn't been fetched yet.")
-            if jobs.enqueue(conn, v["id"], "compile") is None:
+            opts = {k: True for k, on in (("listen", listen), ("analyze_new", analyze_new), ("reanalyze", reanalyze)) if on}
+            if jobs.enqueue(conn, v["id"], "compile", params=opts or None) is None:
                 return redirect(back + "#compilations", error="Claude is already reading this stream.")
             ctx.poke()
-            return redirect(back + "#compilations",
-                            msg="Queued. Claude reads the whole stream once; this takes a few minutes.")
+            first = (" Whisper listens to the whole stream on this computer first (about half its length); "
+                     "other work goes in between." if listen and not vod_files(cfg, video_id).speech.is_file() else "")
+            return redirect(back + "#compilations", msg=f"Queued.{first} Then Claude reads the whole stream once.")
+        if action == "reanalyze":
+            if not cfg.claude.enabled:
+                return redirect(back + "#compilations", error="Claude is switched off (claude.enabled = false in config.toml).")
+            jobs.enqueue(conn, v["id"], "analyze", params={"redo": True})
+            ctx.poke()
+            return redirect(back + "#compilations", msg="Queued: every moment is analysed again, with what the read learned.")
         if action == "stitch":
             # One idea → one clip of its pieces joined (clip.stitch), downloaded by the clip job.
             from chatwatcher.clip import stitch
@@ -179,12 +188,30 @@ def router(ctx: Ctx) -> APIRouter:
     return r
 
 
-def _compile_state(conn, video_pk: int, has_captions: bool) -> dict[str, Any]:
-    """The stream page's Compilation ideas card: the last run's candidates and the job."""
+def _compile_state(cfg, conn, video, files) -> dict[str, Any]:
+    """The stream page's Read the whole stream card: the last read (ideas, context, moments
+    chat missed), the job and how far listening got."""
     from chatwatcher.compile.service import load
-    job = conn.execute("SELECT status, message, error, run_after FROM jobs WHERE video_id = ? AND stage = 'compile'",
+    from chatwatcher.compile.speech import progress
+    video_pk = video["id"]
+    job = conn.execute("SELECT status, message, error, run_after, params_json FROM jobs WHERE video_id = ? AND stage = 'compile'",
                        (video_pk,)).fetchone()
     run = load(conn, video_pk)
+    missed = []
+    if run:
+        status = {m["id"]: m for m in conn.execute(
+            """SELECT m.id, m.rank, m.status, (SELECT a.analysis_json FROM analyses a WHERE a.moment_id = m.id
+                      ORDER BY a.id DESC LIMIT 1) AS a FROM moments m WHERE m.video_id = ?""", (video_pk,))}
+        for c in run["missed"]:
+            m = status.get(c.get("moment_id"))
+            a = json.loads(m["a"]) if m and m["a"] else {}
+            missed.append(c | {"rank": m["rank"] if m else None, "status": m["status"] if m else None,
+                               "worthiness": a.get("clip_worthiness")})
+    analysed = conn.execute(
+        """SELECT COUNT(*) FROM moments m WHERE m.video_id = ? AND m.status != 'rejected'
+           AND EXISTS (SELECT 1 FROM analyses a WHERE a.moment_id = m.id)""", (video_pk,)).fetchone()[0]
+    duration = float(video["duration_s"] or 0)
+    listen = progress(files, duration, cfg.compile.part_s)
     from chatwatcher.clip import stitch
     made, earlier = {}, []
     ideas = {stitch.key(c["title"], c["segments"]): c["id"] for c in run["candidates"]} if run else {}
@@ -205,8 +232,15 @@ def _compile_state(conn, video_pk: int, has_captions: bool) -> dict[str, Any]:
             made[idea] = item
         else:
             earlier.append(item)                 # its idea was replaced by a later look
-    return {"run": run, "job": dict(job) if job else None, "has_captions": has_captions,
-            "made": made, "earlier": earlier}
+    return {"run": run, "job": dict(job) if job else None, "has_captions": files.transcript.is_file(),
+            "made": made, "earlier": earlier, "missed": missed, "analysed": analysed, "listen": listen,
+            "listen_min": round(duration * 0.5 / 60), "has_whisper": available_whisper(),
+            "job_listen": bool(job and "listen" in (job["params_json"] or ""))}
+
+
+def available_whisper() -> bool:
+    from chatwatcher.subs.transcribe import available
+    return available()
 
 
 def _review_items(moments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -219,8 +253,9 @@ def _review_items(moments: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "status": m["status"], "kind": m["kind"], "score": round(m["score"], 2),
             "reasons": [r["signal"] for r in (m.get("reasons") or [])[:4]],
             "chat": [[t, n] for t, n in (m.get("top_messages") or [])[:5]],
-            "title": (a.get("titles") or [{}])[0].get("text", ""), "summary": a.get("summary", ""),
-            "why": a.get("why_it_works", ""), "context": a.get("context", ""),
+            "title": (a.get("titles") or [{}])[0].get("text", "") or (m.get("missed") or {}).get("title", ""),
+            "summary": a.get("summary", ""),
+            "why": a.get("why_it_works", "") or (m.get("missed") or {}).get("why", ""), "context": a.get("context", ""),
             "worthiness": a.get("clip_worthiness"), "category": a.get("category"),
             "model": a.get("model"), "effort": (a.get("_meta") or {}).get("effort"),
             "analysed_at": a.get("created_at"), "aid": a.get("_id"),

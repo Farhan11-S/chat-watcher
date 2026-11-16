@@ -137,6 +137,20 @@ class TranscribeConfig(_Section):
         return data
 
 
+class CompileConfig(_Section):
+    """✨ Read the whole stream (compile/), on the stream page, only when you ask: one Claude call
+    for compilation ideas, moments chat missed, and what the stream was about. Ticking "Listen
+    first" transcribes the whole stream's audio with Whisper on this computer before that call
+    (no tokens; about half the stream's length on a 4-core CPU), so Claude reads what was really
+    said instead of YouTube's auto-captions."""
+    whisper_model: str = ""                    # "" = transcribe.model
+    beam_size: int = Field(1, ge=1, le=10)     # 1 = greedy: about twice as fast; fine for reading
+    part_s: int = Field(600, ge=60, le=3600)   # transcribed this much at a time; a restart resumes there
+    audio_format: str = "ba[abr<=96]/ba"       # yt-dlp format: audio only, small
+    keep_audio: bool = False                   # delete the stream's audio once it is transcribed
+    max_missed: int = Field(8, ge=0, le=20)    # moments chat missed, at most, per read
+
+
 class SubtitlesConfig(_Section):
     """Subtitles in the editor's render, built from Whisper's word timings."""
     on: bool = True                                    # burned into new edits (karaoke clips start off)
@@ -201,6 +215,7 @@ class Config(_Section):
     clip: ClipConfig = Field(default_factory=ClipConfig)
     edit: EditConfig = Field(default_factory=EditConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
+    compile: CompileConfig = Field(default_factory=CompileConfig)
     subtitles: SubtitlesConfig = Field(default_factory=SubtitlesConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     drive: DriveConfig = Field(default_factory=DriveConfig)

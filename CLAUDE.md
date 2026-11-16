@@ -24,12 +24,13 @@ no build step. Read only the feature you are changing; the map below says where 
 | Scoring moments | `scoring/` — `features.py`, `lexicons.py`, `presets.py`, `moments.py`, `service.py` |
 | Downloading clips | `clip/` — `download.py`, `media.py` (ffmpeg/ffprobe), `package.py`, `preview.py`, `service.py`, `stitch.py` (a compilation idea as one joined clip: a moment of kind `compilation`, its own clock, downloaded by the per-moment `clip` job) |
 | Claude's analysis of a clip | `analyze/` — `claude_runner.py` (`claude -p`), `prompts.py`, `sheet.py` (contact sheet), `service.py` |
-| Compilation ideas: one Claude call reads a whole stream | `compile/` — `chat.py` (thin the chat), `prompt.py` (timeline, token budget, schema), `parse.py` (check the answer), `service.py` (run, store, load); the on-demand `compile` job (`jobs.VIDEO_STAGES`) |
+| Read the whole stream: one Claude call gives compilation ideas, moments chat missed (moments of kind `missed`, ranks 501+) and the stream's context (fed to every clip analysis) | `compile/` — `speech.py` ("Listen first": Whisper on the whole stream's audio in resumable parts → `speech.jsonl`, preferred over captions everywhere via `stream_transcript`), `chat.py` (thin the chat), `prompt.py` (timeline, token budget, schema), `parse.py` (check the answer), `service.py` (run, store, load, `context_text`); the on-demand `compile` job (`jobs.VIDEO_STAGES`, params `listen`, `analyze_new`, `reanalyze`) |
 | Transcripts and subtitles | `subs/` — `transcribe.py` (Whisper), `align.py`, `lines.py`, `polish.py`, `names.py`, `speakers.py` (VTubers, colours) |
 | The clip editor and renders | `edit/` — `service.py` (re-exports only), `clipref.py` (clip + edit rows, file names), `validate.py` (checking segments and effects), `substate.py` (subtitles as the editor sees them), `editstore.py` (load/save, tables `edits` and `shorts`), `rendering.py` (render a saved edit), `render.py` (ffmpeg graph), `pieces.py`, `audio.py`, `captions.py`, `layout.py` (Shorts), `motion.py`, `spots.py`, `texts.py`, `layers.py` (a region of the clip over the picture), `regions.py`, `proxy.py` |
 | AI edit and Direct | `edit/autoedit/` — `prompt.py` (system prompt, answer schema), `plan.py` (reading Claude's answer), `assemble.py` (the cut), `camera.py` (shots), `effects.py` (sounds, overlays, texts, spots), `run.py` (gather, ask, apply); `edit/direct.py` |
 | Sound and overlay library | `edit/sounds.py`, `edit/overlays.py` |
 | Brand, intro, thumbnail | `brand/` — `brand.py` (also the sticker library), `intro.py`, `sfx.py`, `art.py`, `service.py`; thumbnails: `layers.py` (the layer model), `canvas.py` (draws layers), `cutout.py` (her cut-out, anime-seg ONNX model in `data/models`), `thumbai.py` (Claude composes versions; the on-demand `thumb` job), `thumb.py` (text, sizes, the Short layout) |
+| 3D stage: a moment re-enacted by her official MMD model | `stage/` — `models.py` (the model library in `<data_dir>/mmd`, zip import, profiles), `script.py` (what a scene can say, `validate`), `track.py` (the cut's sound, letter-timed mouth, laughs; your subtitles' words where Whisper misheard; `stage_track.json`), `mouth.py` (mouth shapes from how words sound: CMU dictionary, stress, emphasis from quotes/*stars*/loudness), `store.py` (table `stages`, page state), `run.py` (Claude writes the scene, you direct it; table `stage_chats`), `browser.py` (headless Chrome over DevTools), `export.py` (the `3d` job → `stage.mp4`) |
 | Google Drive upload | `upload/drive.py`, `upload/login.py` |
 | Disk and Drive usage, deleting | `storage.py`, `doctor.py` (health checks) |
 
@@ -51,6 +52,7 @@ the worker status and the Drive cache. Never use module globals for these: tests
 | `/channels` | `routes/channels.py` | `channels.html` | |
 | `/jobs`, `/api/version` | `routes/queue.py` | `jobs.html` | |
 | `/storage`, `/settings` | `routes/storage.py` | `storage.html` | |
+| `/moment/{pk}/3d`, `/models`, `/media/mmd/…`, `/media/stage/…` | `routes/stage.py` | `stage.html`, `models.html`, `model.html` | `stage/main.js`, `stage/check.js` (modules below), `stage/stage.css` |
 | `/media/…` (files the database points at) | `routes/media.py` | | |
 
 - The editor's script is native ES modules in `static/editor/` (no build step); `moment.html` loads
@@ -80,6 +82,13 @@ the worker status and the Drive cache. Never use module globals for these: tests
   and `editing.js` in node against the Python they mirror.
 - List-page SQL (search, filter, sort, paging) is `web/listing.py`; page read models are
   `web/queries.py`; the SVG charts are `web/charts.py`. Shared markup: `base.html`, `_macros.html`.
+- The 3D stage's script is native ES modules in `static/stage/` on three.js r171, vendored in
+  `static/vendor/three-0.171/` (the last release with the MMD loader; the page's import map points
+  `three` there): `cues.js` (pure time functions, run in node by `tests/test_stage.py`), `figure.js`
+  (the model: seated, poses, faces, mouth, physics pins, and the cartoon `ACTIONS`: takes, hops, slumps…), `camera.js` (shots), `sets/` (`room.js`,
+  `cabin.js`, `paint.js`), `main.js` (the page; `window.stage3d` is what `stage/export.py` drives),
+  `check.js` (a model's check page). Model files are COVER's: they stay in `<data_dir>/mmd` and are
+  only served to the dashboard.
 - Route order matters: `POST /moment/{pk}/{action}` (clips) and `POST /video/{video_id}/{action}`
   (streams) are catch-alls. A new `/moment/{pk}/<word>` route goes in a router listed before
   `clips` in `ROUTERS`, or above the catch-all in the same file.

@@ -231,3 +231,21 @@ class YtDlp:
         )
         matches = sorted(p for p in dest.glob(f"{video_id}.{lang}.*") if not p.name.endswith(".part"))
         return matches[0] if matches else None
+
+    def download_audio(self, video_id: str, dest: Path, fmt: str, *, on_line: LineFn | None = None,
+                       timeout: float = 4 * 3600) -> Path:
+        """The whole video's sound only, as dest/audio.<ext> (a half-finished download resumes)."""
+        dest.mkdir(parents=True, exist_ok=True)
+        self.run(["-f", fmt, "--newline", "--continue",
+                  "-P", str(dest), "-o", "audio.%(ext)s", watch_url(video_id)],
+                 timeout=timeout, on_line=on_line)
+        found = audio_file(dest)
+        if found is None:
+            raise YtDlpError("yt-dlp finished but wrote no audio file.", kind="error")
+        return found
+
+
+def audio_file(folder: Path) -> Path | None:
+    """A finished download_audio() file in folder, if any."""
+    done = [p for p in folder.glob("audio.*") if p.suffix not in (".part", ".ytdl", ".tmp") and ".part" not in p.suffixes]
+    return sorted(done)[0] if done else None

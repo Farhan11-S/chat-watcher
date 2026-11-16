@@ -19,7 +19,7 @@ from chatwatcher.clip.package import (
     write_transcript_excerpt,
 )
 from chatwatcher.config import Config
-from chatwatcher.ingest.captions import read_transcript
+from chatwatcher.compile.speech import stream_transcript
 from chatwatcher.ingest.chat_parser import read_messages
 from chatwatcher.ingest.ytdlp import YtDlp, YtDlpError, extract_video_id
 from chatwatcher.paths import vod_files
@@ -130,7 +130,7 @@ def clip_video(
     info_json.write_text(json.dumps(full_info), encoding="utf-8")
 
     messages = read_messages(files.chat) if files.chat.is_file() else []
-    transcript = read_transcript(files.transcript) if files.transcript.is_file() else []
+    transcript, _src = stream_transcript(files)      # Whisper's on the whole stream, else captions
     stream_type = row["stream_type"] if row["stream_type"] != "auto" else (row["detected_type"] or "talk")
     title = info.get("title") or video_id
 

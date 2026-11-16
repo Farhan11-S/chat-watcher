@@ -73,11 +73,13 @@ class Whisper:
     _lock = threading.Lock()
     _models: dict[tuple[str, int], Any] = {}
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, *, model: str | None = None, beam_size: int = 5):
+        """model/beam_size: the whole-stream read (compile.speech) may use a faster setting."""
         if not available():
             raise TranscribeError("Whisper isn't installed. Run `pip install faster-whisper` in the "
                                   "app's environment.", "missing")
-        self.name = cfg.transcribe.model
+        self.name = model or cfg.transcribe.model
+        self.beam_size = beam_size
         self.threads = cfg.transcribe.threads
         self.models_dir = Path(cfg.paths.data_dir) / "models"
 
@@ -96,7 +98,7 @@ class Whisper:
         with self._lock:          # one transcription at a time: it already uses every core
             segs, info = model.transcribe(
                 audio, language=language or None, multilingual=not language, word_timestamps=True,
-                vad_filter=False, beam_size=5, condition_on_previous_text=False)
+                vad_filter=False, beam_size=self.beam_size, condition_on_previous_text=False)
             lines = [Line(s.start, s.end, s.text.strip(),
                           [[round(w.start, 3), round(w.end, 3), w.word, round(w.probability, 3)] for w in s.words or []],
                           getattr(s, "language", None) or info.language, s.no_speech_prob, s.avg_logprob)

@@ -30,7 +30,7 @@ export const LENGTHS = { punch: [0.5, 0.8, 1, 1.5, 2, 3, 5], push: [1, 2, 3, 4, 
                   layer: [1, 2, 3, 5, 8, 12, 20, 30],
                   text: [0.5, 0.8, 1, 1.5, 2, 3, 4, 6], spot: [0.5, 1, 1.5, 2, 3, 4, 6],
                   caption: [0.5, 1, 2, 3, 5, 8, 12, 20, 30] };
-export const ZOOM_STEPS = { punch: [1.2, 1.4, 1.6, 2, 2.5, 3], push: [1.1, 1.2, 1.3, 1.5, 2] };
+export const ZOOM_STEPS = { punch: [1.2, 1.4, 1.6, 2, 2.5, 3], push: [1.1, 1.2, 1.3, 1.5, 2, 2.5, 3, 3.5, 4] };
 export const REGION_NAMES = ["face", "game", "chat"];
 export const GAINS = [6, 3, 0, -3, -6, -10, -15, -20, -30];
 export const DUCKS = [0, -6, -10, -14, -20];

@@ -31,6 +31,7 @@ def ffmpeg_eval(expr: str, t: float) -> float:
 
 def busy_effects() -> list[Visual]:
     return [Visual("push", 1.0, 3.0, zoom=1.4, cx=0.78, cy=0.45), Visual("punch", 2.5, 1.0, zoom=2.2, cx=0.97, cy=0.03),
+            Visual("push", 4.0, 1.5, zoom=3.0, z0=2.2, cx=0.2, cy=0.7),
             Visual("shake", 2.7, 0.8, strength=3), Visual("shake", 3.0, 0.5, strength=2),
             Visual("shake", 6.0, 0.5, strength=1), Visual("flash", 2.7, 0.3, color="red")]
 
@@ -64,6 +65,12 @@ def test_effects_look_right():
     push = [Visual("push", 0, 4, zoom=1.5, cx=0.7, cy=0.5)]
     zooms = [0.5 / camera(t, push)[2] for t in (0, 1, 2, 3, 3.99)]
     assert zooms[0] == pytest.approx(1) and zooms == sorted(zooms) and zooms[-1] == pytest.approx(1.5, abs=1e-3)
+    # A push can carry on from a punch-in: punch 2× on her face, glide 2× → 2.6×, hold 2.6×.
+    chain = [Visual("punch", 0, 1, zoom=2.0, cx=0.7, cy=0.4), Visual("push", 1, 1, zoom=2.6, z0=2.0, cx=0.7, cy=0.4),
+             Visual("punch", 2, 1, zoom=2.6, cx=0.7, cy=0.4)]
+    seq = [camera(k / 100, chain) for k in range(300)]
+    assert seq[99] == pytest.approx(seq[100]) and seq[199] == pytest.approx(seq[200], abs=1e-3)   # no snap at the joins
+    assert 0.5 / seq[150][2] == pytest.approx(2.3) and [0.5 / h for _x, _y, h in seq] == sorted(0.5 / h for _x, _y, h in seq)
     shake = [Visual("shake", 0, 1, strength=3)]
     moves = {round(camera(t / 30, shake)[0], 4) for t in range(30)}
     assert len(moves) > 20 and camera(1.0, shake) == (0.5, 0.5, 0.5)
@@ -99,6 +106,7 @@ def test_preview_maths_matches_the_render(layout):
     code = js[start:end].replace("\nexport ", "\n")
     regions = {"face": {"x": 0.7, "y": 0.2, "w": 0.2, "h": 0.4}, "game": {"x": 0, "y": 0, "w": 0.7, "h": 0.8}}
     fx = [{"type": "push", "t": 1.0, "d": 3.0, "zoom": 1.4, "region": "game"},
+          {"type": "push", "t": 3.5, "d": 1.0, "zoom": 2.5, "from_zoom": 1.8, "region": "face"},
           {"type": "punch", "t": 2.5, "d": 1.0, "zoom": 2.2, "region": "face"},
           {"type": "punch", "t": 5.0, "d": 1.0, "zoom": 1.5, "region": "nowhere"},
           {"type": "shake", "t": 2.7, "d": 0.8, "strength": 3}, {"type": "shake", "t": 6.0, "d": 0.5, "strength": 1},

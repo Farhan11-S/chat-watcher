@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MMD prototype</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0d0f14; color: #e8e8ee; font: 14px/1.4 system-ui, sans-serif;
+         display: flex; gap: 20px; justify-content: center; align-items: flex-start; padding: 16px; }
+  body.still { padding: 0; }
+  body.still #side { display: none; }
+  #stage { position: relative; width: min(100vw - 32px, 54vh); aspect-ratio: 9 / 16; overflow: hidden;
+           border-radius: 10px; background: radial-gradient(120% 80% at 50% 110%, #2a3358 0%, #121628 55%, #070810 100%); }
+  body.still #stage { width: 100vw; border-radius: 0; }
+  #stage canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; display: block; }
+  #caption { position: absolute; left: 6%; right: 6%; bottom: 12%; text-align: center; font-weight: 800;
+             font-size: clamp(15px, 2.6vh, 28px); line-height: 1.2; color: #fff;
+             text-shadow: 0 0 4px #000, 0 2px 0 #000, 2px 0 0 #000, -2px 0 0 #000, 0 -2px 0 #000; }
+  #msg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; color: #aab; }
+  #side { width: 300px; }
+  #bar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #445; background: #1b2030; color: inherit; cursor: pointer; }
+  input[type=range] { flex: 1; }
+  #info { white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; color: #9aa3b8; max-height: 70vh; overflow: auto; }
+  h1 { font-size: 15px; margin: 0 0 10px; }
+</style>
+<div id="stage"><div id="msg">Loading…</div><div id="caption"></div></div>
+<div id="side">
+  <h1>MMD prototype · moment 57</h1>
+  <div id="bar">
+    <button id="play">Play</button>
+    <input id="seek" type="range" min="0" max="1" step="0.01" value="0">
+    <span id="clock">0.0</span>
+  </div>
+  <div id="info"></div>
+</div>
+<script type="importmap">
+{ "imports": { "three": "./node_modules/three/build/three.module.js",
+               "three/addons/": "./node_modules/three/examples/jsm/" } }
+</script>
+<script src="node_modules/three/examples/jsm/libs/ammo.wasm.js"></script>
+<script type="module" src="main.js"></script>

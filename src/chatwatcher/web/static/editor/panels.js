@@ -221,6 +221,9 @@ export function paintVisPanel() {
     const opts = names.map(n => [n, n]).concat([["", "centre of the frame"]]);
     if (f.region && !names.includes(f.region)) opts.unshift([f.region, f.region + " (no such region: centre)"]);
     box.appendChild(regionChips(f.region || "", { chipFor: "vis" }, "centre"));
+    if (f.type === "push")                       // 1×: from the whole frame; above: carries on from a punch-in
+      acts.appendChild(labelled("starts at", select([[1, "whole frame"]].concat(ZOOM_STEPS.punch.map(v => [v, v + "×"])),
+                                                    f.from_zoom || 1, { visFrom: "" }, "Where the push starts", v => nice(v) + "×")));
     acts.appendChild(labelled(f.type === "push" ? "ends at" : "zoom",
                               select(ZOOM_STEPS[f.type].map(v => [v, v + "×"]), f.zoom, { visZoom: "" }, "How far it zooms", v => nice(v) + "×")));
     if (f.region && S.D.regions[f.region])

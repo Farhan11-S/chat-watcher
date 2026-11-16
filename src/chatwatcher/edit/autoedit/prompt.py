@@ -53,7 +53,8 @@ is slow; leave it empty when the first line already hooks.
 
 Camera (camera): plan a shot for every kept stretch, like a clip channel:
 - "p2-p4 | face | close | cut": region, how tight (wide, medium, close, tight), and cut \
-(instant) or push (slow zoom in that ends on the moment).
+(instant) or push (punches in at that size, then glides a little tighter onto the moment \
+and holds there).
 - Change the shot every 1-3 s: tighter on the punchline and reactions, back out to show \
 what she reacts to, cut to whoever is talking in a collab, cut to the thing she names \
 (the game, an item, her outfit) when it's on screen. Wide is fine for gameplay the \
@@ -390,7 +391,8 @@ def placed_line(fx: dict[str, Any]) -> str:
         return f"- {t:.2f} s sound {fx.get('sound')}"
     span = f"- {t:.2f}–{t + fx['d']:.2f} s"
     if kind in motion.ZOOMS:
-        return f"{span} {'punch_in' if kind == 'punch' else 'push_in'} on {fx.get('region') or CENTRE} {fx.get('zoom', 1.5):g}x"
+        start = f"{fx['from_zoom']:g}x→" if kind == "push" and fx.get("from_zoom") else ""
+        return f"{span} {'punch_in' if kind == 'punch' else 'push_in'} on {fx.get('region') or CENTRE} {start}{fx.get('zoom', 1.5):g}x"
     if kind == "shake":
         return f"{span} shake {next((k for k, v in STRENGTHS.items() if v == fx.get('strength')), 'normal')}"
     return f"{span} {fx.get('color', 'white')} flash"

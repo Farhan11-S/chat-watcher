@@ -83,6 +83,28 @@ def test_render_is_frame_exact_and_reordered(tmp_path):
 
 
 @needs_ffmpeg
+def test_render_plays_every_frame_evenly(tmp_path):
+    """Cuts that land just after a source frame (its first kept frame comes almost a frame
+    late) used to drop a frame at the join, and Matroska parts made 60 fps play as uneven
+    16 / 17 ms frames. Every frame now lasts exactly 1/60 s, through the zooms too."""
+    from chatwatcher.edit.motion import Visual
+    src = tmp_path / "src60.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=8:size=320x240:rate=60",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-c:v", "libx264", "-g", "60",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src)], check=True)
+    segs = [[1.002, 2.5, 0], [3.016, 4.0, 0], [5.009, 6.51, 0]]
+    vis = [Visual("punch", 3.2, 0.5, zoom=2.0, cx=0.3, cy=0.4), Visual("push", 5.2, 1.0, zoom=2.5, z0=2.0, cx=0.3, cy=0.4)]
+    out = tmp_path / "edit.mp4"
+    render(EditConfig(), src, segs, out, fps=60, visuals=vis)
+    pts = sorted(float(x) for x in subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(out)],
+        capture_output=True, text=True, check=True).stdout.split())
+    assert len(pts) == sum(round((e - s) * 60) for s, e, _ in segs)
+    steps = [b - a for a, b in zip(pts, pts[1:])]
+    assert max(abs(d - 1 / 60) for d in steps) < 1e-4, (min(steps), max(steps))
+
+
+@needs_ffmpeg
 def test_render_without_loudness_or_fades(tmp_path):
     src = make_video(tmp_path / "src.mp4", 5)
     r = render(EditConfig(loudness_lufs=0, fade_ms=0), src, [[0.5, 3.0, 0]], tmp_path / "e.mp4", fps=30)

@@ -55,7 +55,7 @@
       <div class="moment-strip" data-strip aria-label="Moments in stream order">
         {%- for m in review %}
         <button type="button" class="chip {{ m.status }}" data-goto="{{ m.id }}"
-                title="#{{ m.rank }} · {{ m.start | ts }}–{{ m.end | ts }}{% if m.worthiness %} · Claude {{ m.worthiness }}/10{% endif %}{% if m.title %} · {{ m.title }}{% endif %}">#{{ m.rank }}{% if m.kind == 'song' %}♪{% endif %} <span>{{ m.start | ts }}</span>{% if m.worthiness %} <b class="w w{{ m.worthiness }}">{{ m.worthiness }}</b>{% endif %}</button>
+                title="#{{ m.rank }} · {{ m.start | ts }}–{{ m.end | ts }}{% if m.worthiness %} · Claude {{ m.worthiness }}/10{% endif %}{% if m.title %} · {{ m.title }}{% endif %}">#{{ m.rank }}{% if m.kind == 'song' %}♪{% elif m.kind == 'missed' %}🎧{% endif %} <span>{{ m.start | ts }}</span>{% if m.worthiness %} <b class="w w{{ m.worthiness }}">{{ m.worthiness }}</b>{% endif %}</button>
         {%- endfor %}
       </div>
     </div>
@@ -117,22 +117,82 @@
 {% set run = compile.run %}{% set cjob = compile.job %}
 {% set cbusy = cjob and cjob.status in ('pending', 'running') %}
 <div class="card" id="compilations">
+  {% set lp = compile.listen %}
   <div class="card-head">
-    <h2>Compilation ideas{% if run and run.candidates %} <span class="count">{{ run.candidates | length }}</span>{% endif %}</h2>
-    <form method="post" action="/video/{{ video.video_id }}/compile" class="inline"
-          {% if run %}onsubmit="return confirm('Claude will read the whole stream again and the ideas below are replaced. Continue?')"{% endif %}>
-      <button class="{{ 'small' if run else 'primary' }}" {{ 'disabled' if cbusy }}
-              title="One Claude call for the whole stream">{{ 'Look again' if run else '✨ Find compilation ideas' }}</button></form>
+    <h2>Read the whole stream</h2>
   </div>
-  <p class="muted"><small>Claude reads the whole stream once, start to finish (what was said, and what chat typed), and looks for
-    things that keep happening and jokes that come back much later: pieces from different parts of the stream that make one video.</small></p>
+  <p class="muted"><small>One Claude call reads the whole stream, start to finish (what was said, what chat typed, and the
+    moments already found), and gives three things at once: <b>moments chat missed</b>, <b>what the stream was about</b>
+    (every clip analysed afterwards gets that as context), and <b>compilation ideas</b>. Nothing is sent to Claude until you press the button.</small></p>
   {% if cbusy %}
-  <p><span class="pill {{ cjob.status }}">{{ 'reading the stream…' if cjob.status == 'running' else 'waiting in the queue' }}</span>
+  <p><span class="pill {{ cjob.status }}">{% if cjob.status == 'running' %}{{ 'listening…' if compile.job_listen and not lp.finished else 'reading the stream…' }}{% else %}waiting in the queue{% endif %}</span>
+    {% if lp.done and not lp.finished %}<small class="muted">Whisper: {{ lp.done }} of {{ lp.total }} parts done</small>{% endif %}
     {% if cjob.status == 'pending' and cjob.message %}<small class="muted">{{ cjob.message.splitlines()[0][:200] }}</small>{% endif %}</p>
   {% elif cjob and cjob.status == 'error' %}
   <p class="bad">{{ (cjob.error or cjob.message or 'It failed.').splitlines()[0][:400] }}</p>
-  {% elif not run and not compile.has_captions %}
-  <p class="faint"><small>No captions are saved for this stream yet. Pressing the button asks YouTube for them first.</small></p>
+  {% endif %}
+  <form method="post" action="/video/{{ video.video_id }}/compile" class="read-form"
+        {% if run %}onsubmit="return confirm('Claude will read the whole stream again; the ideas and context below are replaced (moments it found stay). Continue?')"{% endif %}>
+    {% if lp.finished %}
+    <p class="muted"><small>🎧 Claude reads Whisper's transcript of the whole stream{% if lp.meta.model %} ({{ lp.meta.model }}{% if lp.meta.created_at %}, {{ lp.meta.created_at | when }}{% endif %}){% endif %}.</small></p>
+    {% elif compile.has_whisper %}
+    <label class="muted"><input type="checkbox" name="listen" value="1" {{ 'checked' if not compile.has_captions }}>
+      <small>🎧 <b>Listen first</b>: Whisper transcribes the stream's audio on this computer (no tokens; about {{ compile.listen_min }} min,
+        other work goes in between{% if lp.done %}; {{ lp.done }} of {{ lp.total }} parts already done{% endif %}). Far better than
+        YouTube's captions{{ '' if compile.has_captions else ' (this stream has none yet)' }}, so quiet talk streams get read properly.</small></label>
+    {% endif %}
+    {% if cfg.compile.max_missed %}
+    <label class="muted"><input type="checkbox" name="analyze_new" value="1" {{ 'checked' if cfg.pipeline.auto_analyze }}>
+      <small>Analyse the moments chat missed (one Claude call each, like any other moment)</small></label>
+    {% endif %}
+    {% if compile.analysed %}
+    <label class="muted"><input type="checkbox" name="reanalyze" value="1">
+      <small>Then analyse the {{ compile.analysed }} analysed moment{{ 's' if compile.analysed != 1 }} again with the stream's context
+        ({{ compile.analysed }} more call{{ 's' if compile.analysed != 1 }})</small></label>
+    {% endif %}
+    <div class="actions"><button class="{{ 'small' if run else 'primary' }}" {{ 'disabled' if cbusy }}
+            title="One Claude call for the whole stream">{{ 'Read again' if run else '✨ Read the whole stream' }}</button></div>
+  </form>
+  {% if not run and not compile.has_captions and not lp.finished and not cbusy %}
+  <p class="faint"><small>No captions are saved for this stream yet. Without Listen first, pressing the button asks YouTube for them.</small></p>
+  {% endif %}
+  {% if run %}
+  {% set cx = run.context %}
+  {% if cx and (cx.summary or cx.chapters) %}
+  <h3>What the stream was about</h3>
+  {% if cx.summary %}<p>{{ cx.summary }}</p>{% endif %}
+  <details class="stream-context"><summary><small>Chapters{% if cx.jokes %}, running jokes{% endif %}{% if cx.names %}, names{% endif %}</small></summary>
+    {% if cx.chapters %}<ol class="pieces">{% for c in cx.chapters %}
+      <li><a href="https://youtu.be/{{ video.video_id }}?t={{ c.start | int }}" target="_blank" rel="noopener"
+             data-stream-seek="{{ c.start }}" title="Play from here">▶ {{ c.start | ts }}–{{ c.end | ts }}</a> <span>{{ c.text }}</span></li>{% endfor %}</ol>{% endif %}
+    {% if cx.jokes %}<p class="muted"><small><b>Running jokes:</b> {{ cx.jokes | join(' · ') }}</small></p>{% endif %}
+    {% if cx.names %}<p class="muted"><small><b>Names:</b> {{ cx.names | join(' · ') }}</small></p>{% endif %}
+  </details>
+  {% if compile.analysed %}
+  <form method="post" action="/video/{{ video.video_id }}/reanalyze" class="actions"
+        onsubmit="return confirm('Analyse {{ compile.analysed }} moment(s) again with this context? That is {{ compile.analysed }} Claude call(s).')">
+    <button class="small" {{ 'disabled' if cbusy }}>Analyse the {{ compile.analysed }} moment{{ 's' if compile.analysed != 1 }} again with this context</button>
+    <small class="muted">One Claude call each. Moments analysed from now on get the context by themselves.</small></form>
+  {% endif %}
+  {% endif %}
+  <h3>Moments chat missed{% if compile.missed %} <span class="count">{{ compile.missed | selectattr('moment_id') | list | length }}</span>{% endif %}</h3>
+  {% for c in compile.missed %}
+  <div class="compilation missed">
+    <div class="claude">{{ rating(c.rating) }}
+      <span><b>{{ c.title }}</b><br>
+        <small><a href="https://youtu.be/{{ video.video_id }}?t={{ c.start | int }}" target="_blank" rel="noopener"
+             data-stream-seek="{{ c.start }}" title="Play from here">▶ {{ c.start | ts }}–{{ c.end | ts }}</a>
+          <span class="tag">{{ c.category }}</span>
+          {% if c.moment_id and c.rank %}<a href="/moment/{{ c.moment_id }}">#{{ c.rank }}</a> {{ moment_status(c.status) }}{% if c.worthiness %} <span class="muted">analysed {{ c.worthiness }}/10</span>{% endif %}
+          {% elif c.same_as %}<span class="muted">already moment #{{ c.same_as }}</span>
+          {% else %}<span class="muted">moment removed</span>{% endif %}</small></span></div>
+    <p class="muted">{{ c.why }}</p>
+  </div>
+  {% else %}
+  <p class="empty">Claude found nothing chat missed in this stream.</p>
+  {% endfor %}
+  {% if compile.missed | selectattr('moment_id') | list %}<p class="faint"><small>They are in the moments below (🎧): ✓ Keep them, then Clip kept, like any other.</small></p>{% endif %}
+  <h3>Compilation ideas{% if run.candidates %} <span class="count">{{ run.candidates | length }}</span>{% endif %}</h3>
   {% endif %}
   {% if run %}
   {% for c in run.candidates %}
@@ -175,7 +235,8 @@
   {% endfor %}
   <p class="faint"><small>Found {{ run.created_at | when }}{% if run.model %} by {{ run.model }}{% endif %}
     {%- set read = (run.usage.input or 0) + (run.usage.cache_read or 0) + (run.usage.cache_write or 0) %}
-    · Claude read {{ '{:,}'.format(read or run.input.est_tokens) }}{{ '' if read else ' (estimated)' }} tokens in one call</small></p>
+    · Claude read {{ '{:,}'.format(read or run.input.est_tokens) }}{{ '' if read else ' (estimated)' }} tokens in one call,
+    from {{ "Whisper's transcript" if run.source == 'whisper' else "YouTube's captions" }}</small></p>
   {% endif %}
   {% if compile.earlier %}
   <p class="muted" style="margin-bottom:.2rem"><small>Compilation clips made from earlier ideas:</small></p>
@@ -236,14 +297,14 @@
     {% for m in moments %}
     {% set a = m.analysis %}
     <tr data-row="{{ m.id }}" data-item data-status="{{ m.status }}" data-rating="{{ a.clip_worthiness if a and a.clip_worthiness else 0 }}">
-      <td class="num" data-v="{{ m.rank }}"><a href="/moment/{{ m.id }}">#{{ m.rank }}</a>{% if m.kind == 'song' %} ♪{% endif %}</td>
+      <td class="num" data-v="{{ m.rank }}"><a href="/moment/{{ m.id }}">#{{ m.rank }}</a>{% if m.kind == 'song' %} ♪{% elif m.kind == 'missed' %} <span title="Chat missed it: found by reading the whole stream">🎧</span>{% endif %}</td>
       <td data-v="{{ m.start_s }}"><a class="when" href="/moment/{{ m.id }}" data-goto="{{ m.id }}" title="Play it above (Ctrl-click: open the clip page)">
         <img loading="lazy" src="{{ m.thumb }}" alt="" width="96" height="54">
         <span>▶ {{ m.start_s | ts }}–{{ m.end_s | ts }}<br><small class="muted">{{ (m.end_s - m.start_s) | int }}s</small></span></a></td>
       <td data-claude-cell="{{ m.id }}" data-v="{{ a.clip_worthiness if a and a.clip_worthiness else 0 }}">{% if a %}<div class="claude">{{ rating(a.clip_worthiness or 0) }}<span><small><b>{{ a.clip_worthiness }}/10</b> {{ a.category }}</small><br><a href="/moment/{{ m.id }}">{{ (a.titles[0].text if a.titles else 'Untitled')[:80] }}</a></span></div>
           {% elif moment_jobs.get(m.id) %}<span class="pill pending">queued</span>{% else %}<span class="faint">not analysed</span>{% endif %}</td>
-      <td data-v="{{ m.score }}"><b>{{ '%.2f' | format(m.score) }}</b> <small class="muted">{% for r in (m.reasons or [])[:3] %}{{ r.signal }}{{ ' · ' if not loop.last }}{% endfor %}</small>
-        <br><small class="faint">{% for t, n in (m.top_messages or [])[:3] %}{{ t[:14] }}×{{ n }}{{ ', ' if not loop.last }}{% endfor %}</small></td>
+      <td data-v="{{ m.score }}">{% if m.kind == 'missed' %}<small class="muted" title="{{ m.missed.why if m.missed }}">chat quiet · heard by Claude {{ m.missed.rating if m.missed }}/10</small>{% else %}<b>{{ '%.2f' | format(m.score) }}</b> <small class="muted">{% for r in (m.reasons or [])[:3] %}{{ r.signal }}{{ ' · ' if not loop.last }}{% endfor %}</small>
+        <br><small class="faint">{% for t, n in (m.top_messages or [])[:3] %}{{ t[:14] }}×{{ n }}{{ ', ' if not loop.last }}{% endfor %}</small>{% endif %}</td>
       <td>{% if m.clip_id and not m.clip_exists %}<span class="pill" title="Deleted on the Storage page; Download it again from the clip page">video deleted</span>{% elif m.clip_id %}<span class="pill done">{{ m.height }}p</span>{% if m.uploaded_at %} <span title="on Google Drive since {{ m.uploaded_at | when }}">☁</span>{% endif %}{% else %}<span class="faint">–</span>{% endif %}</td>
       <td class="nowrap" data-v="{{ m.status }}"><span data-status-pill="{{ m.id }}">{{ moment_status(m.status) }}</span></td>
     </tr>

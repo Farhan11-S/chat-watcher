@@ -12,7 +12,7 @@ import numpy as np
 
 from chatwatcher import store
 from chatwatcher.config import Config
-from chatwatcher.ingest.captions import read_transcript
+from chatwatcher.compile.speech import stream_transcript
 from chatwatcher.ingest.chat_parser import read_messages
 from chatwatcher.ingest.ytdlp import extract_video_id
 from chatwatcher.paths import VodFiles, vod_files
@@ -82,7 +82,7 @@ def score_video(
 
     info = json.loads(files.info.read_text(encoding="utf-8"))
     messages = read_messages(files.chat) if files.chat.is_file() else []
-    transcript = read_transcript(files.transcript) if files.transcript.is_file() else []
+    transcript, _src = stream_transcript(files)      # Whisper's, when the stream was listened to
     heatmap = json.loads(files.heatmap.read_text()) if files.heatmap.is_file() else None
     duration = float(info.get("duration") or (messages[-1].t if messages else 0))
 
@@ -122,11 +122,11 @@ def score_video(
 
 def _guard_existing(conn: sqlite3.Connection, video_pk: int, force: bool) -> None:
     """Re-scoring replaces moments; don't silently throw away clips or review decisions.
-    Compilation clips (clip.stitch) don't come from scoring and stay."""
+    Compilation clips (clip.stitch) and moments chat missed (compile) don't come from scoring and stay."""
     row = conn.execute(
         """
         SELECT COUNT(*) AS n FROM moments m
-        WHERE m.video_id = ? AND m.kind != 'compilation' AND (m.status != 'new'
+        WHERE m.video_id = ? AND m.kind NOT IN ('compilation', 'missed') AND (m.status != 'new'
             OR EXISTS (SELECT 1 FROM clips c WHERE c.moment_id = m.id)
             OR EXISTS (SELECT 1 FROM analyses a WHERE a.moment_id = m.id))
         """,
@@ -141,7 +141,7 @@ def _save(conn: sqlite3.Connection, video_pk: int, video_id: str, kind: str,
           moments: list[Moment]) -> None:
     from chatwatcher.db import tx
     with tx(conn):
-        conn.execute("DELETE FROM moments WHERE video_id = ? AND kind != 'compilation'", (video_pk,))
+        conn.execute("DELETE FROM moments WHERE video_id = ? AND kind NOT IN ('compilation', 'missed')", (video_pk,))
         conn.executemany(
             """INSERT INTO moments (video_id, rank, score, start_s, end_s, peak_s, kind, features_json)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
