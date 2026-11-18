@@ -14,6 +14,7 @@ from chatwatcher.analyze.prompts import compress_chat
 from chatwatcher.analyze.sheet import contact_sheet
 from chatwatcher.clip import stitch
 from chatwatcher.config import Config
+from chatwatcher.edit import formats
 from chatwatcher.edit import hook as hk
 from chatwatcher.edit import layout as lay
 from chatwatcher.edit import overlays as ovl
@@ -21,12 +22,14 @@ from chatwatcher.edit import pieces as pc, regions, service
 from chatwatcher.edit.audio import analyse
 from chatwatcher.edit.autoedit.assemble import apply_volume, assemble
 from chatwatcher.edit.autoedit.camera import camera_track, layout_effects
-from chatwatcher.edit.autoedit.effects import (caption_effects, cutaway_effects, hit_effects, layer_effects, overlay_effects,
-                                              sound_effects, spot_effects, text_effects, transition_effects)
-from chatwatcher.edit.autoedit.plan import (MAX_CAPTIONS, MAX_CUTAWAYS, MAX_LAYERS, MAX_LAYOUTS, MAX_OVERLAYS, MAX_SPOTS, MAX_TEXTS,
+from chatwatcher.edit.autoedit.effects import (caption_effects, card_effects, time_effects, word_effects, cutaway_effects, hit_effects, hush_effects, layer_effects,
+                                              music_effects, overlay_effects, sound_effects, spot_effects, text_effects,
+                                              transition_effects)
+from chatwatcher.edit.autoedit.plan import (MAX_CAPTIONS, MAX_CUTAWAYS, MAX_TIMES, MAX_WORDS, MAX_LAYERS, MAX_LAYOUTS, MAX_OVERLAYS, MAX_SPOTS, MAX_TEXTS,
                                            AutoEditError, Plan, parse_keep, parse_range, parts)
 from chatwatcher.edit.autoedit.prompt import SYSTEM, TRANSITION_LIST, build_prompt, schema
 from chatwatcher.edit.render import lengths
+from chatwatcher.edit.music import list_music
 from chatwatcher.edit.sounds import list_sounds
 
 WEB_TOOLS = ("WebSearch", "WebFetch")
@@ -71,16 +74,22 @@ class Material:
     visible: set[str]
     chat: str
     inserts: list[dict[str, Any]] = field(default_factory=list)   # this clip's (edit.inserts), for cutaways
+    music: list[dict[str, Any]] = field(default_factory=list)     # the music library
+    format: str = ""                          # edit.formats: a format key, "auto", or "" (none)
 
     def prompt(self) -> str:
         return build_prompt(meta=self.meta, analysis=self.analysis, ps=self.ps, kind=self.kind, sounds=self.sounds,
                             boxes=self.boxes, placed=self.mine, chat=self.chat, max_sounds=self.max_sounds,
                             max_hits=self.max_hits, frames=self.frames, visible=self.visible,
-                            overlays=self.overlays, inserts=self.inserts)
+                            overlays=self.overlays, inserts=self.inserts, music=self.music) + self.format_brief()
+
+    def format_brief(self) -> str:
+        return formats.brief(self.format, self.music, self.sounds, self.overlays)
 
     def schema(self, chat: bool = False) -> dict[str, Any]:
         return schema(self.max_sounds, self.max_hits, self.max_trans, chat=chat,
-                      max_overlays=MAX_OVERLAYS if self.overlays else 0, short=self.kind == "short")
+                      max_overlays=MAX_OVERLAYS if self.overlays else 0, short=self.kind == "short",
+                      max_music=1 if self.music else 0)
 
     def cut_now(self) -> list[list[float]]:
         """The saved cut of this edit (clip time, play order), or the whole clip."""
@@ -95,7 +104,7 @@ class Material:
 
 
 def material(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "short",
-             intensity: str = "normal") -> Material:
+             intensity: str = "normal", fmt: str = "") -> Material:
     service.check_kind(kind)
     if not cfg.claude.enabled:
         raise AutoEditError("claude.enabled is false in the config.", "disabled")
@@ -127,7 +136,8 @@ def material(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = 
     return Material(clip, kind, words, wf, ps, service.latest_analysis(conn, moment_pk), meta, sounds,
                     [o for o in every if o.get("moment_id") is None], boxes, row,
                     base, mine, max_sounds, max_hits, max_trans, meta.get("frames") or [], visible,
-                    compress_chat(chat_text), [o for o in every if o.get("moment_id") is not None])
+                    compress_chat(chat_text), [o for o in every if o.get("moment_id") is not None],
+                    list_music(conn), formats.clean(fmt))
 
 
 def ask(cfg: Config, m: Material, prompt: str, *, runner: ClaudeRunner | None = None, model: str | None = None,
@@ -142,7 +152,7 @@ def ask(cfg: Config, m: Material, prompt: str, *, runner: ClaudeRunner | None = 
                           system=SYSTEM.format(language=cfg.claude.output_language, transitions=TRANSITION_LIST,
                                              max_texts=MAX_TEXTS, max_spots=MAX_SPOTS, max_captions=MAX_CAPTIONS,
                                              max_cutaways=MAX_CUTAWAYS, max_layers=MAX_LAYERS,
-                                             max_layouts=MAX_LAYOUTS, hook_colors=", ".join(hk.COLORS)),
+                                             max_layouts=MAX_LAYOUTS, max_words=MAX_WORDS, max_times=MAX_TIMES, hook_colors=", ".join(hk.COLORS)),
                           cwd=m.clip.folder, model=model, effort=effort or cfg.claude.edit_effort,
                           images=[sheet] if sheet else None, session=session, resume=resume,
                           **({"tools": list(WEB_TOOLS)} if web else {}))
@@ -191,9 +201,19 @@ def apply(cfg: Config, conn: sqlite3.Connection, moment_pk: int, m: Material, d:
     texts = text_effects(d.get("texts") or [], segs, m.boxes, short)
     spots = spot_effects(d.get("spots") or [], segs, m.boxes)
     caps = caption_effects(d.get("captions") or [], ps, segs, m.boxes, clip.duration_s) if captions_on else []
+    # One music bed: yours stays (Claude's is dropped), and hushes line up with its drop.
+    mine_music = next((fx for fx in m.mine if fx.get("type") == "music"), None)
+    music = [] if mine_music else music_effects(d.get("music") or [], segs, m.wf.hits, m.music)
+    drop = (mine_music or (music[0] if music else {})).get("t")
+    hushes = hush_effects(d.get("hushes") or [], segs, drop)
+    cards = card_effects(d.get("cards") or [], segs)
+    words = word_effects(d.get("words") or [], segs, m.words) if captions_on else []
+    # Your own time effects stay (Claude's would overlap them).
+    times = [] if any(fx.get("type") == "time" for fx in m.mine) else time_effects(d.get("time") or [], segs)
     # The cuts changed: your old transitions don't fit them (they stay when the cut does).
     mine = m.mine if keep_cut else [fx for fx in m.mine if fx.get("type") != "transition"]
-    effects = (mine + cam + sfx + hits_fx + trans + cuts + ovs + layers + texts + spots + caps)[:service.MAX_EFFECTS]
+    effects = (mine + music + cam + sfx + hits_fx + hushes + trans + cuts + ovs + layers + texts + cards + spots
+               + caps + words + times)[:service.MAX_EFFECTS]
     # The captions follow Whisper's words (saved as "auto", with Claude's emphasis words in
     # the style), so transcribing again updates them instead of leaving stale lines.
     hook = " ".join(str(d.get("hook_title") or "").split())[:lay.MAX_TITLE]
@@ -217,7 +237,8 @@ def apply(cfg: Config, conn: sqlite3.Connection, moment_pk: int, m: Material, d:
         plan.warnings.append(f"The cut is {total:.0f} s; Shorts over 60 s lose most viewers.")
     counts = {"camera": len(cam) - len(scenes), "layouts": len(scenes), "layers": len(layers), "sounds": len(sfx), "hits": len(hits_fx), "volume": volumes,
               "transitions": len(trans), "overlays": len(ovs), "cutaways": len(cuts), "texts": len(texts), "spots": len(spots),
-              "captions": len(caps)}
+              "captions": len(caps), "music": len(music), "hushes": len(hushes),
+              "cards": len(cards), "words": len(words), "time": len(times)}
     if not save:
         return Result(segs, effects, cues, plan, str(d.get("note") or ""), hook, model, usage or {}, counts, raw=d)
     service.save(cfg, conn, moment_pk, segs, None, effects, subs="auto" if style is not None and source != "saved" else None,

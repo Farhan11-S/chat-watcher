@@ -10,8 +10,12 @@ import sqlite3
 from typing import Any
 
 from chatwatcher.edit import captions as cap
+from chatwatcher.edit import cards as crd
+from chatwatcher.edit import wordart as wa
+from chatwatcher.edit import timing as tm
 from chatwatcher.edit import layers as lyr
 from chatwatcher.edit import layout as lay
+from chatwatcher.edit import music as mus
 from chatwatcher.edit import overlays as ovl
 from chatwatcher.edit import spots as spt
 from chatwatcher.edit import texts as txt
@@ -50,9 +54,10 @@ def clean_segments(raw: Any, duration: float) -> list[Segment]:
 
 
 def clean_effects(raw: Any, duration: float, sounds: set[str],
-                  overlays: set[str] | None = None) -> list[dict[str, Any]]:
+                  overlays: set[str] | None = None, music: set[str] | None = None) -> list[dict[str, Any]]:
     """Check effects from the browser or from Claude (clip time). Raises EditError(kind='invalid').
-    overlays: the overlay library's ids (None: any id)."""
+    overlays, music: the overlay and music libraries' ids (None: any id). An edit has at
+    most one music bed."""
     if raw is None:
         return []
     if not isinstance(raw, list):
@@ -63,9 +68,10 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
     for i, fx in enumerate(raw, 1):
         kind = fx.get("type", "sfx") if isinstance(fx, dict) else None
         if kind != "sfx" and kind not in motion.TYPES and kind not in (lay.FRAME, "transition", ovl.OVERLAY, txt.TEXT,
-                                                                         spt.SPOT, cap.CAPTION, lyr.LAYER):
-            raise EditError(f"Effect {i} isn't a sound, zoom, shake, flash, overlay, layer, text, spotlight or "
-                            "caption style.", "invalid")
+                                                                         spt.SPOT, cap.CAPTION, lyr.LAYER,
+                                                                         mus.MUSIC, mus.HUSH, crd.CARD, wa.WORD, tm.TIME):
+            raise EditError(f"Effect {i} isn't a sound, music, hush, zoom, shake, flash, overlay, layer, text, "
+                            "card, word art, time effect, spotlight or caption style.", "invalid")
         try:
             t = float(fx["t"])
         except (KeyError, TypeError, ValueError):
@@ -89,6 +95,49 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
                 raise EditError(f"Effect {i} uses a sound that isn't in your library ({sound or 'none'}).", "invalid")
             e |= {"sound": sound, "gain": round(min(max(gain, GAIN_RANGE[0]), GAIN_RANGE[1]), 1),
                   "duck": round(min(max(duck, DUCK_RANGE[0]), DUCK_RANGE[1]), 1)}
+        elif kind == mus.MUSIC:                  # a music bed whose drop lands at t
+            track = str(fx.get("track") or "")
+            if not mus.valid_id(track) or (music is not None and track not in music):
+                raise EditError(f"Effect {i} uses a track that isn't in your music library ({track or 'none'}).",
+                                "invalid")
+            if any(o["type"] == mus.MUSIC for o in out):
+                raise EditError("An edit has one music track: remove the other first.", "invalid")
+            try:
+                gain = float(fx.get("gain", mus.DEFAULT_GAIN))
+                duck = float(fx.get("duck", mus.DEFAULT_DUCK))
+                lead = float(fx.get("lead", -1))
+            except (TypeError, ValueError):
+                raise EditError(f"Effect {i} has a bad volume or lead.", "invalid")
+            if not all(math.isfinite(v) for v in (gain, duck, lead)):
+                raise EditError(f"Effect {i} has a bad volume or lead.", "invalid")
+            e |= {"track": track, "gain": round(min(max(gain, mus.GAIN_RANGE[0]), mus.GAIN_RANGE[1]), 1),
+                  "duck": round(min(max(duck, mus.DUCK_RANGE[0]), mus.DUCK_RANGE[1]), 1),
+                  "lead": -1 if lead < 0 else round(min(lead, mus.LEAD_MAX), 2)}
+        elif kind == tm.TIME:                    # slow motion, fast forward, a ramp, a freeze frame
+            try:
+                e |= tm.clean(fx, i)
+            except ValueError as err:
+                raise EditError(str(err), "invalid")
+        elif kind == wa.WORD:                    # a word of a caption in its own look
+            try:
+                e |= wa.clean(fx, i)
+            except ValueError as err:
+                raise EditError(str(err), "invalid")
+        elif kind == crd.CARD:                   # a full-screen card or a comment sticker
+            try:
+                e |= crd.clean(fx, i)
+            except ValueError as err:
+                raise EditError(str(err), "invalid")
+        elif kind == mus.HUSH:                   # all sound stops (and maybe the picture goes black)
+            default, shortest, longest = mus.HUSH_D
+            try:
+                d = float(fx.get("d", default))
+            except (TypeError, ValueError):
+                raise EditError(f"Effect {i} has a bad length.", "invalid")
+            if not math.isfinite(d):
+                raise EditError(f"Effect {i} has a bad length.", "invalid")
+            e |= {"d": round(min(max(d, shortest), longest), 3),
+                  "style": fx.get("style") if fx.get("style") in mus.HUSH_STYLES else "silence"}
         elif kind == "transition":               # how the cut into the segment starting at t looks
             style = str(fx.get("style") or "")
             if style not in motion.TRANSITIONS:
@@ -239,8 +288,8 @@ def clean_effects(raw: Any, duration: float, sounds: set[str],
 def used_regions(conn: sqlite3.Connection, moment_pk: int,
                   effects: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     """The boxes of the regions these effects aim at (as they are now)."""
-    names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lyr.LAYER) and fx.get("region")}
-    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION, lyr.LAYER)
+    names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lyr.LAYER, tm.TIME) and fx.get("region")}
+    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION, lyr.LAYER, crd.CARD)
               and fx.get("at") and fx.get("at") not in (*ovl.PLACES, *cap.PLACES)}
     if not names:
         return {}
@@ -252,9 +301,9 @@ def short_regions(conn: sqlite3.Connection, moment_pk: int, effects: list[dict[s
                    layout: dict[str, Any]) -> dict[str, dict[str, float]]:
     """The boxes a Short depends on: those its zooms aim at, and its stack panels."""
     have = regions.get(conn, regions.scope_for(conn, moment_pk)[0])
-    names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lyr.LAYER) and fx.get("region")}
+    names = {fx.get("region") for fx in effects if fx.get("type") in (*motion.ZOOMS, lyr.LAYER, tm.TIME) and fx.get("region")}
     names |= {n for fx in effects if fx.get("type") == lay.FRAME for n in lay.shot_regions(fx)}
-    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION, lyr.LAYER)
+    names |= {fx.get("at") for fx in effects if fx.get("type") in (ovl.OVERLAY, txt.TEXT, cap.CAPTION, lyr.LAYER, crd.CARD)
               and fx.get("at") and fx.get("at") not in (*ovl.PLACES, *cap.PLACES)}
     names |= lay.used_regions(layout)
     return {n: have[n] for n in sorted(names) if n in have}
@@ -279,6 +328,8 @@ def visuals(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]]) -
             elif fx.get("region"):
                 missing.add(fx["region"])
         out.append(v)
+    out += [motion.Visual("hold", fx["t"], fx["d"], color="black") for fx in effects
+            if fx.get("type") == mus.HUSH and fx.get("style") == "black"]
     return out, missing
 
 

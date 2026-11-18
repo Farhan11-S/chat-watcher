@@ -45,6 +45,7 @@ class VoicesIn(BaseModel):
 
 class AutoEditIn(EditIn):
     intensity: str = "normal"
+    format: str = ""          # edit.formats: a format, "auto" (Claude picks) or "" (none)
     message: str = ""         # the director's words to the AI edit's session
     new: bool = False         # start a new session
 
@@ -105,7 +106,7 @@ def router(ctx: Ctx) -> APIRouter:
         try:
             if body.segments is not None:          # the page sends its edit; a bare message keeps the saved one
                 save_body(conn, pk, body)
-            t = direct(cfg, conn, pk, body.message, kind=body.kind, new=new, intensity=body.intensity,
+            t = direct(cfg, conn, pk, body.message, kind=body.kind, new=new, intensity=body.intensity, fmt=body.format,
                        runner=deps.claude if deps else None)
         except (EditError, MediaError) as e:
             return edit_error(e)

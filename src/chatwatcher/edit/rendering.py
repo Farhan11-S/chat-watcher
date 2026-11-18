@@ -11,17 +11,27 @@ from typing import Any, Callable
 
 from chatwatcher.config import Config
 from chatwatcher.edit import captions as cap
+from chatwatcher.edit import cards as crd
 from chatwatcher.edit import clipref as cr
 from chatwatcher.edit import layers as lyr
 from chatwatcher.edit import layout as lay
 from chatwatcher.edit import overlays as ovl
 from chatwatcher.edit import spots as spt
 from chatwatcher.edit import texts as txt
+from chatwatcher.edit import timing as tm
 from chatwatcher.edit import motion
 from chatwatcher.edit.clipref import TABLE, EditError, check_kind, clip_ref
 from chatwatcher.edit.editstore import current_layout
 from chatwatcher.edit.substate import current_subs, subs_rendered
 from chatwatcher.edit.validate import short_regions, short_visuals, split_at, used_regions, visuals
+
+
+def _aim(box: dict[str, float] | None, panels: list[lay.Panel] | None) -> tuple[float, float] | None:
+    """A region's middle on the output picture (a freeze pushes in to it), or None."""
+    if not box:
+        return None
+    cx, cy = box["x"] + box["w"] / 2, box["y"] + box["h"] / 2
+    return (cx, cy) if panels is None else lay.map_point(cx, cy, panels)
 
 
 def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind: str = "long",
@@ -56,9 +66,11 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         # where they start and end, and each part gets its own picture and zoom targets.
         frames = [f for f in clip_fx if f.get("type") == lay.FRAME and lay.shot_panels(f, boxes, sw, sh)]
         segs = split_at(segs, [t for f in frames for t in (f["t"], f["t"] + f["d"])], clip.fps)
+        # Slow motion, fast forward, ramps and freezes (edit.timing): parts at their own speed.
+        segs = tm.retime(segs, clip_fx, clip.fps, lambda name: _aim(boxes.get(name), ps))
         graph, pictures, no_region, ov_lists, ov_missing, text_lists, spot_lists = [], [], set(), [], set(), [], []
-        cap_lists, layer_lists = [], []
-        for s, e, _g in segs:
+        cap_lists, layer_lists, card_lists = [], [], []
+        for s, e, *_ in segs:
             fr = lay.frame_at((s + e) / 2, frames)
             pk = (lay.shot_panels(fr, boxes, sw, sh) if fr else None) or ps
             graph.append(lay.graph(pk, sw, sh))
@@ -67,6 +79,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
             text_lists.append(txt.placed(clip_fx, boxes, pk))
             spot_lists.append(spt.placed(clip_fx, pk))
             cap_lists.append(cap.placed(clip_fx, boxes, pk))
+            card_lists.append(crd.placed(clip_fx, boxes, pk))
             layer_lists.append(lyr.placed(clip_fx, boxes, pk, (sw, sh)))
             ov_missing |= gone
             pics, missing = short_visuals(clip_fx, boxes, pk)
@@ -75,6 +88,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         size = (lay.OUT_W, lay.OUT_H)
     else:
         boxes = used_regions(conn, moment_pk, stream_fx)
+        segs = tm.retime(segs, clip_fx, clip.fps, lambda name: _aim(boxes.get(name), None))
         pictures, no_region = visuals(clip_fx, boxes)
         pictures = [list(pictures) for _ in segs]          # one list per segment, for the transitions
         placed, ov_missing = ovl.placed(cfg, conn, clip_fx, boxes, None)
@@ -82,6 +96,7 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
         text_lists = [txt.placed(clip_fx, boxes, None)] * len(segs)
         spot_lists = [spt.placed(clip_fx, None)] * len(segs)
         cap_lists = [cap.placed(clip_fx, boxes, None)] * len(segs)
+        card_lists = [crd.placed(clip_fx, boxes, None)] * len(segs)
         layer_lists = [lyr.placed(clip_fx, boxes, None, (clip.width, clip.height))] * len(segs)
         size = (clip.width, clip.height)
     for k, v in motion.transitions(segs, clip_fx):
@@ -120,6 +135,23 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
                 sound_cues.append(SoundCue(at + intro_s, snd_file, fx.get("gain", 0) + ov["gain_db"], duck,
                                            min(fx["d"], ov["duration_s"])))
 
+    # The music bed: its drop on the moment it was placed on, dipping under her words.
+    from chatwatcher.edit import music as mus
+    bed, speech = None, []
+    mfx = next((f for f in clip_fx if f.get("type") == mus.MUSIC), None)
+    track = mus.get_track(conn, mfx["track"]) if mfx else None
+    if mfx and (not track or not mus.track_path(cfg, track).is_file()):
+        missing.add(mfx["track"])
+    elif mfx:
+        bed = mus.bed(mfx, track, mus.track_path(cfg, track), segs, clip.fps)
+        if bed:
+            bed.at += intro_s
+            bed.gain_db += float(track.get("gain_db") or 0)
+            words = cr.words(clip) or {}
+            speech = [(a + intro_s, b + intro_s)
+                      for a, b in mus.speech_on_edit(words.get("speech") or [], segs, clip.fps)]
+    mutes = [(a + intro_s, b + intro_s) for a, b in mus.hush_windows(clip_fx, segs, clip.fps)]
+
     last = [0.0]
 
     start = 0.3 if made_intro else 0.0     # rendering the intro took the first part of the bar
@@ -138,7 +170,8 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
                    sounds=sound_cues, visuals=pictures, subs=cues if sub_style["on"] else [],
                    sub_style=sub_style, size=size, font=cfg.subtitles.font,
                    intro=intro, intro_s=intro_s, layout=graph, title=title, hook=hook, overlays=ov_lists, texts=text_lists, spots=spot_lists,
-                   captions=cap_lists, layers=layer_lists, on_progress=progress)
+                   captions=cap_lists, layers=layer_lists, cards=card_lists, music=bed, speech=speech, mutes=mutes,
+                   on_progress=progress)
     finally:
         conn.execute(f"UPDATE {table} SET render_progress = NULL WHERE moment_id = ?", (moment_pk,))
     # The subtitles as a .srt on the edit's timeline (for YouTube's CC), burned in or not.
@@ -153,7 +186,8 @@ def render_moment(cfg: Config, conn: sqlite3.Connection, moment_pk: int, *, kind
     stream_subs, _ = subs_rendered(cfg, row, clip, kind)
     info = {"segments": stream, "effects": stream_fx, "regions": boxes, "subs": stream_subs, "subs_style": sub_style,
             "duration_s": round(r.duration_s, 2), "size_bytes": r.size_bytes, "sounds": len(sound_cues),
-            "visuals": sum(f.get("type") in (*motion.TYPES, lay.FRAME, "transition", ovl.OVERLAY, txt.TEXT, spt.SPOT, cap.CAPTION, lyr.LAYER) for f in clip_fx if any(s <= f["t"] < e for s, e, _ in segs)), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
+            "music": bed.path.stem if bed else None,
+            "visuals": sum(f.get("type") in (*motion.TYPES, lay.FRAME, "transition", ovl.OVERLAY, txt.TEXT, spt.SPOT, cap.CAPTION, lyr.LAYER, mus.HUSH, crd.CARD, "word", tm.TIME) for f in clip_fx if any(s <= f["t"] < e for s, e, *_ in segs)), "subtitles": len(shown) if sub_style["on"] else 0, "srt": bool(shown),
             "missing": sorted(missing | ov_missing), "missing_regions": sorted(no_region),
             "intro": intro_key, "intro_s": round(intro_s, 3)}
     if short:

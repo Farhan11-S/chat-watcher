@@ -276,10 +276,12 @@ def local(cues: list[dict[str, Any]], start: float, length: float) -> list[Shown
 
 
 def on_edit(cues: list[dict[str, Any]], segments: list[list[float]], seg_lengths: list[float]) -> list[Shown]:
-    """Every cue where it shows in the edit (once per segment it shows in)."""
+    """Every cue where it shows in the edit (once per segment it shows in; a retimed part,
+    edit.timing, at its speed)."""
     out, offset = [], 0.0
-    for (s, *_), length in zip(segments, seg_lengths):
-        out += [(offset + a, offset + b, t, who) for a, b, t, who in local(cues, s, length)]
+    for seg, length in zip(segments, seg_lengths):
+        s, k = seg[0], float(seg[3]) if len(seg) > 3 and seg[3] else 1.0
+        out += [(offset + a / k, offset + b / k, t, who) for a, b, t, who in local(cues, s, length * k)]
         offset += length
     return sorted(out, key=lambda x: (x[0], x[1]))
 
@@ -342,6 +344,9 @@ def ass(cues: list[Shown], style: dict[str, Any], width_px: int, height_px: int,
             f"Style: Callout,{font},{size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
             f"{outline:.1f},{shadow:.1f},5,0,0,0,1\n"
             f"Style: Label,{font},{size},&H00FFFFFF,&H000000FF,&H26000000,&H26000000,-1,0,0,0,100,100,0,0,3,"
+            f"{outline:.1f},0,5,0,0,0,1\n"
+            # word art's box (edit.wordart): libass's opaque box, coloured by \\3c
+            f"Style: Box,{font},{size},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,3,"
             f"{outline:.1f},0,5,0,0,0,1\n\n[Events]\n"
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
     body = ""

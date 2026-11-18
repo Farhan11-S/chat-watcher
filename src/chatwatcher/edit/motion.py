@@ -103,7 +103,9 @@ def flashes(t: float, visuals: list[Visual]) -> list[tuple[tuple[int, int, int],
     """(colour, opacity) of each flash showing at time t."""
     out = []
     for v in visuals:
-        if v.type in ("flash", "fadeout") and v.active(t):
+        if v.type == "hold" and v.active(t):          # a hush: the picture held at a colour
+            out.append((FLASH.get(v.color, FLASH["black"])[0], 1.0))
+        elif v.type in ("flash", "fadeout") and v.active(t):
             rgb, peak = FLASH.get(v.color, FLASH["white"])
             q = (t - v.t) / v.d
             out.append((rgb, peak * (q if v.type == "fadeout" else 1 - q)))
@@ -242,6 +244,13 @@ def video_filter(visuals: list[Visual], fps: float, length: float,
         if v.type == "blur":
             parts.append(f"boxblur=luma_radius=24:luma_power=1:chroma_radius=12:chroma_power=1"
                          f":enable='between(t,{v.t:.4f},{v.t + v.d:.4f})'")
+    for v in visuals:                          # a hush's black: solid, frame for frame
+        if v.type == "hold":
+            rgb = FLASH.get(v.color, FLASH["black"])[0]
+            first, last = max(0, math.ceil(v.t * fps - 1e-6)), min(frames - 1, math.ceil((v.t + v.d) * fps - 1e-6) - 1)
+            if last >= first:
+                parts.append(f"drawbox=x=0:y=0:w=iw:h=ih:t=fill:color=0x{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+                             f":enable='between(n,{first},{last})'")
     for v in visuals:
         if v.type not in ("flash", "fadeout"):
             continue

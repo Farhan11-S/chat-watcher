@@ -221,6 +221,27 @@ def test_add_channel_backfill_and_later_checks(env, tmp_path):
     assert len(due_channels(conn, 30)) == 1
 
 
+def test_title_match_queues_only_matching_streams(env, tmp_path):
+    cfg, conn = env
+    cfg.discover.title_match = r"\bgta\s*-?\s*(6|vi)\b|grand\s*theft\s*auto\s*(6|vi)\b"
+    yt = FakeYouTube(tmp_path, [entry("gta00000001", title="【GTA VI】FIRST DAY IN LEONIDA"),
+                                entry("gta00000002", title="#GTA6 day two"),
+                                entry("gta00000003", title="【Grand Theft Auto VI】heists"),
+                                entry("gtafive0001", title="【GTA V】roleplay"),
+                                entry("ramen000001", title="【Japanese Ramen Simulator】")])
+    _, res = add_channel(cfg, conn, "@usadapekora", backfill=10, ytdlp=yt)
+    assert res.queued == ["gta00000001", "gta00000002", "gta00000003"]
+    assert dict(res.skipped) == {"gtafive0001": "title doesn't match discover.title_match",
+                                 "ramen000001": "title doesn't match discover.title_match"}
+
+
+def test_bad_title_match_is_rejected():
+    from pydantic import ValidationError
+    from chatwatcher.config import DiscoverConfig
+    with pytest.raises(ValidationError):
+        DiscoverConfig(title_match="gta(")
+
+
 def test_check_failure_is_recorded(env, tmp_path):
     cfg, conn = env
     from chatwatcher.ingest.ytdlp import YtDlpError
@@ -255,6 +276,25 @@ def test_worker_runs_whole_pipeline(env, tmp_path):
 
     # Nothing left to do; a second pass is a no-op.
     assert Worker(cfg, deps=Deps(ytdlp=yt, claude=fr)).run(once=True) == 0
+
+
+def test_worker_reads_whole_stream_after_scoring(env, tmp_path):
+    cfg, conn = env
+    cfg.pipeline.auto_compile = True
+    yt = FakeYouTube(tmp_path, [entry("streamone01")])
+    add_channel(cfg, conn, "@usadapekora", backfill=1, ytdlp=yt)
+    Worker(cfg, deps=Deps(ytdlp=yt, claude=FakeRunner())).run(once=True)
+    rows = {r["stage"]: r for r in conn.execute("SELECT * FROM jobs")}
+    c = rows["compile"]
+    assert c["id"] < rows["clip"]["id"]                      # before the analyses: they get its context
+    assert jobs.job_params(c) == {"analyze_new": True, "auto": True}
+    # The fake stream has no captions yet: tried again in a few hours, not an error.
+    assert c["status"] == "pending" and c["run_after"] > jobs.sql_time(jobs.now() + timedelta(hours=2))
+    # A re-score doesn't read the stream again.
+    conn.execute("UPDATE jobs SET status = 'done' WHERE stage = 'compile'")
+    jobs.enqueue(conn, rows["score"]["video_id"], "score")
+    Worker(cfg, deps=Deps(ytdlp=yt, claude=FakeRunner())).run(once=True)
+    assert conn.execute("SELECT status FROM jobs WHERE stage = 'compile'").fetchone()[0] == "done"
 
 
 def test_worker_waits_for_unfinished_archive(env, tmp_path):

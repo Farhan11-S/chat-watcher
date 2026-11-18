@@ -16,9 +16,63 @@ export function fmt(t, d = 2) {
 export const r3 = v => Math.round(v * 1000) / 1000;
 export const clone = a => a.map(s => s.slice());
 export const cloneFx = a => a.map(f => ({ ...f }));
-export const total = () => S.segs.reduce((n, s) => n + s[1] - s[0], 0);
+// ── time effects (edit/timing.py): the kept segments cut where slow motion, fast forward,
+// ramps and freezes start and end, each part with its speed k (a freeze: one frame held).
+export function timeParts() {           // timing.retime
+  const fps = S.D.fps || 30, frame = 1 / fps, TI = S.D.time_info, out = [];
+  const marks = [], end = f => f.t + (f.style === "freeze" ? 0 : f.d);     // one that starts in another is left out
+  if (TI) for (const f of S.fx.filter(f => f.type === "time" && TI.styles.includes(f.style)).sort((a, b) => a.t - b.t))
+    if (!marks.length || f.t >= end(marks[marks.length - 1])) marks.push(f);
+  S.segs.forEach((seg, i) => {
+    const [s, e] = seg;
+    let cur = s;
+    const plain = (a, b) => { if (b - a >= frame / 2) out.push({ i, s: a, e: b, k: 1, f: null }); };
+    for (const f of marks) {
+      if (f.style === "freeze") {
+        const t = Math.min(f.t, e - frame);
+        if (!(s <= t && t < e) || t < cur - 1e-6) continue;
+        plain(cur, t);
+        out.push({ i, s: t, e: t + frame, k: frame / Math.max(f.d, frame), f, freeze: true });
+        cur = t + frame;
+        continue;
+      }
+      const a = Math.max(f.t, s, cur), b = Math.min(f.t + f.d, e);
+      if (b - a < 2 * frame) continue;
+      plain(cur, a);
+      const rate = f.rate || TI.rates[f.style][0];
+      if (f.style === "ramp") {
+        const n = Math.max(2, Math.min(TI.ramp_steps, Math.floor((b - a) / TI.ramp_step + 1e-6)));
+        for (let j = 0; j < n; j++)
+          out.push({ i, s: a + (b - a) * j / n, e: a + (b - a) * (j + 1) / n, k: TI.ramp_from * (rate / TI.ramp_from) ** (j / (n - 1)), f });
+      } else out.push({ i, s: a, e: b, k: rate, f });
+      cur = b;
+    }
+    plain(cur, e);
+  });
+  return out;
+}
+export const partLen = p => (p.e - p.s) / p.k;
+export const total = () => timeParts().reduce((n, p) => n + partLen(p), 0);
+export const partAt = (t, i = null) => timeParts().find(p => (i === null || p.i === i) && t >= p.s && t < p.e) || null;
+// The edit time of clip time t (in segment i while ▶ Play edit plays it: a little outside
+// it counts as its edge), or null; a freeze adds the time it has been held.
+export function editTime(t, i = null) {
+  const ps = timeParts();
+  let o = 0, first = null, last = null;
+  for (const p of ps) {
+    const L = partLen(p);
+    if (S.frozen && p.freeze && S.frozen.s === p.s) return o + Math.min(L, (performance.now() - S.frozen.since) / 1000);
+    if ((i === null || p.i === i) && t >= p.s && t < p.e) return o + (t - p.s) / p.k;
+    if (i !== null && p.i === i) { if (first === null) first = [o, p.s]; last = [o + L, p.e]; }
+    o += L;
+  }
+  if (i !== null && first && t >= S.segs[i][0] - 0.3 && t <= S.segs[i][1] + 0.3) return t < first[1] ? first[0] : last[0];
+  return null;
+}
 export const hold = () => { window.cwHold = true; };   // don't auto-reload the page under the editor
 export const sound = id => S.D.sounds.find(s => s.id === id);
+export const track = id => (S.D.music || []).find(m => m.id === id);
+export const musicFx = () => S.fx.find(f => f.type === "music");
 export const curFx = () => S.fx.find(f => f.id === S.selFx);
 export const kept = t => S.segs.some(s => t >= s[0] && t < s[1]);
 export const isVis = f => VIS.includes(f.type);
@@ -106,6 +160,42 @@ export function runsOf(line, on) {
   const out = [];
   line.split("*").forEach((part, i) => { if (i) on = !on; if (part) out.push([part, on]); });
   return [out, on];
+}
+// word art (edit/wordart.py): where a word is in a caption, counted in letters (spaces and
+// *stars* not counted), and the wrapped rows split into [text, highlighted, art] pieces.
+const ART_W = "[\\p{L}\\p{N}_]";
+export function artFind(text, word) {
+  const plain = text.replace(/\*/g, ""), esc = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`(?<!${ART_W})${esc}(?!${ART_W})`, "iu").exec(plain) || new RegExp(esc.replace(/ /g, "\\s*"), "iu").exec(plain);
+  if (!m) return null;
+  const g0 = [...plain.slice(0, m.index).replace(/ /g, "")].length;
+  return [g0, g0 + [...m[0].replace(/ /g, "")].length];
+}
+export function artPieces(rows, spans) {
+  const flat = [];
+  let on = false;
+  rows.forEach((row, r) => {
+    const [ps, after] = runsOf(row, on);
+    on = after;
+    for (const [text, hi] of ps) for (const ch of text) flat.push([r, ch, hi, null]);
+  });
+  let g = 0;
+  for (const c of flat) if (c[1] !== " ") { const s = spans.find(([a, b]) => a <= g && g < b); c[3] = s ? s[2] : null; g++; }
+  flat.forEach((c, i) => {
+    if (c[1] !== " ") return;
+    let prev = null, next = null;
+    for (let j = i - 1; j >= 0; j--) if (flat[j][1] !== " ") { prev = flat[j]; break; }
+    for (let j = i + 1; j < flat.length; j++) if (flat[j][1] !== " ") { next = flat[j]; break; }
+    if (prev && next && prev[3] !== null && prev[3] === next[3] && prev[0] === c[0] && next[0] === c[0]) c[3] = prev[3];
+  });
+  const out = rows.map(() => []);
+  for (let [r, ch, hi, art] of flat) {
+    if (art && art.upper) ch = ch.toUpperCase();
+    const row = out[r], last = row[row.length - 1];
+    if (last && last[1] === hi && last[2] === art) last[0] += ch;
+    else row.push([ch, hi, art]);
+  }
+  return out;
 }
 export const curSub = () => S.subs.find(c => c.id === S.selSub);
 export const subAt = t => S.subs.find(c => c.t0 <= t && t < c.t1);

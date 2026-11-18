@@ -26,9 +26,9 @@ no build step. Read only the feature you are changing; the map below says where 
 | Claude's analysis of a clip | `analyze/` — `claude_runner.py` (`claude -p`), `prompts.py`, `sheet.py` (contact sheet), `service.py` |
 | Read the whole stream: one Claude call gives compilation ideas, moments chat missed (moments of kind `missed`, ranks 501+) and the stream's context (fed to every clip analysis) | `compile/` — `speech.py` ("Listen first": Whisper on the whole stream's audio in resumable parts → `speech.jsonl`, preferred over captions everywhere via `stream_transcript`), `chat.py` (thin the chat), `prompt.py` (timeline, token budget, schema), `parse.py` (check the answer), `service.py` (run, store, load, `context_text`); the on-demand `compile` job (`jobs.VIDEO_STAGES`, params `listen`, `analyze_new`, `reanalyze`) |
 | Transcripts and subtitles | `subs/` — `transcribe.py` (Whisper), `align.py`, `lines.py`, `polish.py`, `names.py`, `speakers.py` (VTubers, colours) |
-| The clip editor and renders | `edit/` — `service.py` (re-exports only), `clipref.py` (clip + edit rows, file names), `validate.py` (checking segments and effects), `substate.py` (subtitles as the editor sees them), `editstore.py` (load/save, tables `edits` and `shorts`), `rendering.py` (render a saved edit), `render.py` (ffmpeg graph), `pieces.py`, `audio.py`, `captions.py`, `layout.py` (Shorts), `motion.py`, `spots.py`, `texts.py`, `layers.py` (a region of the clip over the picture), `regions.py`, `proxy.py` |
-| AI edit and Direct | `edit/autoedit/` — `prompt.py` (system prompt, answer schema), `plan.py` (reading Claude's answer), `assemble.py` (the cut), `camera.py` (shots), `effects.py` (sounds, overlays, texts, spots), `run.py` (gather, ask, apply); `edit/direct.py` |
-| Sound and overlay library | `edit/sounds.py`, `edit/overlays.py` |
+| The clip editor and renders | `edit/` — `service.py` (re-exports only), `clipref.py` (clip + edit rows, file names), `validate.py` (checking segments and effects), `substate.py` (subtitles as the editor sees them), `editstore.py` (load/save, tables `edits` and `shorts`), `rendering.py` (render a saved edit), `render.py` (ffmpeg graph), `pieces.py`, `audio.py`, `captions.py`, `cards.py` (full-screen cards: YOU DIED, poster, one line; comment stickers; drawn by libass above the captions), `wordart.py` (one word of a caption in its own look: a colour box, slime, glow, fire…, the `word` effect; drawn inside the caption by `captions.py`), `timing.py` (time effects: slow, fast, ramp, freeze; `retime` cuts the segments into parts with a speed, which `render.lengths`/`place` read), `layout.py` (Shorts), `motion.py`, `spots.py`, `texts.py`, `layers.py` (a region of the clip over the picture), `regions.py`, `proxy.py` |
+| AI edit and Direct | `edit/formats.py` (named formats: eurobeat, tuff, hopecore, dreamcore, demotivational, YOU DIED, sitcom; a brief added to the prompt, picked next to ✨ AI edit); `edit/autoedit/` — `prompt.py` (system prompt, answer schema), `plan.py` (reading Claude's answer), `assemble.py` (the cut), `camera.py` (shots), `effects.py` (sounds, overlays, texts, spots), `run.py` (gather, ask, apply); `edit/direct.py` |
+| Sound, music and overlay library | `edit/sounds.py`, `edit/overlays.py`, `edit/music.py` (whole tracks with tempo, beats and drop found on import; the `music` effect = a bed whose drop lands on its `t`, dipping under her words; the `hush` effect = silence, or silence + black) |
 | Brand, intro, thumbnail | `brand/` — `brand.py` (also the sticker library), `intro.py`, `sfx.py`, `art.py`, `service.py`; thumbnails: `layers.py` (the layer model), `canvas.py` (draws layers), `cutout.py` (her cut-out, anime-seg ONNX model in `data/models`), `thumbai.py` (Claude composes versions; the on-demand `thumb` job), `thumb.py` (text, sizes, the Short layout) |
 | 3D stage: a moment re-enacted by her official MMD model | `stage/` — `models.py` (the model library in `<data_dir>/mmd`, zip import, profiles), `script.py` (what a scene can say, `validate`), `track.py` (the cut's sound, letter-timed mouth, laughs; your subtitles' words where Whisper misheard; `stage_track.json`), `mouth.py` (mouth shapes from how words sound: CMU dictionary, stress, emphasis from quotes/*stars*/loudness), `store.py` (table `stages`, page state), `run.py` (Claude writes the scene, you direct it; table `stage_chats`), `browser.py` (headless Chrome over DevTools), `export.py` (the `3d` job → `stage.mp4`) |
 | Google Drive upload | `upload/drive.py`, `upload/login.py` |
@@ -47,7 +47,7 @@ the worker status and the Drive cache. Never use module globals for these: tests
 | `/clips`, `/moment/{pk}`, keep/skip, re-cut | `routes/clips.py` | `clips.html`, `moment.html` | `app.js` |
 | Editor API (`/api/moment/…`, `/moment/{pk}/edit`, `render`, `autoedit`, `direct`, `subs`, …) | `routes/editor.py` | `moment.html` | `editor/main.js` (modules, below), `editor.css` |
 | `/brand`, stickers, intro and thumbnail endpoints | `routes/brand.py` | `brand.html`, `moment.html` | `maker.js` (intro), `thumb.js` (thumbnail layers) |
-| `/sounds`, `/overlays/…` | `routes/library.py` | `sounds.html` | |
+| `/sounds`, `/music/…`, `/overlays/…` | `routes/library.py` | `sounds.html` | |
 | `/vtubers` | `routes/vtubers.py` | `vtubers.html` | |
 | `/channels` | `routes/channels.py` | `channels.html` | |
 | `/jobs`, `/api/version` | `routes/queue.py` | `jobs.html` | |
@@ -63,13 +63,13 @@ the worker status and the Drive cache. Never use module globals for these: tests
   | Module | What |
   |---|---|
   | `state.js` | page elements, constants, `S` (the edit), `call` |
-  | `util.js` | helpers, colours, subtitle wrapping (`subs/lines.py`), status lines, `body()` (what is saved) |
+  | `util.js` | helpers, colours, subtitle wrapping (`subs/lines.py`), word art's split (`edit/wordart.py`), time effects' parts and edit time (`edit/timing.py`), status lines, `body()` (what is saved) |
   | `preview.js` | camera (`edit/motion.py`), Short panels (`edit/layout.py`), spotlights, the stage canvas |
   | `audio.js`, `playback.js` | Web Audio sounds; seek, Play edit, toolbar buttons |
-  | `captions.js` | speakers and colours, caption styles (`edit/captions.py`), the subtitle preview |
+  | `captions.js` | speakers and colours, caption styles (`edit/captions.py`), word art's look, the subtitle preview |
   | `io.js` | autosave, render request and status |
   | `editing.js` | undo, segment / sound / effect operations, subtitle line operations |
-  | `overlays.js` | overlay clips, text callouts, spotlights and their drag handles |
+  | `overlays.js` | overlay clips, text callouts, cards, spotlights and their drag handles |
   | `timeline.js` | time ↔ x, drawing the lanes, hit-testing |
   | `transcript.js` | the list of lines beside the player, the Transcript tab |
   | `panels.js` | side panel tabs and menus, the Selected panel, people, the subtitle bar |

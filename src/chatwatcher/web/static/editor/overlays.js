@@ -397,9 +397,9 @@ try { lastOverlay = localStorage.getItem("cw-ed-overlay") || ""; } catch (e) {}
 export function addOverlay() {
   const list = S.D.overlays || [];
   if (!list.length) { flash("No overlays yet: add green-screen clips on the Library page (Overlays)."); return; }
-  const ov = overlayOf(lastOverlay) || list[0], t = video.currentTime;
+  const ov = overlayOf(lastOverlay) || list[0], t = video.currentTime, at = ov.opaque || ov.insert ? "fill" : "full";
   const f = { id: "u" + Math.random().toString(36).slice(2, 8), type: "overlay", overlay: ov.id, t: r3(t),
-              d: r3(Math.min(ov.length, S.D.duration - t)), at: "full", dx: 0, dy: 0, size: ovSize("full", ov), gain: 0,
+              d: r3(Math.min(ov.length, S.D.duration - t)), at, dx: 0, dy: 0, size: ovSize(at, ov), gain: 0,
               mode: "both", by: "you", why: "" };
   if (f.d < 0.1) { flash("Too close to the end of the clip."); return; }
   pushUndo();
@@ -446,7 +446,146 @@ export function setOverlay(id) {
   if (!ov || !f) return;
   lastOverlay = id;
   try { localStorage.setItem("cw-ed-overlay", id); } catch (e) {}
-  const at = ov.insert && f.at !== "fill" ? "fill" : f.at || "full";     // an insert is a cutaway
+  const at = (ov.insert || ov.opaque) && f.at !== "fill" ? "fill" : f.at || "full";   // an insert or opaque clip is a cutaway
   editFx({ overlay: id, at, d: r3(Math.min(ov.length, ov.insert ? 4 : ov.length, S.D.duration - f.t)), size: ovSize(at, ov) });
   if (ov.sound) buffer("ov:" + id).catch(() => {});
+}
+
+// Cards (edit/cards.py): a full screen ("YOU DIED", a poster, a plain line) or a comment
+// sticker, above the captions. Drawn as DOM over the picture, sized like the render: font
+// sizes are shares of the picture's shorter side (× ASS_TO_CSS: libass's size is the line
+// height), and they fade, grow and reveal on the same clock. Change both together.
+const cdLayer = el("div", "ed-cards");
+subLayer.parentElement.insertBefore(cdLayer, txLayer.nextSibling);
+const cdEls = new Map();
+export function cardLook(f) {
+  const CI = S.D.card_info, st = CI.styles[f.style] || CI.styles.flat;
+  let color = CI.colors[f.color] || CI.colors[st.color];
+  const bgName = f.bg in CI.bgs ? f.bg : st.bg, bg = CI.bgs[bgName] || "";
+  if (f.style === "flat" && bg && bg.toUpperCase() === color.toUpperCase()) color = bg.toUpperCase() === "FFFFFF" ? "000000" : "FFFFFF";
+  return { st, color, bg, text: f.text || st.text };
+}
+export function greedy(text, width) {
+  const out = [];
+  for (const w of text.split(/\s+/).filter(Boolean)) {
+    if (out.length && out[out.length - 1].length + 1 + w.length <= width) out[out.length - 1] += " " + w;
+    else out.push(w);
+  }
+  return out.length ? out : [""];
+}
+export function posterWords(text) {       // cards.poster_words
+  const words = [], hi = new Set();
+  let inside = false;
+  text.toUpperCase().split(/\s+/).filter(Boolean).forEach((raw, k) => {
+    if (raw.startsWith("*")) inside = true;
+    if (inside) hi.add(k);
+    if (raw.endsWith("*") && (raw.length > 1 || !raw.startsWith("*"))) inside = false;
+    words.push(raw.replace(/^\*+|\*+$/g, "") || raw);
+  });
+  const rows = [];
+  let k = 0;
+  for (const line of greedy(words.join(" "), S.D.card_info.poster_line)) {
+    const n = line.split(" ").length;
+    rows.push(words.slice(k, k + n));
+    k += n;
+  }
+  if (!hi.size && rows.length) for (let i = words.length - rows[rows.length - 1].length; i < words.length; i++) hi.add(i);
+  return [rows, hi];
+}
+const posterStep = (n, d) => Math.min(Math.max(0.5 * d / Math.max(n, 1), S.D.card_info.poster_step[0]), S.D.card_info.poster_step[1]);
+
+function cardEl(f, look, unit) {
+  const key = [f.style, look.text, look.color, look.bg, f.who || "", Math.round(unit)].join("|");
+  const rec = cdEls.get(f.id);
+  if (rec && rec.key === key) return rec;
+  if (rec) rec.el.remove();
+  const e = el("div", "ed-card"), fs = look.st.size * unit, css = fs * ASS_TO_CSS;
+  const r = { el: e, key, parts: {} };
+  const add = (name, cls, style) => { const p = el("div", cls); Object.assign(p.style, style || {}); e.appendChild(p); r.parts[name] = p; return p; };
+  if (look.bg) add("bg", "ed-card-bg", { background: "#" + look.bg });
+  if (f.style === "died") {
+    if (!look.bg) add("dim", "ed-card-bg", { background: "#000" });
+    add("band", "ed-card-band", { left: -fs + "px", right: -fs + "px", height: fs * 2.4 + "px", marginTop: -fs * 1.2 + "px",
+                                   filter: `blur(${fs * 0.35}px)` });
+    add("text", "ed-card-died", { fontSize: css + "px", letterSpacing: fs * 0.08 + "px", color: "#" + look.color }).textContent = look.text.toUpperCase();
+  } else if (f.style === "flat") {
+    const t = add("text", "ed-card-flat", { fontSize: css + "px", lineHeight: fs + "px", color: "#" + look.color });
+    t.textContent = greedy(look.text.toUpperCase(), 16).join("\n");
+  } else if (f.style === "poster") {
+    const [rows, hi] = posterWords(look.text), t = add("text", "ed-card-poster", { fontSize: css + "px", lineHeight: fs + "px" });
+    r.words = [];
+    let i = 0;
+    for (const row of rows) {
+      const line = el("div");
+      row.forEach((w, j) => {
+        const s = el("span", "", w + (j < row.length - 1 ? " " : ""));
+        s.style.color = hi.has(i) ? "#" + look.color : "#fff";
+        r.words.push(s); line.appendChild(s); i++;
+      });
+      t.appendChild(line);
+    }
+  } else {                                                    // comment
+    const b = add("bubble", "ed-card-bubble", { padding: fs * 0.55 + "px", gap: fs * 0.55 + "px", borderRadius: fs * 0.7 + "px" });
+    const av = el("div", "ed-card-avatar");
+    Object.assign(av.style, { width: fs * 1.5 + "px", height: fs * 1.5 + "px" });
+    const body = el("div", "ed-card-comment");
+    Object.assign(body.style, { fontSize: css + "px", lineHeight: fs * 1.2 + "px", color: "#" + look.color });
+    if (f.who) {
+      const who = el("div", "ed-card-who", `Reply to ${f.who}'s comment`);
+      who.style.fontSize = css * 0.62 + "px";
+      who.style.lineHeight = fs * 0.62 * 1.25 + "px";
+      body.appendChild(who);
+    }
+    body.appendChild(document.createTextNode(greedy(look.text, S.D.card_info.comment_line).slice(0, 3).join("\n")));
+    b.append(av, body);
+  }
+  cdLayer.appendChild(e);
+  cdEls.set(f.id, r);
+  return r;
+}
+export function drawCards() {
+  const t = video.currentTime;
+  const on = S.regionMode || !video.videoWidth || !S.D.card_info ? []
+    : S.fx.filter(f => f.type === "card" && keptFx(f) && t >= f.t && t < f.t + f.d);
+  const ids = new Set(on.map(f => f.id));
+  for (const [id, r] of cdEls) if (!ids.has(id)) { r.el.remove(); cdEls.delete(id); }
+  cdLayer.hidden = !on.length;
+  if (!on.length) return;
+  const box = viewBox(), CI = S.D.card_info;
+  place(cdLayer, box);
+  const unit = Math.min(box.width, box.height);
+  for (const f of on) {
+    const look = cardLook(f), r = cardEl(f, look, unit), P = r.parts;
+    const c = t - f.t, left = f.t + f.d - t, fs = look.st.size * unit;
+    const out = Math.min(1, left / Math.max(0.001, Math.min(CI.fade_ms, f.d * 1000 / 3) / 1000));
+    const fadeIn = ms => Math.min(1, c / (ms / 1000));
+    if (P.bg) P.bg.style.opacity = (f.style === "poster" ? 1 : fadeIn(CI.fade_ms)) * out;
+    if (f.style === "died") {
+      if (P.dim) P.dim.style.opacity = CI.dim * fadeIn(CI.died_fade_ms / 2) * out;
+      P.band.style.opacity = 0.78 * fadeIn(CI.died_fade_ms / 2) * out;
+      P.text.style.opacity = fadeIn(CI.died_fade_ms) * out;
+      P.text.style.transform = `translate(-50%, -50%) scale(${1 + (CI.died_grow - 1) * Math.min(1, c / f.d)})`;
+    } else if (f.style === "flat") P.text.style.opacity = fadeIn(CI.fade_ms) * out;
+    else if (f.style === "poster") {
+      const k = Math.floor(c / posterStep(r.words.length, f.d));
+      r.words.forEach((s, i) => { s.style.opacity = i <= k ? (k >= r.words.length - 1 ? out : 1) : 0; });
+    } else {
+      const [cx, cy] = overlayCentre(f, t), p = fadeIn(CI.pop_ms);
+      Object.assign(P.bubble.style, { left: cx * box.width + "px", top: cy * box.height + "px", opacity: p * out,
+                                       transform: `translate(-50%, -50%) translateY(${fs * 0.4 * (1 - p)}px)` });
+    }
+  }
+}
+export function addCard(style = "died") {
+  const t = video.currentTime, CI = S.D.card_info, st = CI.styles[style];
+  const f = { id: "u" + Math.random().toString(36).slice(2, 8), type: "card", t: r3(t), d: r3(Math.min(st.d, S.D.duration - t)),
+              style, text: st.text, color: st.color, bg: st.bg, by: "you", why: "" };
+  if (style === "comment") Object.assign(f, { who: "", at: "middle", dx: 0, dy: CI.default_dy.comment });
+  if (f.d < CI.d[1]) { flash("Too close to the end of the clip."); return; }
+  pushUndo();
+  S.fx.push(f);
+  S.selFx = f.id;
+  changed();
+  const input = $("[data-card-text]");
+  if (input) { input.focus(); input.select(); }
 }

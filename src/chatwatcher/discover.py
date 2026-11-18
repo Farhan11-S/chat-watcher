@@ -115,7 +115,9 @@ def _process(cfg: Config, conn: sqlite3.Connection, channel: sqlite3.Row, listin
         if already:
             continue
         reason = None
-        if is_members_only(e) and not cfg.youtube.cookies_file:
+        if cfg.discover.title_match and not re.search(cfg.discover.title_match, e.get("title") or "", re.I):
+            reason = "title doesn't match discover.title_match"
+        elif is_members_only(e) and not cfg.youtube.cookies_file:
             reason = "members-only (set youtube.cookies_file from a member account to include)"
         elif (e.get("duration") or 0) and e["duration"] < cfg.discover.min_duration_s:
             reason = f"shorter than {cfg.discover.min_duration_s // 60} min"

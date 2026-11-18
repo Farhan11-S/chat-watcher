@@ -66,6 +66,19 @@ class DiscoverConfig(_Section):
     streams_per_check: int = Field(15, ge=1, le=50)
     min_duration_s: int = Field(600, ge=0)     # ignore streams shorter than this
     default_backfill: int = Field(1, ge=0)     # finished streams to queue when a channel is added
+    # Only queue streams whose title matches this regex (case-insensitive); the rest are marked
+    # skipped and never fetched. "" = every stream. E.g. focus on one game's launch week.
+    title_match: str = ""
+
+    @field_validator("title_match")
+    @classmethod
+    def _valid_regex(cls, v: str) -> str:
+        import re
+        try:
+            re.compile(v)
+        except re.error as e:
+            raise ValueError(f"not a valid regex: {e}") from e
+        return v
 
 
 class PipelineConfig(_Section):
@@ -77,6 +90,12 @@ class PipelineConfig(_Section):
     # Moments that aren't downloaded get a low-res, video-only preview so Claude can look at
     # them before you decide (only the frames are kept). 0 = analyse downloaded clips only.
     preview_height: int = Field(360, ge=0, le=1080)
+    # ✨ Read the whole stream (the compile job) by itself once a stream is scored, before its
+    # moments are analysed, so every analysis gets the stream's context; the moments chat missed
+    # are then analysed too. compile_listen: Whisper on the whole audio first (CPU, about half
+    # the stream's length; other jobs go in between) instead of YouTube's captions.
+    auto_compile: bool = False
+    compile_listen: bool = False
 
 
 class ScoringConfig(_Section):

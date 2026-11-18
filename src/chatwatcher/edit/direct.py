@@ -165,31 +165,39 @@ def _summary(r: ae.Result) -> str:
     bits = ["your cut kept as it is" if r.raw.get("keep_cut") else "",
             f"cut {p.cut_s:.0f} s" if p.cut_s >= 1 else "",
             f"{c['camera']} shot{'s' * (c['camera'] != 1)}" if c.get("camera") else "",
+            "music" if c.get("music") else "",
             f"{c['sounds']} sound{'s' * (c['sounds'] != 1)}" if c.get("sounds") else "",
+            f"{c['hushes']} hush{'es' * (c['hushes'] != 1)}" if c.get("hushes") else "",
             f"{c['hits']} shake/flash" if c.get("hits") else "",
             f"{c['layouts']} layout change{'s' * (c['layouts'] != 1)}" if c.get("layouts") else "",
             f"{c['overlays']} overlay{'s' * (c['overlays'] != 1)}" if c.get("overlays") else "",
             f"{c['layers']} layer{'s' * (c['layers'] != 1)}" if c.get("layers") else "",
             f"{c['cutaways']} cutaway{'s' * (c['cutaways'] != 1)}" if c.get("cutaways") else "",
             f"{c['texts']} text{'s' * (c['texts'] != 1)}" if c.get("texts") else "",
+            f"{c['cards']} card{'s' * (c['cards'] != 1)}" if c.get("cards") else "",
             f"{c['spots']} spotlight{'s' * (c['spots'] != 1)}" if c.get("spots") else "",
             f"{c['captions']} caption style{'s' * (c['captions'] != 1)}" if c.get("captions") else "",
+            f"{c['words']} word art" if c.get("words") else "",
+            f"{c['time']} time effect{'s' * (c['time'] != 1)}" if c.get("time") else "",
             "a cold open" if p.cold_open else ""]
-    return ", ".join(b for b in bits if b)
+    from chatwatcher.edit import formats
+    used = str(r.raw.get("format") or "").strip().lower()
+    head = f"as {formats.FORMATS[used]['label']}" if used in formats.FORMATS else ""
+    return ", ".join(b for b in [head, *bits] if b)
 
 
 def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str = "", *, kind: str = "short",
            new: bool = False, intensity: str = "normal", runner: ClaudeRunner | None = None,
-           captions_on: bool = True) -> Turn:
+           captions_on: bool = True, fmt: str = "") -> Turn:
     """Send the director's message (empty = just make the edit) to the edit's session; a
     new session when there's none yet or new=True. Saves the edit Claude makes."""
     message = str(message or "").strip()[:MAX_MESSAGE]
     from chatwatcher.edit import inserts
     urls, got, failed = inserts.links(message), [], []
     if urls:
-        ae.material(cfg, conn, moment_pk, kind, intensity)   # fails early (no words, Claude off) before downloading
+        ae.material(cfg, conn, moment_pk, kind, intensity, fmt)   # fails early (no words, Claude off) before downloading
         got, failed = inserts.fetch_all(cfg, conn, moment_pk, urls)
-    m = ae.material(cfg, conn, moment_pk, kind, intensity)
+    m = ae.material(cfg, conn, moment_pk, kind, intensity, fmt)
     brought = _brought(got, failed)
     web = bool(message)
     session, history = thread(conn, moment_pk, kind)
@@ -198,7 +206,8 @@ def direct(cfg: Config, conn: sqlite3.Connection, moment_pk: int, message: str =
     if not fresh:
         if not message:
             raise DirectError("Write what you want changed.", "invalid")
-        prompt = FOLLOW_UP.format(message=message, state=_state(conn, moment_pk, kind, m, history)) + brought
+        prompt = (FOLLOW_UP.format(message=message, state=_state(conn, moment_pk, kind, m, history))
+                  + m.format_brief() + brought)
         try:
             res = ae.ask(cfg, m, prompt, runner=runner, images=False, chat=True, session=session, resume=True,
                          web=web)

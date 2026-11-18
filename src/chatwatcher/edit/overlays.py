@@ -119,6 +119,39 @@ def key_color(src: Path, at: float) -> str:
     return f"{c[0]:02X}{c[1]:02X}{c[2]:02X}"
 
 
+def screen_color(src: Path, duration: float, frames: int = 8) -> str:
+    """The screen colour, from several frames across the clip: the frames whose four corners
+    are cleanly one screen colour (key_color) agree on it; when none is clean (an effect
+    crosses a corner in every frame), the colour most corner pixels share. Raises
+    OverlayError when there's no screen."""
+    clean, px = [], []
+    for k in range(frames):
+        at = duration * (k + 0.5) / frames
+        try:
+            clean.append(key_color(src, at))
+        except OverlayError:
+            pass
+        out = _run(["-ss", f"{at:.3f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=64:36",
+                    "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], timeout=60)
+        if out.returncode == 0 and len(out.stdout) >= 64 * 36 * 3:
+            f = np.frombuffer(out.stdout[:64 * 36 * 3], dtype=np.uint8).reshape(36, 64, 3).astype(int)
+            px.append(np.concatenate([f[:4, :4], f[:4, -4:], f[-4:, :4], f[-4:, -4:]]).reshape(-1, 3))
+    if clean:
+        rgb = np.median([[int(c[i:i + 2], 16) for i in (0, 2, 4)] for c in clean], axis=0).astype(int)
+        return f"{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+    if not px:
+        raise OverlayError("this isn't a video file ffmpeg can read")
+    allpx = np.concatenate(px)
+    sat = (allpx.max(axis=1) - allpx.min(axis=1) >= 90) & (allpx.max(axis=1) >= 120)
+    if sat.mean() >= 0.4:
+        c = np.median(allpx[sat], axis=0).astype(int)
+        if (np.abs(allpx - c).max(axis=1) <= 60).mean() >= 0.4:
+            return f"{c[0]:02X}{c[1]:02X}{c[2]:02X}"
+    c = np.median(allpx, axis=0).astype(int)
+    raise OverlayError(f"the corners aren't a green (or blue) screen (they're mostly #{c[0]:02X}{c[1]:02X}{c[2]:02X}); "
+                       "use a clip with a solid screen colour behind the effect, or pick another background")
+
+
 def _level(src: Path, dest: Path) -> bool:
     """Its sound as FLAC, levelled like a sound effect but not trimmed (it must stay in
     sync with the picture). False when it has no sound."""
@@ -141,9 +174,29 @@ def _level(src: Path, dest: Path) -> bool:
     return True
 
 
+KEYS = {"auto": "a green (or blue) screen, found from the corners",
+        "black": "black: a light effect (hearts, sparkles, glow) made see-through by its brightness",
+        "none": "none: an opaque clip (a time card, a meme clip) shown full screen as a cutaway"}
+NO_KEY, LUMA_KEY = "none", "luma"      # key_color of an opaque clip, and of a black-background one
+LUMA_GAIN = 2.0                       # black mode: alpha = brightest channel × this
+
+
+def luma_filter() -> str:
+    """Black background → see-through: alpha from the brightest channel (so dark red text
+    still shows), the colour lifted to match, so it lays over the picture like a screen blend."""
+    a = f"min(255,max(r(X,Y),max(g(X,Y),b(X,Y)))*{LUMA_GAIN})"
+    lift = lambda c: f"min(255,{c}(X,Y)*255/max(1,{a}))"     # noqa: E731
+    return f"format=rgba,geq=r='{lift('r')}':g='{lift('g')}':b='{lift('b')}':a='{a}'"
+
+
+def is_opaque(ov: dict[str, Any] | None) -> bool:
+    return bool(ov) and ov.get("key_color") == NO_KEY
+
+
 def import_overlay(cfg: Config, conn: sqlite3.Connection, src: Path, *, original: str, name: str = "",
-                   description: str = "", tags: str = "", source: str = "") -> dict[str, Any]:
-    """Key a green-screen clip into data/overlays/<id>.webm (+ <id>.flac) and add it."""
+                   description: str = "", tags: str = "", source: str = "", key: str = "auto") -> dict[str, Any]:
+    """Key a clip into data/overlays/<id>.webm (+ <id>.flac) and add it. key: auto (a green
+    or blue screen), black (a light effect on black), none (opaque, shown as a cutaway)."""
     try:
         info = probe(src)
     except MediaError as e:
@@ -152,7 +205,11 @@ def import_overlay(cfg: Config, conn: sqlite3.Connection, src: Path, *, original
         raise OverlayError("this file has no picture")
     if info.duration_s > MAX_SECONDS:
         raise OverlayError(f"overlays must be under {MAX_SECONDS:.0f} s (this one is {info.duration_s:.0f} s)")
-    color = key_color(src, min(0.2, info.duration_s / 3))
+    key = key if key in KEYS else "auto"
+    color = screen_color(src, info.duration_s) if key == "auto" else (NO_KEY if key == "none" else LUMA_KEY)
+    spill = "blue" if key == "auto" and int(color[4:6], 16) > int(color[2:4], 16) else "green"
+    keyed = {"auto": f"chromakey=0x{color}:{SIMILARITY}:{BLEND},despill=type={spill},format=yuva420p",
+             "black": f"{luma_filter()},format=yuva420p", "none": "format=yuv420p"}[key]
     name = (name or Path(original).stem).strip()[:80] or "overlay"
     oid = make_id(conn, name)
     folder = overlays_dir(cfg)
@@ -160,7 +217,7 @@ def import_overlay(cfg: Config, conn: sqlite3.Connection, src: Path, *, original
     video, tmp = folder / f"{oid}.webm", folder / f".{oid}.tmp.webm"
     h = min(MAX_HEIGHT, info.height - info.height % 2)
     out = _run(["-y", "-i", str(src), "-an", "-vf",
-                f"scale=-2:{h},chromakey=0x{color}:{SIMILARITY}:{BLEND},format=yuva420p",
+                f"scale=-2:{h},{keyed}",
                 "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", "-deadline", "good", "-cpu-used", "4",
                 "-auto-alt-ref", "0", "-row-mt", "1", str(tmp)])
     if out.returncode != 0 or not tmp.is_file():

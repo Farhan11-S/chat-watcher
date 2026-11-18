@@ -5,10 +5,11 @@ import {
   canvas, ctx, laneOf, scroller, spacer, video,
 } from "./state.js";
 import {
-  beatColor, curFx, curSub, cutInto, fmt, isVis, kept, keptFx, nice, overlayOf, sound, total,
-  transOf,
+  beatColor, curFx, curSub, cutInto, editTime, fmt, isVis, kept, keptFx, musicFx, nice, overlayOf, sound, total,
+  track, transOf,
 } from "./util.js";
 import { FULL } from "./preview.js";
+import { musicSpans } from "./audio.js";
 import { cueColor } from "./captions.js";
 
 // ── geometry: canvas covers the visible part; the spacer gives the scroll width ──
@@ -146,6 +147,29 @@ function drawFx(x, t0, t1, w) {
     ctx.fillRect(Math.round(x(t)), Y_FX + 1, 1, h);
   }
   ctx.globalAlpha = 1;
+  // the music bed: a band where it plays (in the kept parts), its drop as a ♪ marker
+  const mf = musicFx();
+  if (mf) {
+    const tr = track(mf.track), on = mf.id === S.selFx, col = on ? S.C.sel : mf.by === "claude" ? S.C.cool : S.C.hot;
+    ctx.fillStyle = col;
+    ctx.globalAlpha = 0.22;
+    for (const [a, b] of musicSpans()) {
+      if (x(b) < 0 || x(a) > w) continue;
+      ctx.fillRect(x(a), Y_FX + 3, Math.max(1, x(b) - x(a)), ROW.fx - 6);
+    }
+    const a = x(mf.t);
+    if (a > -60 && a < w + 10) {
+      ctx.globalAlpha = kept(mf.t) ? 1 : 0.35;
+      ctx.fillRect(Math.round(a), Y_FX + 2, 2, ROW.fx - 4);
+      ctx.font = "600 13px system-ui, sans-serif";
+      ctx.fillText("♪", a + 4, mid + 5);
+      ctx.font = (on ? "600 " : "") + "11px system-ui, sans-serif";
+      ctx.fillStyle = S.C.text2;
+      ctx.fillText((tr ? tr.name : mf.track + " (missing)") + " · drop", a + 16, mid + 4, 160);
+      if (on) { ctx.strokeStyle = S.C.text; ctx.lineWidth = 1.5; ctx.strokeRect(a - 1.5, Y_FX + 1.5, 16, ROW.fx - 3); }
+    }
+    ctx.globalAlpha = 1;
+  }
   const list = S.fx.filter(f => f.type === "sfx").sort((a, b) => a.t - b.t);
   list.forEach((f, k) => {
     const snd = sound(f.sound), len = snd ? snd.length : 0.5;
@@ -189,6 +213,11 @@ function visLabel(f) {
   if (f.type === "caption") return "Aa " + [f.fx || "pop", f.font, f.at, f.size].filter(Boolean).join(" · ");
   if (f.type === "overlay") return (f.at === "fill" ? "⧉ cutaway · " : "") + ({ sound: "♪ only · ", picture: "muted · " }[f.mode] || "")
                                    + (overlayOf(f.overlay) || { name: f.overlay + " (gone)" }).name;
+  if (f.type === "card") return `▣ ${f.style} “${f.text || ""}”`;
+  if (f.type === "hush") return f.style === "black" ? "■ hush + black" : "⏸ hush";
+  if (f.type === "word") return `✦ ${f.word} · ${f.style}`;
+  if (f.type === "time") return f.style === "freeze" ? `❚❚ freeze ${nice(f.d)} s` + (f.zoom > 1 ? ` → ${nice(f.zoom)}×` : "")
+    : ({ slow: "◷ slow ", fast: "⏩ fast ", ramp: "↘ ramp → " })[f.style] + nice(f.rate) + "×";
   return "flash " + f.color;
 }
 // A colour per region, so the Camera lane shows at a glance what's on screen when.
@@ -300,8 +329,7 @@ export function follow(t) {           // keep the playhead on screen while playi
 export function paintTime(t) {
   let text = fmt(t);
   if (S.editPlay && S.segs[S.editPlay.i]) {
-    const before = S.segs.slice(0, S.editPlay.i).reduce((n, s) => n + s[1] - s[0], 0);
-    text += "  ·  edit " + fmt(before + Math.max(0, t - S.segs[S.editPlay.i][0]), 1) + " / " + fmt(total(), 1);
+    text += "  ·  edit " + fmt(editTime(t, S.editPlay.i) || 0, 1) + " / " + fmt(total(), 1);
   }
   $("[data-ed-time]").textContent = text;
 }
@@ -323,8 +351,8 @@ export function hitSeg(x) {
 export function hitFx(x) {
   let best = null, bestD = FX_PX + 1;
   for (const f of S.fx) {
-    if (f.type !== "sfx") continue;
-    const d = Math.abs(x - X(f.t)) - (f.id === S.selFx ? 0.5 : 0);
+    if (f.type !== "sfx" && f.type !== "music") continue;
+    const d = Math.abs(x - X(f.t) - (f.type === "music" ? 6 : 0)) - (f.id === S.selFx ? 0.5 : 0);
     if (d < bestD) { best = f; bestD = d; }
   }
   return best;

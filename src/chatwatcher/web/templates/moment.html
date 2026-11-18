@@ -49,6 +49,9 @@
       <label class="muted" title="How many sounds and effects Claude may add"><small>effects</small>
         <select data-ed-intensity aria-label="How many effects Claude may add">
           <option value="light">few</option><option value="normal" selected>some</option><option value="heavy">many</option></select></label>
+      <label class="muted" title="A clip-channel format to make it in: eurobeat under a race, a tuff edit, hopecore, the YOU DIED ending… (Claude picks: one that fits, or none)"><small>format</small>
+        <select data-ed-format aria-label="Which format AI edit makes it in">
+          <option value="" selected>none</option><option value="auto">Claude picks</option></select></label>
       <details class="ed-menu" data-ed-menu>
         <summary class="button small" title="Other ways to start, and tools">⋯ More</summary>
         <div class="ed-menu-list">
@@ -186,13 +189,24 @@
           <button type="button" class="small" data-ed-add="punch" title="Instant zoom on a region (Z)">Camera: punch-in (Z)</button>
           <button type="button" class="small" data-ed-add="push" title="Slow zoom towards a region">Camera: push-in</button>
           <button type="button" class="small" data-ed-act="add-fx" title="A sound effect at the playhead (F)">Sound (F)</button>
+          <button type="button" class="small" data-ed-act="add-music" title="A music bed from your Library, its drop on the moment at the playhead (the punchline, the crash)">Music (drop here)</button>
+          <button type="button" class="small" data-ed-add="hush" title="Everything goes silent for a moment (the beat before a drop), or silent and black (a stutter cut)">Hush (silence / black)</button>
           <button type="button" class="small" data-ed-add="shake" title="Camera shake on an impact or a scream (X)">Shake (X)</button>
           <button type="button" class="small" data-ed-add="flash" title="A quick white, red or black flash">Flash</button>
           <button type="button" class="small" data-ed-act="add-overlay" title="A green-screen overlay from your Library at the playhead, with its sound (O)">Overlay (O)</button>
           <button type="button" class="small" data-ed-add="layer" title="A part of the clip over the picture, see-through: the chat over the middle, the minimap in a corner">Layer (chat over the picture…)</button>
           <button type="button" class="small" data-ed-act="add-text" title="Big text over the picture at the playhead: NO NO NO, ← that was the backup, ×3 (T)">Text (T)</button>
+          <button type="button" class="small" data-ed-act="add-card" data-card="died" title="The ironic ending: a dark band and a red serif YOU DIED (change the words in the panel)">Card: YOU DIED</button>
+          <button type="button" class="small" data-ed-act="add-card" data-card="poster" title="A black screen of words revealed one by one (hopecore, demotivational)">Card: poster</button>
+          <button type="button" class="small" data-ed-act="add-card" data-card="flat" title="One line on a plain screen: 3 HOURS LATER, MEANWHILE…">Card: one line</button>
+          <button type="button" class="small" data-ed-act="add-card" data-card="comment" title="A reply-to-comment sticker over the picture (an opener)">Card: comment sticker</button>
           <button type="button" class="small" data-ed-act="add-spot" title="Point at something: dim the rest and ring it, or the red circle (C)">Spotlight (C)</button>
           <button type="button" class="small" data-ed-act="sub-add" title="A new caption at the playhead">Caption</button>
+          <button type="button" class="small" data-ed-add="time" data-time-style="slow" title="The moment at the playhead in slow motion, so it lands (deep voice optional)">Slow-mo</button>
+          <button type="button" class="small" data-ed-add="time" data-time-style="ramp" title="Fast, then slams into slow motion on the moment: the tuff edit's move">Speed ramp</button>
+          <button type="button" class="small" data-ed-add="time" data-time-style="fast" title="A boring stretch at 2-4× instead of cutting it">Fast-forward</button>
+          <button type="button" class="small" data-ed-add="time" data-time-style="freeze" title="The frame at the playhead holds and pushes in on her face while the music plays on: the stare ending">Freeze frame (stare)</button>
+          <button type="button" class="small" data-ed-add="word" title="Dress a word of the caption at the playhead: white on a red box, dripping slime, a neon glow… (or pick a line and click its word)">Word art</button>
           <button type="button" class="small" data-ed-add="caption" title="Style the captions from the playhead on: shake, wave, bounce…, an angry or scary font, a place (on her face, between the pictures)">Caption style</button>
         </div>
       </details>

@@ -193,7 +193,7 @@ def test_clean_effects_checks_picture_effects():
     assert push == {"id": "fx2", "type": "push", "t": 1.0, "d": 3.0, "region": "", "zoom": 1.25, "by": "claude", "why": "build-up"}
     assert (punch["d"], punch["zoom"], punch["region"]) == (10.0, 4.0, "face")
     assert (shake["d"], shake["strength"]) == (0.1, 3) and flash["color"] == "white" and flash["d"] == 0.3
-    with pytest.raises(EditError, match="sound, zoom"):
+    with pytest.raises(EditError, match="hush, zoom"):
         clean_effects([{"type": "spin", "t": 1}], 10, set())
 
 

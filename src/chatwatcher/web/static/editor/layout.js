@@ -167,11 +167,12 @@ root.addEventListener("input", ev => {
     S.needsDraw = true;
     return;
   }
-  if (t.matches("[data-text-input]")) {        // live while you type; saved when you leave the box
+  if (t.matches("[data-text-input], [data-card-text], [data-card-who]")) {   // live while you type; saved when you leave the box
     const f = curFx();
-    if (!f || f.type !== "text") return;
+    if (!f || (f.type !== "text" && f.type !== "card")) return;
     if (!S.txEditing) { pushUndo(); S.txEditing = true; }
-    f.text = t.value.slice(0, S.D.text_info.max);
+    if (t.matches("[data-card-who]")) f.who = t.value.slice(0, 24);
+    else f.text = t.value.slice(0, f.type === "card" ? 80 : S.D.text_info.max);
     f.by = "you";
     S.needsDraw = true;
     return;

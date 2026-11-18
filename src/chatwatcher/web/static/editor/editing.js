@@ -7,8 +7,9 @@ import {
 } from "./util.js";
 import { FULL, fitZoom } from "./preview.js";
 import { buffer } from "./audio.js";
-import { seek, stopEditPlay } from "./playback.js";
+import { playEdit, seek, stopEditPlay } from "./playback.js";
 import { save, showRender } from "./io.js";
+import { cueArts } from "./captions.js";
 
 // ── editing ──────────────────────────────────────────────────────────────
 export function pushUndo() {
@@ -154,9 +155,29 @@ export function editFx(change) {
   }
   changed();
 }
+// the music bed: one per edit, its drop on the moment at the playhead
+export function addMusic() {
+  if (!(S.D.music || []).length) { fxStatus("Your music library is empty: add tracks on the Library page (Music tab) first.", "err", true); return; }
+  const have = S.fx.find(f => f.type === "music");
+  if (have) { S.selFx = have.id; changed(); flash("An edit has one music track: this is it. Move its drop here with the ⇥ button."); return; }
+  let last = null;
+  try { last = localStorage.getItem("cw-ed-music"); } catch (e) {}
+  const tr = (S.D.music || []).find(m => m.id === last) || S.D.music[0];
+  let t = video.currentTime;
+  if (S.snapOn) t = snap(t, DRAG_SNAP_S, S.D.hits);
+  pushUndo();
+  const MI = S.D.music_info;
+  const f = { id: "u" + Math.random().toString(36).slice(2, 8), type: "music", t: r3(t), track: tr.id, lead: -1,
+              gain: MI.default_gain, duck: MI.default_duck, by: "you", why: "" };
+  S.fx.push(f);
+  S.selFx = f.id;
+  changed();
+}
 // zooms, shakes and flashes
-export function addVis(type) {
-  const [d] = S.D.visual.types[type];
+export function addVis(type, style = "") {
+  if (type === "word") { addWordArt(); return; }
+  let [d] = S.D.visual.types[type];
+  if (type === "time") d = S.D.time_info.d[style || "slow"][0];
   let t = video.currentTime;
   if (S.snapOn && type !== "push") t = snap(t, DRAG_SNAP_S, S.D.hits);   // these land on a moment
   const f = { id: "u" + Math.random().toString(36).slice(2, 8), type, t: r3(t), d: Math.min(d, S.D.duration - t), by: "you", why: "" };
@@ -176,6 +197,15 @@ export function addVis(type) {
     Object.assign(f, { region: names.find(n => n.includes("chat")) || names[0], at: "middle", dx: 0, dy: 0,
                        size: S.D.layer_info.default_size, opacity: S.D.layer_info.default_opacity });
   } else if (type === "caption") Object.assign(f, { fx: "pop", font: "", at: "" });
+  else if (type === "hush") f.style = "silence";
+  else if (type === "time") {            // timing.clean's defaults
+    const TI = S.D.time_info, st = TI.styles.includes(style) ? style : "slow";
+    f.style = st;
+    if (st === "freeze") {
+      f.d = TI.d.freeze[0];             // held seconds, not clip seconds: never "too close to the end"
+      Object.assign(f, { zoom: TI.zoom[0], mono: false, region: Object.keys(S.D.regions).includes("face") ? "face" : "" });
+    } else Object.assign(f, { rate: TI.rates[st][0], sound: "tempo" });
+  }
   else f.color = "white";
   pushUndo();
   S.fx.push(f);
@@ -184,9 +214,53 @@ export function addVis(type) {
   if (ZOOMS.includes(type) && !f.region)
     fxStatus("No regions yet, so this zooms on the centre. Draw her face with ⋯ More → ▢ Draw regions to aim zooms at it.", "");
 }
+// word art (edit/wordart.py): a word of a caption in its own look, timed to when she says it
+const artNorm = w => w.toLowerCase().replace(/[^\p{L}\p{N}_]/gu, "");
+export const artWords = text => [...new Set(text.replace(/\*/g, "").split(/\s+/)
+  .map(w => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")).filter(Boolean))];
+export const artCue = f => S.subs.filter(c => c.t0 - S.D.word_info.early <= f.t && f.t < c.t1)
+  .sort((a, b) => a.t0 - b.t0).find(c => cueArts(c).some(([, , a]) => a.id === f.id))
+  || S.subs.find(c => c.t0 - S.D.word_info.early <= f.t && f.t < c.t1);
+function wordTime(c, word) {   // Whisper's time for its first word inside the caption, else a guess from where it is
+  const first = artNorm(word.split(" ")[0]);
+  const heard = (S.D.sub_words || []).find(w => w.length > 2 && w[0] >= c.t0 - 0.3 && w[0] < c.t1 && artNorm(w[2]) === first);
+  const plain = c.text.replace(/\*/g, ""), i = Math.max(0, plain.toLowerCase().indexOf(word.toLowerCase()));
+  const t = heard ? heard[0] : c.t0 + (c.t1 - c.t0) * i / Math.max(1, plain.length);
+  return r3(Math.min(Math.max(t, c.t0), c.t1 - 0.02));
+}
+export function addWordArt(c, word, style) {
+  c = c || subAt(video.currentTime);
+  if (!c) { flash("Word art dresses a word of a caption: put the playhead on a caption (or pick a line) first."); return; }
+  const words = artWords(c.text);
+  if (!words.length) return;
+  const starred = (c.text.match(/\*([^*]+)\*/) || [])[1];
+  word = word || (starred && artWords(starred)[0]) || words.reduce((a, b) => (b.length > a.length ? b : a));
+  const W = S.D.word_info, have = S.fx.find(f => f.type === "word" && c.t0 - W.early <= f.t && f.t < c.t1
+                                                     && f.word.toLowerCase() === word.toLowerCase());
+  S.selSub = null;
+  if (have) { selectFx(have.id, false); return; }
+  const t = wordTime(c, word), [, lo, hi] = S.D.visual.types.word;
+  const f = { id: "u" + Math.random().toString(36).slice(2, 8), type: "word", t, d: r3(Math.min(Math.max(c.t1 - t, lo), hi)),
+              word, style: style || "box", color: "", by: "you", why: "" };
+  pushUndo();
+  S.fx.push(f);
+  S.selFx = f.id;
+  changed();
+}
+export function setArtWord(word) {   // another word of the same caption (or one you typed), timed again
+  const f = curFx();
+  word = (word || "").replace(/[*{}\\]/g, "").trim().split(/\s+/).slice(0, S.D.word_info.max_words).join(" ").slice(0, S.D.word_info.max_chars);
+  if (!f || !word) return;
+  const c = artCue(f);
+  editFx(c ? { word, t: wordTime(c, word) } : { word });
+}
 export function previewFx() {         // play from a little before the effect to a little after it
   const f = curFx();
   if (!f) return;
+  if (f.type === "time") {             // at its speed: as the edit plays it
+    const i = S.segs.findIndex(s => f.t >= s[0] && f.t < s[1]);
+    if (i >= 0) { stopEditPlay(); playEdit(i, true, Math.max(S.segs[i][0], f.t - 1)); return; }
+  }
   stopEditPlay();
   seek(Math.max(0, f.t - 1));
   S.previewUntil = Math.min(S.D.duration, f.t + (f.d || (sound(f.sound) || { length: 1 }).length) + 1);

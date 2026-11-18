@@ -85,7 +85,7 @@ def run_stage(cfg: Config, conn: sqlite3.Connection, video_id: str, stage: str, 
 def _opts(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     """The job options each stage understands; anything else is ignored."""
     keys = {"analyze": ("model", "effort", "redo"), "upload": ("kept_only",),
-            "clip": ("kept_only",), "compile": ("listen", "analyze_new", "reanalyze")}.get(stage, ())
+            "clip": ("kept_only",), "compile": ("listen", "analyze_new", "reanalyze", "auto")}.get(stage, ())
     return {k: params[k] for k in keys if params.get(k) is not None}
 
 
@@ -259,13 +259,14 @@ def _analyze(cfg, conn, video_id, attempt, deps, say, rank: int | None = None,
 
 
 def _compile(cfg, conn, video_id, attempt, deps, say, listen: bool = False, analyze_new: bool = False,
-             reanalyze: bool = False) -> StageOutcome:
+             reanalyze: bool = False, auto: bool = False) -> StageOutcome:
     """✨ Read the whole stream (compile/): one Claude call for compilation ideas, the
     stream's context and the moments chat missed. Asked for on the stream page.
     listen: Whisper on the stream's audio first, part by part, giving way to any other due
     job between parts. analyze_new: then analyse the moments chat missed (previews first);
     reanalyze: then analyse the stream's moments again, with the context. A failed call is
-    not repeated by itself: each try reads the whole stream again."""
+    not repeated by itself: each try reads the whole stream again. auto: queued by the worker
+    after scoring (pipeline.auto_compile): no captions yet → try again later, for a day."""
     from chatwatcher.compile.service import CompileError, compile_video
     if not cfg.claude.enabled:
         return StageOutcome("skip", "claude.enabled is false")
@@ -281,6 +282,8 @@ def _compile(cfg, conn, video_id, attempt, deps, say, listen: bool = False, anal
             return StageOutcome("retry", str(e), timedelta(hours=1))   # nothing was sent yet
         if e.kind == "usage_limit" and attempt < 6:
             return StageOutcome("retry", str(e), usage_reset_delay(str(e)))
+        if e.kind == "no_captions" and auto and attempt < 8:            # auto-captions come hours later
+            return StageOutcome("retry", str(e), timedelta(hours=3))
         if e.retryable and attempt < 4:                                  # the audio download
             return StageOutcome("retry", str(e), _backoff(attempt, 10, 120))
         return StageOutcome("error", str(e))

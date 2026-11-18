@@ -11,23 +11,23 @@
 // them here: state, util, preview, audio, playback, captions, io, editing, overlays,
 // timeline, transcript, panels, regions, layout, ai, input.
 import { $, S, call, video } from "./state.js";
-import { curFx, curSub, isVis, libraryStatus, setSaved } from "./util.js";
+import { curFx, curSub, isVis, libraryStatus, partAt, setSaved, timeParts } from "./util.js";
 import { drawStage } from "./preview.js";
-import { fire, fireOverlay, mixVolume } from "./audio.js";
+import { fire, fireOverlay, mixVolume, syncMusic } from "./audio.js";
 import { paintButtons, seek, stopEditPlay } from "./playback.js";
 import { drawSubPreview } from "./captions.js";
 import { pollRender, showRender } from "./io.js";
 import { paintNames } from "./editing.js";
-import { drawLayers, drawOverlays, drawSpotHandle, drawTexts } from "./overlays.js";
+import { drawCards, drawLayers, drawOverlays, drawSpotHandle, drawTexts } from "./overlays.js";
 import { draw, follow, paintTime, resize } from "./timeline.js";
 import { paintLine, paintList, paintTranscript, pollTranscript } from "./transcript.js";
 import {
-  followSelection, paintChips, paintFxPanel, paintLanes, paintSelected, paintSubBar, paintSubPanel,
+  followSelection, paintChips, paintFxPanel, paintLanes, paintMusicPanel, paintSelected, paintSubBar, paintSubPanel,
   paintTotal, paintVisPanel, paintVoices,
 } from "./panels.js";
 import { paintRegionPanel, paintRegions } from "./regions.js";
 import { apply, fetchEdit, paintLayout } from "./layout.js";
-import { loadChat } from "./ai.js";
+import { loadChat, paintFormats } from "./ai.js";
 import "./input.js";
 
 // ── the frame loop ─────────────────────────────────────────────────────────────
@@ -52,6 +52,30 @@ function tick() {
         }
       }
     }
+    // Time effects (edit/timing.py): the part playing sets the speed; a freeze holds the
+    // frame (the video waits, the edit's clock and the music go on), then plays on.
+    if (S.editPlay && !video.paused && !video.seeking) {
+      const fz = prevT === null ? null : timeParts().find(q => q.freeze && q.i === S.editPlay.i && q.s >= prevT - 0.001 && q.s <= t
+                                                             && t - prevT < 0.5);
+      if (fz) { S.frozen = { s: fz.s, e: fz.e, f: fz.f, since: performance.now() }; video.pause(); seek(fz.s); }
+      else {
+        const p = partAt(t, S.editPlay.i), k = p ? Math.min(16, Math.max(0.0625, p.k)) : 1;
+        if (Math.abs(video.playbackRate - k) > 1e-3) video.playbackRate = k;
+        const pitch = !(p && p.f && p.f.sound === "deep");
+        if (video.preservesPitch !== pitch) video.preservesPitch = pitch;
+      }
+    } else if (!S.editPlay && !S.frozen && video.playbackRate !== 1) { video.playbackRate = 1; video.preservesPitch = true; }
+    if (S.frozen) {
+      if (!S.editPlay) S.frozen = null;
+      else if ((performance.now() - S.frozen.since) / 1000 >= S.frozen.f.d) {
+        const e = S.frozen.e;
+        S.frozen = null;
+        S.armFrom = e - 0.0005;
+        seek(e);
+        video.play();
+      }
+      S.needsDraw = true;
+    }
     if (video.seeking) prevT = S.armFrom;
     else {
       if (!video.paused && prevT !== null && t > prevT && t - prevT < 0.5)
@@ -61,6 +85,7 @@ function tick() {
     }
     if (S.previewUntil !== null && !video.paused && t >= S.previewUntil) { S.previewUntil = null; video.pause(); }
     mixVolume();
+    syncMusic(t);
     if (!video.paused || video.seeking || S.needsDraw || S.drag) {
       if (!video.paused && !S.drag) follow(t);
       drawStage();
@@ -69,6 +94,7 @@ function tick() {
       drawOverlays();
       drawSubPreview();
       drawTexts();
+      drawCards();
       draw();
       paintTime(t);
       paintLine(t);
@@ -80,12 +106,13 @@ function tick() {
 
 // ── every panel, after any change ───────────────────────────────────────────────────────────────
 function paintAll() {
+  paintFormats();
   S.needsDraw = true;
   paintTotal();
   paintChips();
   if (S.regionMode) paintRegionPanel();
   else if (S.selSub && curSub()) paintSubPanel();
-  else if (S.selFx && curFx()) (isVis(curFx()) ? paintVisPanel() : paintFxPanel());
+  else if (S.selFx && curFx()) (isVis(curFx()) ? paintVisPanel() : curFx().type === "music" ? paintMusicPanel() : paintFxPanel());
   else { S.selFx = null; S.selSub = null; paintSelected(); }
   paintButtons();
   paintList();

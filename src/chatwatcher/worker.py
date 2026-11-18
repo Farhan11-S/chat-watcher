@@ -197,6 +197,12 @@ class Worker:
             return
         if extra:                          # asked for on the stream page, outside the pipeline
             return
+        if stage == "score" and self.cfg.pipeline.auto_compile and self.cfg.claude.enabled and not conn.execute(
+                "SELECT 1 FROM jobs WHERE video_id = ? AND stage = 'compile'", (video["id"],)).fetchone():
+            # Queued before the next stage, so the stream's context is there for its analyses.
+            # Only the first time: a re-score doesn't read the stream again.
+            opts = {"analyze_new": True, "auto": True} | ({"listen": True} if self.cfg.pipeline.compile_listen else {})
+            jobs.enqueue(conn, video["id"], "compile", params=opts)
         nxt = None if out.details.get("stop") else jobs.next_stage(stage)
 
         def skipped(s: str) -> bool:      # transcribe only ever follows a clip download

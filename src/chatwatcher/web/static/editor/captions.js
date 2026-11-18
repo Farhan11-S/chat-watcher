@@ -1,7 +1,7 @@
 // Subtitles over the video: who says each line and their colour, and the caption styles
 // (edit/captions.py) drawn like the render.
 import { ASS_TO_CSS, S, subLayer, video } from "./state.js";
-import { el, runsOf, subWidth, wrapSub } from "./util.js";
+import { artFind, artPieces, el, runsOf, subWidth, wrapSub } from "./util.js";
 import { isShort, mapPoint, place, shortPanels, viewBox } from "./preview.js";
 
 // ── people (collabs): who says each line, a colour each; lines stacked when two talk at once ──
@@ -28,7 +28,51 @@ const capMark = t0 => {        // the latest caption style covering a caption's 
   for (const f of S.fx) if (f.type === "caption" && f.t - 0.02 <= t0 && t0 < f.t + f.d && (!on || f.t >= on.t)) on = f;
   return on;
 };
-const capStyled = shown => !!CAPI() && (S.subStyle.look === "bubble" || shown.some(c => capMark(c.t0)));
+// word art (edit/wordart.py): the words said while a caption shows that are in it
+const artOf = f => {
+  const W = S.D.word_info, style = W.styles[f.style] ? f.style : "box", st = W.styles[style];
+  return { id: f.id, t: f.t, word: f.word, style, color: W.colors[f.color] || W.colors[st.color], upper: st.upper, scale: st.scale, font: st.font };
+};
+export function cueArts(c) {      // wordart.on_cue
+  const W = S.D.word_info, out = [];
+  if (!W) return out;
+  for (const f of S.fx.filter(f => f.type === "word" && f.word).sort((a, b) => a.t - b.t)) {
+    if (!(c.t0 - W.early <= f.t && f.t < c.t1)) continue;
+    const at = artFind(c.text, f.word);
+    if (at && !out.some(([a, b]) => a < at[1] && at[0] < b)) out.push([at[0], at[1], artOf(f)]);
+  }
+  return out;
+}
+const capStyled = shown => !!CAPI() && (S.subStyle.look === "bubble" || shown.some(c => capMark(c.t0) || cueArts(c).length));
+const artShade = (rgb, k) => { const [h, l, s] = hlsOf(rgb); return rgbOf(h, Math.max(0, Math.min(1, l * k)), s); };
+const artLight = rgb => { const [r, g, b] = [0, 2, 4].map(i => parseInt(rgb.slice(i, i + 2), 16)); return 0.299 * r + 0.587 * g + 0.114 * b > 170; };
+function artLook(a, role, size, bord) {      // wordart.look
+  const W = S.D.word_info, col = a.color, under = role === "ring";
+  const edgeW = under ? bord : Math.max(bord, size * (role === "solo" ? 0.1 : 0.06));
+  if (a.style === "box") {
+    const frame = artShade(col, 0.35);
+    return { box: true, fill: under ? frame : (artLight(col) ? "151515" : "FFFFFF"), edge: under ? frame : col,
+             bord: size * (W.box_pad + (under ? W.ring : 0)), blur: 0 };
+  }
+  if (a.style === "glow") return under ? { fill: col, edge: col, bord: size * W.glow[0], blur: size * W.glow[1] }
+    : { fill: "FFFFFF", edge: col, bord: role === "top" ? size * 0.05 : size * W.glow[0], blur: role === "top" ? 0 : size * W.glow[1] };
+  if (a.style === "fire") return under ? { fill: artShade(col, 0.5), edge: artShade(col, 0.5), bord, blur: size * 0.06 }
+    : { fill: W.fire_text, edge: col, bord: edgeW, blur: 0 };
+  if (a.style === "slime") { const dark = artShade(col, 0.3); return { fill: under ? dark : col, edge: dark, bord: edgeW, blur: 0 }; }
+  if (a.style === "scary") return { fill: under ? "000000" : col, edge: "000000", bord: edgeW, blur: 0 };
+  return { fill: under ? artShade(col, 0.35) : col, edge: null, bord, blur: 0 };
+}
+function artSpan(text, a, role, size, bord) {   // a word in its look, as the render draws it on this layer
+  const lk = artLook(a, role, size, bord), C = CAPI(), sp = el("span", "ed-art", text);
+  const font = a.font ? (subWidth(text) !== text.length ? C.cjk_font : C.fonts[a.font]) : "";
+  Object.assign(sp.style, { color: "#" + lk.fill, fontSize: a.scale + "em" }, font ? { fontFamily: `"${font}", inherit` } : {});
+  if (lk.box) Object.assign(sp.style, { background: "#" + lk.edge, boxShadow: `0 0 0 ${lk.bord}px #${lk.edge}`, WebkitTextStroke: "0",
+                                        padding: "0 0.28em", textShadow: "none" });
+  else if (lk.blur) Object.assign(sp.style, { WebkitTextStroke: "0",
+                                               textShadow: `0 0 ${lk.blur}px #${lk.edge}, 0 0 ${lk.bord}px #${lk.edge}, 0 0 ${lk.bord}px #${lk.edge}` });
+  else if (lk.edge) Object.assign(sp.style, { WebkitTextStroke: `${lk.bord * 2}px #${lk.edge}` });
+  return sp;
+}
 function hlsOf(rgb) {
   const [r, g, b] = [0, 2, 4].map(i => parseInt(rgb.slice(i, i + 2), 16) / 255);
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
@@ -103,10 +147,10 @@ function drawCaptions(shown, box, titled) {
     }
     const col = cueColor(c), fill = bubble ? capDeep(col) : (col || "FFFFFF").toUpperCase();
     return { c, fx: fxName, rows, x, y, an, size: sz, fill, family: capFamily(m ? m.font : (bubble ? "round" : ""), c.text, bubble),
-             seed: n + 1 + Math.round(c.t0 * 100) };
+             seed: n + 1 + Math.round(c.t0 * 100), arts: cueArts(c) };
   });
   const key = "cap|" + JSON.stringify(items.map(i => [i.c.id, i.c.text, i.fx, Math.round(i.x), Math.round(i.y), i.an, i.fill, i.family,
-                                                        Math.round(i.size)]))
+                                                        Math.round(i.size), i.arts.map(([a, b, x]) => [a, b, x.style, x.color, x.t])]))
               + [S.subStyle.look, Math.round(size), box.left, box.top].join("|");
   if (key !== S.subKey) {
     S.subKey = key;
@@ -115,7 +159,7 @@ function drawCaptions(shown, box, titled) {
     capRecs = [];
     if (items.length) place(subLayer, box);
     for (const it of items) {
-      const wrap = el("div", "ed-cap"), letters = [];
+      const wrap = el("div", "ed-cap"), letters = [], words = [];
       Object.assign(wrap.style, { left: it.x + "px", top: it.y + "px", fontFamily: it.family,
                                   fontSize: it.size * ASS_TO_CSS + "px", lineHeight: it.size + "px",
                                   transformOrigin: { 2: "50% 100%", 8: "50% 0", 5: "50% 50%" }[it.an] });
@@ -124,15 +168,22 @@ function drawCaptions(shown, box, titled) {
            [it.fill, capAccent(it.fill), `${it.size * C.inner * 2}px #ffffff`, ""]]
         : [[it.fill, it.fill.toUpperCase() === L.highlight.toUpperCase() ? "FFFFFF" : L.highlight,
             `${it.size * C.classic_bord * 2}px #000`, `${it.size * 0.045}px ${it.size * 0.045}px 0 rgba(0,0,0,.5)`]];
+      const bords = bubble ? [it.size * C.outer, it.size * C.inner] : [Math.max(1, it.size * C.classic_bord)];
+      const roles = bubble ? ["ring", "top"] : ["solo"];
       layers.forEach(([fill, hi, stroke, shadow], k) => {
         const copy = el("div", k === 0 && layers.length > 1 ? "ed-cap-back" : "");
         Object.assign(copy.style, { color: "#" + fill, WebkitTextStroke: stroke, textShadow: shadow });
-        let on = false, i = 0;
-        it.rows.forEach((row, r) => {
+        let i = 0;
+        artPieces(it.rows, it.arts).forEach((row, r) => {
           if (r) copy.appendChild(el("br"));
-          const [pieces, after] = runsOf(row, on);
-          on = after;
-          for (const [text, h] of pieces) {
+          for (const [text, h, art] of row) {
+            if (art) {
+              const sp = artSpan(text, art, roles[k], it.size, bords[k]);
+              copy.appendChild(sp);
+              words.push({ el: sp, t: art.t });
+              i += [...text].length;
+              continue;
+            }
             const add = (t, parent) => {
               const sp = el("span", "", t);
               if (h) Object.assign(sp.style, { color: "#" + hi, fontSize: C.hi_scale + "em" });
@@ -146,7 +197,7 @@ function drawCaptions(shown, box, titled) {
         wrap.appendChild(copy);
       });
       subLayer.appendChild(wrap);
-      capRecs.push({ el: wrap, letters, fx: it.fx, t0: it.c.t0, t1: it.c.t1, size: it.size, seed: it.seed,
+      capRecs.push({ el: wrap, letters, words, fx: it.fx, t0: it.c.t0, t1: it.c.t1, size: it.size, seed: it.seed,
                      anchor: { 2: "translate(-50%, -100%)", 8: "translate(-50%, 0)", 5: "translate(-50%, -50%)" }[it.an] });
     }
   }
@@ -172,6 +223,14 @@ function capAnim(t) {          // the \t / \move / shake steps of captions.event
     }
     if (r.fx === "wobble") rot = -C.wobble[0] * Math.sin(2 * Math.PI * u / C.wobble[1]);
     r.el.style.transform = `${r.anchor} translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${sx}, ${sy})`;
+    if (r.words.length) {                     // word art springs bigger when she says it (wordart.PUNCH)
+      const [k, up, back] = S.D.word_info.punch;
+      for (const w of r.words) {
+        const v = (t - w.t) * 1000;
+        const s = v < 0 || v >= back ? 1 : v < up ? 1 + (k - 1) * v / up : k - (k - 1) * (v - up) / (back - up);
+        w.el.style.transform = s === 1 ? "" : `scale(${s})`;
+      }
+    }
     if (r.fx === "wave") {
       const [amp, per, ph] = C.wave;
       r.letters.forEach((ls, i) => {
@@ -183,7 +242,7 @@ function capAnim(t) {          // the \t / \move / shake steps of captions.event
 }
 
 export function drawSubPreview() {
-  const shown = !S.regionMode && S.subStyle.on && video.videoWidth ? subsAt(video.currentTime) : [];
+  const shown = !S.regionMode && !S.frozen && S.subStyle.on && video.videoWidth ? subsAt(video.currentTime) : [];   // a freeze frame has none (the render holds one frame)
   const box = viewBox(), L = S.D.sub_layout, titled = isShort() && !!S.layout.title;
   if (shown.length && capStyled(shown)) { drawCaptions(shown, box, titled); return; }
   capRecs = [];

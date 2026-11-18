@@ -35,9 +35,11 @@ export function stopEditPlay() {
 }
 export function toggle() {
   audio();
+  if (S.frozen) { S.frozen = null; stopEditPlay(); stopSounds(); return; }
   if (video.paused) video.play(); else { video.pause(); stopEditPlay(); }
 }
-video.addEventListener("pause", () => { if (S.editPlay && !video.seeking) stopEditPlay(); stopSounds(); S.previewUntil = null; S.needsDraw = true; });
+video.addEventListener("pause", () => { if (S.frozen) return;     // a freeze frame: the edit plays on
+  if (S.editPlay && !video.seeking) stopEditPlay(); stopSounds(); S.previewUntil = null; S.needsDraw = true; });
 video.addEventListener("play", () => audio());
 video.addEventListener("seeked", () => { S.needsDraw = true; });
 

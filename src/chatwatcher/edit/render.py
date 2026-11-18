@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from chatwatcher.clip.media import MediaError, _exe, probe
 from chatwatcher.config import EditConfig
+from chatwatcher.edit import timing as tm
 from chatwatcher.edit.motion import Visual, local, video_filter
 
 
@@ -52,24 +53,78 @@ PIN = "setpts=PTS-STARTPTS"   # a part's first frame at 0 (see the module's docs
 
 
 def lengths(segments: list[list[float]], fps: float) -> list[float]:
-    """Each segment's length in the edit: whole frames."""
+    """Each segment's length in the edit: whole frames (a retimed part, edit.timing, plays
+    at its speed)."""
     fps = fps or 30.0
-    return [max(1, round((e - s) * fps)) / fps for s, e, *_ in segments]
+    return [max(1, round((seg[1] - seg[0]) / tm.speed(seg) * fps)) / fps for seg in segments]
 
 
 def place(t: float, segments: list[list[float]], fps: float) -> list[float]:
     """Where clip time t lands in the edit (once per segment that contains it)."""
     out, offset = [], 0.0
-    for (s, _e, *_), length in zip(segments, lengths(segments, fps)):
-        if s <= t < s + length:
-            out.append(round(offset + t - s, 4))
+    for seg, length in zip(segments, lengths(segments, fps)):
+        s, k = seg[0], tm.speed(seg)
+        if s <= t < s + length * k:
+            out.append(round(offset + (t - s) / k, 4))
         offset += length
     return out
 
 
-def _mix_graph(cues: list[SoundCue], first_input: int, offset_db: float, total: float) -> str:
+def retime_filter(k: float, extra: dict[str, Any], length: float, fps: float, size: tuple[int, int]) -> list[str]:
+    """The filters that play a part drawn in its own clip time at speed k (edit.timing), or
+    hold its first frame (a freeze, with its push-in and black and white), as exactly
+    `length` seconds of whole frames."""
+    n = max(1, round(length * fps))
+    fr = extra.get("freeze")
+    if fr:
+        out = ["trim=end_frame=1", "setpts=PTS-STARTPTS", f"tpad=stop_mode=clone:stop_duration={length + 0.5:.3f}",
+               f"trim=end_frame={n}"]
+        if fr.get("mono"):
+            out.append("hue=s=0")
+        if float(fr.get("zoom") or 1) > 1.001:
+            push = video_filter([Visual("push", 0.0, length, zoom=float(fr["zoom"]), cx=float(fr.get("x", 0.5)),
+                                        cy=float(fr.get("y", 0.5)))], fps, length, size)
+            if push:
+                out.append(push)
+        return out
+    if abs(k - 1) < 1e-6:
+        return []
+    return [f"setpts=(PTS-STARTPTS)/{k:.6f}", f"fps={fps:.6g}", "tpad=stop_mode=clone:stop_duration=0.5",
+            f"trim=end_frame={n}", "setpts=PTS-STARTPTS"]
+
+
+def retime_audio(k: float, extra: dict[str, Any], length: float = 0.0) -> list[str]:
+    """The audio filters of a part at speed k: atempo (her pitch), asetrate (deep: the pitch
+    follows the speed), silence (mute, a freeze: padded to `length`, in case the clip ends
+    under it). The part's -t makes the length; an apad after atempo stalls ffmpeg 8."""
+    pad = f"apad=whole_dur={length:.6f}"
+    if extra.get("freeze") or extra.get("sound") == "mute":
+        return ["volume=0", pad]
+    if abs(k - 1) < 1e-6:
+        return []
+    if extra.get("sound") == "deep":
+        return ["aresample=48000", f"asetrate={48000 * k:.1f}", "aresample=48000"]
+    if k <= 0:
+        raise ValueError(f"a part's speed must be above 0, not {k}")
+    out, left = [], k
+    while left < 0.5 - 1e-9:
+        out.append("atempo=0.5")
+        left /= 0.5
+    while left > 2.0 + 1e-9:
+        out.append("atempo=2.0")
+        left /= 2.0
+    return out + [f"atempo={left:.6f}"]
+
+
+def _mix_graph(cues: list[SoundCue], first_input: int, offset_db: float, total: float,
+               bed: Any = None, speech: list[tuple[float, float]] | None = None,
+               mutes: list[tuple[float, float]] | None = None) -> str:
     """[0:a] with the sounds mixed in → [mix]. Under each sound with duck_db < 0, the
-    clip's own sound is lowered, with short ramps so it doesn't click."""
+    clip's own sound is lowered, with short ramps so it doesn't click. bed: a music bed
+    (edit.music.Bed, on the edit's timeline) from the input after the sounds; it dips by
+    its duck_db under speech (edit-time spans of her talking). mutes: edit-time windows
+    where everything goes silent (a hush)."""
+    from chatwatcher.edit import music as mus
     factors = []
     for c in cues:
         if c.duck_db < 0:
@@ -84,7 +139,25 @@ def _mix_graph(cues: list[SoundCue], first_input: int, offset_db: float, total: 
         parts.append(f"[{first_input + k}:a]aresample=48000,aformat=channel_layouts=stereo,"
                      f"volume={vol:.2f}dB,adelay={ms}:all=1[s{k}]")
         labels.append(f"[s{k}]")
-    parts.append("".join(labels) + f"amix=inputs={len(labels)}:normalize=0:duration=first:dropout_transition=0[mix]")
+    if bed is not None:
+        vol = max(-40.0, min(12.0, bed.gain_db + offset_db))
+        chain = [f"[{first_input + len(cues)}:a]aresample=48000,aformat=channel_layouts=stereo",
+                 f"atrim=start={bed.offset:.4f}:duration={bed.length:.4f}", "asetpts=PTS-STARTPTS"]
+        if bed.fade_in > 0:
+            chain.append(f"afade=t=in:d={bed.fade_in:.3f}")
+        if bed.fade_out > 0:
+            chain.append(f"afade=t=out:st={max(0.0, bed.length - bed.fade_out):.4f}:d={bed.fade_out:.3f}")
+        chain += [f"volume={vol:.2f}dB", f"adelay={int(round(bed.at * 1000))}:all=1"]
+        duck = mus.volume_expr(speech or [], bed.duck_db, mus.DUCK_RAMP)
+        if duck != "1":
+            chain.append(f"volume='{duck}':eval=frame")
+        parts.append(",".join(chain) + "[bed]")
+        labels.append("[bed]")
+    mute = mus.volume_expr(mutes or [], -120.0, 0.012)
+    out = "[premix]" if mute != "1" else "[mix]"
+    parts.append("".join(labels) + f"amix=inputs={len(labels)}:normalize=0:duration=first:dropout_transition=0{out}")
+    if mute != "1":
+        parts.append(f"[premix]volume='{mute}':eval=frame[mix]")
     return ";".join(parts)
 
 
@@ -144,7 +217,8 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
            hook: dict | None = None,
            overlays: list[list[Any]] | None = None, texts: list[list[Any]] | None = None,
            spots: list[list[Any]] | None = None, captions: list[list[Any]] | None = None,
-           layers: list[list[Any]] | None = None,
+           layers: list[list[Any]] | None = None, cards: list[list[Any]] | None = None, music: Any = None,
+           speech: list[tuple[float, float]] | None = None, mutes: list[tuple[float, float]] | None = None,
            on_progress: Callable[[float], None] | None = None) -> Rendered:
     """segments: [[start, end, gain_db], …] in src time, in play order. sounds: effects
     placed on the edit's timeline (ignored if the clip has no audio). visuals: zooms,
@@ -164,7 +238,10 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
     before its zooms (so a zoom goes into them too). captions: caption styles
     (edit.captions.Mark, src time) per segment; with them or the bubble look, edit.captions
     draws the subtitles. layers: parts of the clip's own picture (edit.layers.Placed, src
-    time) per segment, laid over the picture after its zooms and under the overlays."""
+    time) per segment, laid over the picture after its zooms and under the overlays.
+    cards: cards (edit.cards.Placed, src time) per segment, drawn above the captions.
+    music: a music bed (edit.music.Bed) on the edit's timeline (after any intro, like
+    sounds), dipping under speech (edit-time spans). mutes: edit-time windows of silence."""
     from chatwatcher.edit import captions as cap
     from chatwatcher.edit import layers as lyr
     from chatwatcher.edit import overlays as ovl
@@ -207,7 +284,13 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             report(done / total * encode_share)
         per_layout = isinstance(layout, list)
         per_visual = bool(visuals) and isinstance(visuals[0], list)
-        for i, ((s, _e, gain), length) in enumerate(zip(segments, seg_lengths)):
+        for i, (seg, length) in enumerate(zip(segments, seg_lengths)):
+            s, _e, gain = seg[0], seg[1], seg[2]
+            # A retimed part (edit.timing) is drawn over the clip time it covers (span), then
+            # played at its speed: its zooms, captions and overlays slow down with it.
+            speed, extra = tm.speed(seg), tm.extra(seg)
+            span = 1 / fps if extra.get("freeze") else length * speed
+            tail = retime_filter(speed, extra, length, fps, size if size[0] and size[1] else (1080, 1920))
             part = tmp / f"part{i:03d}.mov"
             seg_layout = layout[i] if per_layout else layout
             seg_visuals = (visuals[i] if per_visual else visuals) or []
@@ -217,17 +300,21 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
             args = ["-v", "error", "-ss", f"{s:.3f}", "-i", str(src), "-t", f"{length:.6f}",
                     "-map", "0:v:0", "-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf),
                     "-pix_fmt", "yuv420p"]
-            vf = video_filter(local(seg_visuals, s, length), fps, length, size if size[0] and size[1] else (1080, 1920))
-            shown = lines.local(subs or [], s, length)
+            vf = video_filter(local(seg_visuals, s, span), fps, span, size if size[0] and size[1] else (1080, 1920))
+            shown = lines.local(subs or [], s, span)
             ass = ""
-            callouts = txt.events(txt.local(texts[i], s, length), *size) if texts and i < len(texts) else []
+            callouts = txt.events(txt.local(texts[i], s, span), *size) if texts and i < len(texts) else []
+            if cards and i < len(cards):
+                from chatwatcher.edit import cards as crd
+                cw, ch = size if size[0] and size[1] else (1280, 720)
+                callouts += crd.events(crd.local(cards[i], s, span), cw, ch)
             if title:                              # the hook: the Short's first seconds only
                 from chatwatcher.edit import hook as hk
                 callouts += hk.events(title, hook or {}, *size, into=done - intro_s, length=length)
             marks = captions[i] if captions and i < len(captions) else []
             if shown and cap.styled(sub_style or {}, marks):
                 w, h = size if size[0] and size[1] else (1280, 720)
-                callouts = cap.events(cap.local(subs or [], s, length, marks), sub_style or {}, w, h,
+                callouts = cap.events(cap.local(subs or [], s, span, marks), sub_style or {}, w, h,
                                       title=bool(title), font=font or lines.FONT) + callouts
                 shown = []
             if shown or title or callouts:   # relative name: ffmpeg runs in tmp, so no path escaping in the filter
@@ -236,9 +323,9 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                               extra=callouts),
                     encoding="utf-8")
                 ass = f"ass=part{i:03d}.ass:fontsdir=fonts"
-            ov_items = ovl.local(overlays[i], s, length) if overlays and i < len(overlays) else []
-            sp_items = spt.local(spots[i], s, length) if spots and i < len(spots) else []
-            ly_items = lyr.local(layers[i], s, length) if layers and i < len(layers) else []
+            ov_items = ovl.local(overlays[i], s, span) if overlays and i < len(overlays) else []
+            sp_items = spt.local(spots[i], s, span) if spots and i < len(spots) else []
+            ly_items = lyr.local(layers[i], s, span) if layers and i < len(layers) else []
             # Inputs after the clip's: the overlays, then the spotlights' pictures (looped).
             for k in reversed(range(len(sp_items))):
                 mask = spt.write_mask(sp_items[k][0], *size, tmp / f"part{i:03d}_spot{k}.png")
@@ -266,23 +353,23 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
                 if ov_items:
                     ovf, cur = ovl.filter_graph(cur, ov_items, 1, *size)
                     graph.append(ovf)
-                graph.append(f"{cur}{ass or 'null'}[v]")
+                graph.append(f"{cur}{','.join([ass or 'null', *tail])}[v]")
                 script.write_text(";".join(graph), encoding="utf-8")
                 args[args.index("0:v:0")] = "[v]"
                 args += ["-/filter_complex", str(script)]
             elif seg_layout:
-                vf = ",".join(x for x in (vf, ass) if x)
+                vf = ",".join(x for x in (vf, ass, *tail) if x)
                 script.write_text(f"[0:v]{PIN}[src];{seg_layout.replace('[0:v]', '[src]')};[base]{vf or 'null'}[v]",
                                   encoding="utf-8")
                 args[args.index("0:v:0")] = "[v]"
                 args += ["-/filter_complex", str(script)]
             else:                                  # the first filter, so vf's branches stay after it
-                script.write_text(",".join(x for x in (PIN, vf, ass) if x), encoding="utf-8")
+                script.write_text(",".join(x for x in (PIN, vf, ass, *tail) if x), encoding="utf-8")
                 args += ["-/vf", str(script)]
             if has_audio:
                 f = min(fade, length / 3)
                 fi, fo = (min(f, JOIN_FADE) if joined_before else f), (min(f, JOIN_FADE) if joined_after else f)
-                chain = [f"volume={gain}dB"] if gain else []
+                chain = retime_audio(speed, extra, length) + ([f"volume={gain}dB"] if gain else [])
                 if fi > 0:
                     chain.append(f"afade=t=in:d={fi:.3f}")
                 if fo > 0:
@@ -312,18 +399,22 @@ def render(cfg: EditConfig, src: Path, segments: list[list[float]], dest: Path, 
         out = tmp / "out.mp4"
         slow = max(300.0, total * 5)
         cues = [c for c in (sounds or []) if c.path.is_file() and 0 <= c.at < total] if has_audio else []
+        bed = music if has_audio and music is not None and music.path.is_file() and music.at < total else None
+        mutes = [(a, b) for a, b in (mutes or []) if b > 0 and a < total] if has_audio else []
         inputs = ["-i", str(joined)]
         for c in cues:
             inputs += ["-i", str(c.path)]
+        if bed is not None:
+            inputs += ["-i", str(bed.path)]
         final = ["-v", "error", *inputs]
         if has_audio:
             graph = None
-            if cues:
+            if cues or bed is not None or mutes:
                 # Sounds are levelled to SOUND_LEVEL; move them to this clip's level, so gain 0
                 # means "about as loud as her talking" whatever the stream's volume was.
                 clip_level = _measure_loudness(["-i", str(joined)], -14.0, slow)
                 offset = float(clip_level["input_i"]) - SOUND_LEVEL if clip_level else 0.0
-                graph = _mix_graph(cues, 1, max(-20.0, min(10.0, offset)), total)
+                graph = _mix_graph(cues, 1, max(-20.0, min(10.0, offset)), total, bed, speech, mutes)
             level = _measure_loudness(inputs, cfg.loudness_lufs, slow, graph) if cfg.loudness_lufs else None
             report(0.93)
             chain = ""

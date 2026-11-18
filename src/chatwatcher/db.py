@@ -620,6 +620,25 @@ MIGRATIONS: list[str] = [
     ALTER TABLE compile_runs ADD COLUMN missed_json TEXT;
     ALTER TABLE compile_runs ADD COLUMN source TEXT;
     """,
+    # 27 — music: whole tracks for a music bed under an edit, with their beats and drop
+    """
+    CREATE TABLE music (
+        id           TEXT PRIMARY KEY,                -- short name Claude uses, e.g. 'deja_vu'
+        name         TEXT NOT NULL,
+        mood         TEXT NOT NULL DEFAULT '',        -- edit.music.MOODS: eurobeat, phonk, hopecore, …
+        description  TEXT NOT NULL DEFAULT '',        -- when to use it (Claude reads this)
+        source       TEXT NOT NULL DEFAULT '',        -- where it's from, and its licence
+        file         TEXT NOT NULL,                   -- under data/music/
+        duration_s   REAL NOT NULL,
+        bpm          REAL NOT NULL DEFAULT 0,
+        beats_json   TEXT NOT NULL DEFAULT '[]',      -- every beat, seconds into the track
+        drop_s       REAL NOT NULL DEFAULT 0,         -- where it hits hardest (you can move it)
+        found_drop_s REAL NOT NULL DEFAULT 0,         -- …where the import heard it
+        gain_db      REAL NOT NULL DEFAULT 0,         -- this track's volume nudge
+        original     TEXT,
+        added_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

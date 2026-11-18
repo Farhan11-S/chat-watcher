@@ -137,7 +137,7 @@ def test_editor_subtitles_follow_words_until_you_edit(site):  # noqa: F811
                                                          ("Are you deaf?", 6.0, 0.3))), encoding="utf-8")
     d = client.get(f"/api/moment/{m}/edit").json()
     assert d["subs_source"] == "auto" and [c["text"] for c in d["subs"]] == ["Good thing I put a limiter in there.", "Are you deaf?"]
-    assert d["sub_words"][0] == [2.0, 2.225] and d["subs_auto"] == d["subs"]
+    assert d["sub_words"][0][:2] == [2.0, 2.225] and d["subs_auto"] == d["subs"]
 
     seg = {"segments": [[1, 8, 0]], "subs": "auto", "subs_style": {"on": True, "size": "large", "position": "top"}}
     client.post(f"/moment/{m}/render", json=seg)

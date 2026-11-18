@@ -14,8 +14,8 @@ from chatwatcher.edit import texts as txt
 from chatwatcher.edit import motion, pieces as pc
 from chatwatcher.edit import hook
 from chatwatcher.edit import layers as lyr
-from chatwatcher.edit.autoedit.plan import (CENTRE, MAX_CAPTIONS, MAX_CUTAWAYS, MAX_LAYERS, MAX_LAYOUTS, MAX_OVERLAYS, MAX_SPOTS,
-                                           MAX_TEXTS, STRENGTHS)
+from chatwatcher.edit.autoedit.plan import (CENTRE, MAX_CAPTIONS, MAX_CARDS, MAX_TIMES, MAX_WORDS, MAX_CUTAWAYS, MAX_HUSHES, MAX_LAYERS, MAX_LAYOUTS,
+                                           MAX_OVERLAYS, MAX_SPOTS, MAX_TEXTS, STRENGTHS)
 
 SHORT_TARGET = (15, 50)  # seconds; a Short over 60 s loses most viewers
 
@@ -142,6 +142,62 @@ circle (just a red ring, the classic "look here"), dim (only dims the rest). On 
 target must be on screen: give it a shot on that region (or full) at the same time. Pair \
 one with a text callout when the viewer also needs to know WHY it matters.
 
+music: a music bed from the music library under the edit (at most one, often none: most \
+clips are carried by her voice and the sounds). Use one when the moment fits a format clip \
+channels use, the way a human editor adds value beyond the cut: eurobeat under a racing or \
+drifting clip, a phonk / tuff edit for a flex, a clutch play, an overtake or a cold comeback, \
+hopecore for a sweet or accidentally profound moment, dreamcore for a surreal one, a sad \
+track for a fake-tragic fail, tension for a build-up. Pick by each track's mood and \
+description; when nothing fits, use none. "track id | drop at clip s | lead | volume dB | \
+under her words dB | why":
+- drop at: the clip time the track's drop (where it hits hardest) lands on: the payoff \
+itself (the crash, the overtake, the reveal, the punchline's last word; read the word \
+times and the loud hits). It must be inside the cut.
+- lead: "all" = the music plays from the start of the edit (a bed under everything; the \
+drop still lands on the payoff), "0" = silence until the payoff, then the drop hits (the \
+music IS the punchline: hopecore after a dumb line, a tuff edit after the setup), or \
+seconds of build-up before the drop (2-8).
+- volume: 0 = as loud as her talking. Hype, eurobeat, phonk: -4 to 0; a soft bed: -10 to -15. \
+under her words: how far it dips while she talks so she stays clear (-8 to -14; 0 = no dip).
+- With music, make the edit move with it: shots change on the beat, and hushes set up the drop.
+
+hushes: everything goes silent (music and her voice) for a moment, "12.4 | seconds | \
+silence|black | why" (at most 4, often 0). The silence before a drop: 0.4-1.2 s ending \
+exactly where the drop lands (lead "0"), so it hits harder. The stutter of tuff edits: \
+0.15-0.4 s of black on a beat right before the payoff, or two or three on beats in a row. \
+Never over a line the viewer must hear.
+
+cards: a card that adds the joke a human editor would (at most 2, often 0), "12.4 | \
+seconds | style | text | why":
+- died: the picture darkens and a red serif "YOU DIED" fades in on a dark band (text: \
+YOU DIED, or WASTED, MISSION FAILED…): the ironic ending, when she just said she's fine, \
+safe, "it's not our time yet", and then dies, crashes or fails. Put it ON the fail (right \
+after the crash or the scream), 2.5-4 s, and end the edit on it.
+- poster: a black screen of big words revealed one by one (5-8 words; the last line or \
+*starred* words in colour): the line that sums the clip up as a life lesson, hopecore or \
+demotivational ("YOU DON'T NEED TO EXCEL AT ANYTHING"), 2-3 s, between her line and the \
+reaction, or at the end.
+- flat: one line on a black screen, 1-2 s: a jump in time or a deadpan aside ("3 HOURS \
+LATER", "MEANWHILE…", "HE DID NOT TAKE IT WELL"), on the cut into the next part.
+- comment: a "reply to a comment" sticker as the opener (at 0-1 s of the cut, 2-4 s): a \
+viewer's question or take the clip answers, in a commenter's voice ("does she ever win?"). \
+Never pretend a real person wrote it: no names.
+A full card hides the picture, so never over a line the viewer must see her say.
+
+time: slow motion, fast forward, a speed ramp or a freeze frame (at most {max_times}, often 0-1), \
+"12.4 | seconds | style | speed or zoom | region or sound | why" (clip time and clip seconds):
+- slow: the payoff again at 0.3-0.6 speed so it lands (the crash, the fall, the face she \
+makes), 0.5-2 s. sound: tempo (her voice at its pitch), deep (the slow-motion "noooo": funny \
+for a scream or a fail), mute (under music).
+- ramp: plays fast and slams into slow motion (speed = the slow it lands on, 0.25-0.4) right \
+on the hit: the tuff edit's move, on the beat of a music drop. 1-2 s ending on the moment.
+- fast: a boring stretch (walking, loading, a long setup) at 2-4 speed instead of cutting it, \
+so the viewer sees time pass; pair with the fast-forward overlay if there is one.
+- freeze: the frame holds for seconds (1-3) while the music plays on, pushing in (zoom 1.2-1.6, \
+on a region, usually face): the stare ending (freeze on her blank face right after the fail, \
+end the edit on it), or a record-scratch freeze before the twist. A freeze is silent.
+Never slow or freeze a line the viewer must hear normally; time effects are accents.
+
 transitions: most cuts stay straight cuts (that's the clip-channel style). Use a few \
 where they mean something, "p14 | style | why" for the cut INTO piece p14: \
 {transitions}. The cold open into the story almost always gets one (flash or whip). \
@@ -190,6 +246,20 @@ afterthought under the main line). Size is contrast: most lines stay the usual s
 The plain pop is the base and the styles are accents: don't style every line, and keep \
 one place for a run of lines rather than jumping on every word.
 
+words: word art, the one key word of a caption dressed the way clip channels do it (at most \
+{max_words}, often 1-2, 0 is fine), "12.4 | word | style | colour | why": the clip time she says \
+it (from the word times), the word as she says it (or a 2-3 word phrase), and how:
+- box: white on a solid colour block, the word that IS the joke or the stakes ("BLOOD", \
+"ILLEGAL", "FIRED"); red by default.
+- slime: dripping green paint: gross, sticky, wet, cursed things ("STICKY", "MOIST").
+- glow: a soft neon halo: sweet, pretty, wholesome, dreamy words (hopecore, dreamcore).
+- fire: hot yellow comic capitals: hype, a flex, a tuff line ("TUFF", "CLUTCH", "GOAT").
+- scary: horror red: a scare, something creepy ("BEHIND ME", "WHO").
+- big: just much bigger in colour: a shouted word, a number, a name.
+colour: red, orange, yellow, green, blue, purple, pink, white, black, or empty for the \
+style's own. It springs bigger the moment she says it. Use it on a different word than \
+emphasis, and only where the word carries the clip; never two in one caption.
+
 Looking things up: when the director asks for a reference (a post, a meme, a video she \
 mentions) and you have the WebSearch tool, find it: search the words she quotes (for an \
 X post, add site:x.com or twitter). Read an X post with WebFetch on \
@@ -206,17 +276,19 @@ TRANSITION_LIST = "; ".join(f"{k}: {v[1]}" for k, v in motion.TRANSITIONS.items(
 
 
 def schema(max_sounds: int, max_hits: int, max_trans: int = 6, chat: bool = False,
-           max_overlays: int | None = None, short: bool = False) -> dict[str, Any]:
+           max_overlays: int | None = None, short: bool = False, max_music: int | None = None) -> dict[str, Any]:
     """chat: the answer to a director's message, which may only answer (apply = false).
     short: a Short's answer also has layouts."""
     s = {"type": "string"}
     out = {
         "type": "object", "additionalProperties": False,
-        "required": ["note", "hook_title", "cold_open", "keep", "camera", "sounds", "hits", "volume", "transitions",
+        "required": ["note", "format", "hook_title", "cold_open", "keep", "camera", "sounds", "hits", "volume", "transitions",
                      "emphasis", "captions", "overlays", "cutaways", "texts",
-                     "spots", "layers"],
+                     "spots", "layers", "music", "hushes", "cards", "words", "time"],
         "properties": {
             "note": {"type": "string", "description": "One or two sentences for the editor about the cut."},
+            "format": {"type": "string", "description": "The format the edit is made in (eurobeat, tuff, hopecore, "
+                                                        "dreamcore, demotivational, died, sitcom) or none."},
             "hook_title": s,
             "cold_open": {"type": "string", "description": 'e.g. "p14" or "p14-p15"; "" for none.'},
             "keep": {"type": "array", "minItems": 1, "items": s,
@@ -245,6 +317,17 @@ def schema(max_sounds: int, max_hits: int, max_trans: int = 6, chat: bool = Fals
                       "description": '"clip s | seconds | text | pop|stamp|label | middle|region | why"'},
             "layers": {"type": "array", "maxItems": MAX_LAYERS, "items": s,
                        "description": '"clip s | seconds | region | middle|full|region | opacity % | why"'},
+            "music": {"type": "array", "maxItems": 1 if max_music is None else max_music, "items": s,
+                      "description": '"track id | drop at clip s | all|0|seconds | volume dB | under her words dB | why"'},
+            "hushes": {"type": "array", "maxItems": MAX_HUSHES, "items": s,
+                       "description": '"clip s | seconds | silence|black | why"'},
+            "cards": {"type": "array", "maxItems": MAX_CARDS, "items": s,
+                      "description": '"clip s | seconds | died|poster|flat|comment | text | why"'},
+            "time": {"type": "array", "maxItems": MAX_TIMES, "items": s,
+                     "description": '"clip s | seconds | slow|fast|ramp|freeze | speed or zoom | region or '
+                                    'tempo|deep|mute | why"'},
+            "words": {"type": "array", "maxItems": MAX_WORDS, "items": s,
+                      "description": '"clip s | word | box|slime|glow|fire|scary|big | colour or empty | why"'},
         },
     }
     if short:
@@ -271,7 +354,7 @@ def build_prompt(*, meta: dict[str, Any], analysis: dict[str, Any], ps: list[pc.
                  sounds: list[dict[str, Any]], boxes: dict[str, dict[str, float]], placed: list[dict[str, Any]],
                  chat: str, max_sounds: int, max_hits: int, frames: list[dict[str, Any]],
                  visible: set[str] | None = None, overlays: list[dict[str, Any]] | None = None,
-                 inserts: list[dict[str, Any]] | None = None) -> str:
+                 inserts: list[dict[str, Any]] | None = None, music: list[dict[str, Any]] | None = None) -> str:
     target = (f"This is a Short (9:16): aim for {SHORT_TARGET[0]}-{SHORT_TARGET[1]} s after cutting; "
               "over 60 s loses most viewers." if kind == "short"
               else "This is a 16:9 clip: keep the whole story, but cut every pause and tangent.")
@@ -313,8 +396,11 @@ Regions on the picture:
 Sound library (ids):
 {chr(10).join(library) or '(empty: no sounds)'}
 
+Music library (ids, for music):
+{music_text(music or [])}
+
 Overlay library (ids; green-screen clips over the picture, with their sound):
-{chr(10).join(f"- {o['id']}: {o['name']} · {o['duration_s']:.1f} s · {o['description'] or ''}" for o in overlays or [])
+{chr(10).join(f"- {o['id']}: {o['name']} · {o['duration_s']:.1f} s · {overlay_kind(o)}{o['description'] or ''}" for o in overlays or [])
  or '(empty: no overlays)'}
 
 Inserts for this clip (ids, for cutaways):
@@ -353,6 +439,17 @@ transition into the next part, or a short text when the wait matters ("2 hours l
 """
 
 
+def overlay_kind(o: dict[str, Any]) -> str:
+    return ("opaque, full screen: place it at fill · " if o.get("key_color") == ovl.NO_KEY
+            else "a light effect over the picture · " if o.get("key_color") == ovl.LUMA_KEY else "")
+
+
+def music_text(music: list[dict[str, Any]]) -> str:
+    return ("\n".join(f"- {m['id']}: {m['name']} · {m['mood'] or 'no mood'} · {m['bpm']:.0f} BPM · drop at "
+                      f"{m['drop_s']:.1f} s of {m['duration_s']:.0f} s · {m['description'] or ''}" for m in music)
+            or "(empty: no music)")
+
+
 def inserts_text(inserts: list[dict[str, Any]]) -> str:
     return ("\n".join(f"- {o['id']}: {'video' if 'video' in (o.get('tags') or '') else 'picture'} · "
                       f"{o['duration_s']:.1f} s · {o['description'] or ''} (from {o.get('source') or '?'})"
@@ -389,6 +486,22 @@ def placed_line(fx: dict[str, Any]) -> str:
                 f"{round((fx.get('opacity') or lyr.DEFAULT_OPACITY) * 100)}% opaque")
     if kind == "sfx":
         return f"- {t:.2f} s sound {fx.get('sound')}"
+    if kind == "music":
+        lead = "from the start of the edit" if fx.get("lead", -1) < 0 else f"{fx['lead']:g} s before the drop"
+        return (f"- music {fx.get('track')}: its drop at {t:.2f} s, playing {lead}, {fx.get('gain', 0):+g} dB, "
+                f"{fx.get('duck', 0):+g} dB under her words (only one music track: this one stays)")
+    if kind == "card":
+        return f"- {t:.2f}–{t + fx['d']:.2f} s card {fx.get('style')}: \"{fx.get('text') or ''}\""
+    if kind == "time":
+        if fx.get("style") == "freeze":
+            return (f"- {t:.2f} s freeze for {fx['d']:g} s, pushing in to {fx.get('zoom', 1):g}x"
+                    f" on {fx.get('region') or CENTRE}" + (", black and white" if fx.get("mono") else ""))
+        return (f"- {t:.2f}–{t + fx['d']:.2f} s {fx.get('style')} at {fx.get('rate', 1):g}x "
+                f"(sound {fx.get('sound') or 'tempo'})")
+    if kind == "word":
+        return f"- {t:.2f} s word art {fx.get('style')} on \"{fx.get('word') or ''}\""
+    if kind == "hush":
+        return f"- {t:.2f}–{t + fx['d']:.2f} s hush ({fx.get('style') or 'silence'})"
     span = f"- {t:.2f}–{t + fx['d']:.2f} s"
     if kind in motion.ZOOMS:
         start = f"{fx['from_zoom']:g}x→" if kind == "push" and fx.get("from_zoom") else ""

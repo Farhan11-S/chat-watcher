@@ -22,6 +22,7 @@ poll_minutes = 30              # how often the worker checks each channel's Stre
 streams_per_check = 15
 min_duration_s = 600           # ignore streams shorter than 10 minutes
 default_backfill = 1           # finished streams to queue when you add a channel
+title_match = ""             # regex: only queue streams whose title matches (case-insensitive); "" = all
 
 [pipeline]
 auto_clip = true               # false: stop after finding moments; you Keep/Skip them, then press "Clip kept"
@@ -29,6 +30,8 @@ auto_analyze = true
 clip_top = 0                   # clip the best N moments (0 = all scored)
 analyze_top = 0                # Claude-analyse the best N moments (0 = all)
 preview_height = 360           # moments not downloaded yet get a video-only preview at this height;
+auto_compile = false           # ✨ Read the whole stream by itself once scored
+compile_listen = false         # Whisper the whole audio first instead of captions (CPU)
                                # only its frames are kept, for Claude (0 = analyse downloaded clips only)
 
 [scoring]

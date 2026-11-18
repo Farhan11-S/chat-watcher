@@ -114,6 +114,23 @@
 .ed-ov-blur[hidden] { display: none; }
 .ed-insert { display: flex; gap: .4rem; margin: .5rem 0 .2rem; }
 .ed-insert input { flex: 1; min-width: 8rem; }
+/* Cards over the picture (overlays.js drawCards, mirrors edit/cards.py) */
+.ed-cards { position: absolute; pointer-events: none; overflow: hidden; }
+.ed-cards[hidden] { display: none; }
+.ed-card { position: absolute; inset: 0; }
+.ed-card-bg { position: absolute; inset: 0; }
+.ed-card-band { position: absolute; top: 50%; background: #000; }
+.ed-card-died { position: absolute; left: 50%; top: 50%; white-space: nowrap; font-family: "Cinzel", serif; font-weight: 400;
+  transform-origin: center; }
+.ed-card-flat { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); white-space: pre; text-align: center;
+  font-family: "Archivo Black", sans-serif; }
+.ed-card-poster { position: absolute; left: 9%; top: 42%; transform: translateY(-50%); font-family: "Archivo Black", sans-serif;
+  white-space: nowrap; }
+.ed-card-bubble { position: absolute; display: flex; align-items: flex-start; background: #fff; box-shadow: 0 2px 6px rgb(0 0 0 / .3);
+  max-width: 92%; box-sizing: border-box; }
+.ed-card-avatar { flex: none; border-radius: 50%; background: #c8c8c8; }
+.ed-card-comment { font-family: "Fredoka", sans-serif; font-weight: 700; white-space: pre; }
+.ed-card-who { color: #8a8a8a; }
 .ed-txs { position: absolute; pointer-events: none; overflow: hidden; }
 .ed-txs[hidden] { display: none; }
 .ed-callout { position: absolute; white-space: nowrap; text-align: center; font-weight: 700; paint-order: stroke fill;
@@ -138,11 +155,14 @@
 @font-face { font-family: "Rubik Wet Paint"; src: url("fonts/RubikWetPaint-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "Creepster"; src: url("fonts/Creepster-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "Bangers"; src: url("fonts/Bangers-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Cinzel"; src: url("fonts/Cinzel.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Archivo Black"; src: url("fonts/ArchivoBlack-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "Rounded Mplus 1c ExtraBold"; src: url("fonts/MPLUSRounded1c-ExtraBold.ttf") format("truetype"); font-weight: 700; font-display: swap; }
 .ed-cap { position: absolute; white-space: nowrap; text-align: center; font-weight: 700; paint-order: stroke fill;
   -webkit-font-smoothing: antialiased; }
 .ed-cap > div { position: relative; paint-order: stroke fill; }   /* positioned too, so the front paints over the ring */
 .ed-cap > .ed-cap-back { position: absolute; inset: 0; }
+.ed-art { display: inline-block; line-height: 1.15; transform-origin: 50% 55%; paint-order: stroke fill; }   /* word art (edit/wordart.py) */
 .ed-subs-text { position: absolute; left: 4%; right: 4%; text-align: center; color: #ffffff; font-weight: 700;
   paint-order: stroke fill; -webkit-font-smoothing: antialiased; }
 .ed-sub-row .ed-lx { cursor: text; border-radius: 4px; padding: 0 .15rem; outline: none; }

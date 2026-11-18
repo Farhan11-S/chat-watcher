@@ -17,6 +17,10 @@ MAX_SPOTS = 3
 MAX_CAPTIONS = 12
 MAX_LAYERS = 3
 MAX_LAYOUTS = 8
+MAX_HUSHES = 4
+MAX_CARDS = 2
+MAX_WORDS = 4
+MAX_TIMES = 3
 
 
 class AutoEditError(Exception):

@@ -20,16 +20,18 @@ export const LANES = [["Beats", 0, ROW.beats], ["Cut", ROW.beats, ROW.wave], ["S
 const CAM = ["punch", "push", "frame"];             // the Camera lane; shakes and flashes are on the Effects lane
 export const laneOf = f => (CAM.includes(f.type) ? "cam" : "vfx");
 export const HEIGHT = Y_RULER + ROW.ruler;
-export const VIS = ["punch", "push", "shake", "flash", "frame", "overlay", "layer", "text", "spot", "caption"], ZOOMS = ["punch", "push"];
+export const VIS = ["punch", "push", "shake", "flash", "frame", "overlay", "layer", "text", "spot", "caption", "hush", "card", "word", "time"], ZOOMS = ["punch", "push"];
 export const VLABEL = { punch: "Punch-in", push: "Push-in", shake: "Shake", flash: "Flash", frame: "Show a region",
-                 overlay: "Overlay", layer: "Layer", text: "Text", spot: "Spotlight", caption: "Caption style" };
+                 overlay: "Overlay", layer: "Layer", text: "Text", spot: "Spotlight", caption: "Caption style",
+                 hush: "Hush", card: "Card", word: "Word art", time: "Time" };
 export const STRENGTH = { 1: "light", 2: "normal", 3: "heavy" };
 export const LENGTHS = { punch: [0.5, 0.8, 1, 1.5, 2, 3, 5], push: [1, 2, 3, 4, 6, 8, 12],
                   shake: [0.2, 0.4, 0.6, 1, 1.5, 2], flash: [0.1, 0.2, 0.3, 0.5, 0.8, 1.2],
                   frame: [0.5, 1, 1.5, 2, 3, 4, 6, 10], overlay: [0.5, 1, 1.5, 2, 3, 5, 8],
                   layer: [1, 2, 3, 5, 8, 12, 20, 30],
                   text: [0.5, 0.8, 1, 1.5, 2, 3, 4, 6], spot: [0.5, 1, 1.5, 2, 3, 4, 6],
-                  caption: [0.5, 1, 2, 3, 5, 8, 12, 20, 30] };
+                  caption: [0.5, 1, 2, 3, 5, 8, 12, 20, 30], hush: [0.15, 0.25, 0.4, 0.6, 0.8, 1, 1.5, 2, 3],
+                  card: [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8], word: [0.5, 1, 2, 3], time: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3, 4, 5, 8] };
 export const ZOOM_STEPS = { punch: [1.2, 1.4, 1.6, 2, 2.5, 3], push: [1.1, 1.2, 1.3, 1.5, 2, 2.5, 3, 3.5, 4] };
 export const REGION_NAMES = ["face", "game", "chat"];
 export const GAINS = [6, 3, 0, -3, -6, -10, -15, -20, -30];

@@ -26,11 +26,12 @@ from __future__ import annotations
 import colorsys
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from chatwatcher.edit import layout as lay
+from chatwatcher.edit import wordart as wa
 from chatwatcher.subs import lines
 
 CAPTION = "caption"
@@ -142,10 +143,10 @@ def anchor(at: str, boxes: dict[str, dict[str, float]], panels: list[lay.Panel] 
 
 
 def placed(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]],
-           panels: list[lay.Panel] | None) -> list[Mark]:
-    """The caption styles of these effects (clip time), placed on the output picture.
-    panels: a Short's picture (None for 16:9)."""
-    out = []
+           panels: list[lay.Panel] | None) -> list[Mark | wa.Art]:
+    """The caption styles of these effects (clip time), placed on the output picture, then
+    their word art (edit.wordart). panels: a Short's picture (None for 16:9)."""
+    out: list[Mark] = []
     for fx in effects:
         if fx.get("type") != CAPTION:
             continue
@@ -155,17 +156,18 @@ def placed(effects: list[dict[str, Any]], boxes: dict[str, dict[str, float]],
                         fx.get("font") if fx.get("font") in FONTS else "", at,
                         None if at in ("", "top", "bottom") else anchor(at, boxes, panels),
                         fx.get("size") if fx.get("size") in SIZES else ""))
-    return sorted(out, key=lambda m: m.t)
+    return [*sorted(out, key=lambda m: m.t), *wa.placed(effects)]
 
 
-def mark_for(t0: float, marks: list[Mark]) -> Mark | None:
+def mark_for(t0: float, marks: list[Mark | wa.Art]) -> Mark | None:
     """The style of a caption starting at t0: the latest mark that covers it."""
-    on = [m for m in marks if m.t - 0.02 <= t0 < m.t + m.d]
+    on = [m for m in marks if isinstance(m, Mark) and m.t - 0.02 <= t0 < m.t + m.d]
     return on[-1] if on else None
 
 
-def styled(style: dict[str, Any], marks: list[Mark] | None) -> bool:
-    """Whether captions are drawn here (rather than by subs.lines.ass's plain lines)."""
+def styled(style: dict[str, Any], marks: list[Mark | wa.Art] | None) -> bool:
+    """Whether captions are drawn here (rather than by subs.lines.ass's plain lines): the
+    bubble look, a caption style or word art."""
     return style.get("look") == "bubble" or bool(marks)
 
 
@@ -180,16 +182,19 @@ class Shown:
     begins: bool                # it starts in this part (so it springs in here)
     into: float                 # seconds of it already shown before this part
     mark: Mark | None
+    arts: list[tuple[int, int, wa.Art]] = field(default_factory=list)    # its word art (wordart.on_cue)
+    at: float = 0.0             # clip time it shows from in this part (for when a word is said)
 
 
-def local(cues: list[dict[str, Any]], start: float, length: float, marks: list[Mark] | None) -> list[Shown]:
+def local(cues: list[dict[str, Any]], start: float, length: float, marks: list[Mark | wa.Art] | None) -> list[Shown]:
     """The cues showing in [start, start + length) of the clip, in part time, with their style."""
     out = []
+    arts = [m for m in marks or [] if isinstance(m, wa.Art)]
     for c in cues:
         a, b = max(c["t0"], start), min(c["t1"], start + length)
         if b > a and b - a >= min(lines.MIN_SHOWN_S, c["t1"] - c["t0"]):
             out.append(Shown(a - start, b - start, c["text"], c.get("color"), a - c["t0"] < 0.02, a - c["t0"],
-                             mark_for(c["t0"], marks or [])))
+                             mark_for(c["t0"], marks or []), wa.on_cue(c["text"], c["t0"], c["t1"], arts), a))
     return sorted(out, key=lambda s: (s.a, s.b))
 
 
@@ -243,25 +248,50 @@ def _wave_tags(i: int, size: float, dur_ms: int, into_ms: int) -> str:
     return out
 
 
+@dataclass
+class _Words:
+    """What drawing a caption's word art needs on one layer and event."""
+    spans: list[tuple[int, int, wa.Art]]
+    role: str                   # ring | top | solo (wordart.look)
+    bord: float                 # the layer's own outline, px
+    family: str                 # the caption's font
+    place: str                  # the event's placing tags (a wobble's turning goes on after a \\r)
+    reset: str                  # tags that bring the caption's own look back after a word
+    said_ms: list[int | None]   # each span's word: when she says it, ms from the event's start
+
+
 def _body(rows: list[str], fill: str, hi_fill: str, size: float, fx: str, begins: bool,
-          dur_ms: int, into_ms: int) -> str:
+          dur_ms: int, into_ms: int, words: _Words | None = None) -> str:
     """The caption's text with its colour (and size, for highlighted words) runs; a wave
-    gives each letter its own tags."""
-    out, on, i = [], False, 0
-    for row in rows:
-        pieces, on_after = lines.runs(row, on)
+    gives each letter its own tags. Word art starts with its own tags, and the caption's
+    come back after it."""
+    out, i, was_art = [], 0, False
+    spans = words.spans if words else []
+    for row in wa.pieces(rows, spans):
         parts = []
-        for text, hi in pieces:
-            head = f"\\1c{_ass_color(hi_fill if hi else fill)}" + _scale(fx, begins, dur_ms, into_ms, HI_SCALE if hi else 1)
-            if fx == "wave":
+        for text, hi, art in row:
+            if art and words:
+                k = next(j for j, (_a, _b, x) in enumerate(spans) if x is art)
+                family = (font_for(art.font, text, "") if art.font else
+                          CJK_FONT if lines.width(text) != len(text) else words.family)
+                head = wa.tags(art, words.role, size, words.bord, family,
+                               _scale(fx, begins, dur_ms, into_ms, art.scale), words.said_ms[k])
+                if head.startswith("\\r"):
+                    head += words.place
+            else:
+                head = ((words.reset if was_art and words else "")
+                        + f"\\1c{_ass_color(hi_fill if hi else fill)}" + _scale(fx, begins, dur_ms, into_ms, HI_SCALE if hi else 1))
+            was_art = bool(art)
+            boxed = bool(art and art.style == "box")
+            pad = "\\h" if boxed else ""       # the box's sides: a space inside it
+            if fx == "wave" and not boxed:      # (a box would break into one per letter: it holds still)
                 for j, ch in enumerate(text):
                     parts.append("{" + (head if j == 0 else "") + _wave_tags(i, size, dur_ms, into_ms) + "}" + _esc(ch))
                     i += 1
             else:
-                parts.append("{" + head + "}" + _esc(text))
+                parts.append("{" + head + "}" + pad + _esc(text) + pad)
                 i += len(text)
         out.append("".join(parts))
-        on = on_after
     return "\\N".join(out)
 
 
@@ -352,20 +382,25 @@ def events(shown: list[Shown], style: dict[str, Any], w: int, h: int, *, title: 
             fill = (s.color or "FFFFFF").upper()
             hi = lines.HIGHLIGHT if fill != lines.HIGHLIGHT else "FFFFFF"
             layers = [(0, f"\\bord{max(1.0, size * CLASSIC_BORD):.1f}\\shad{size * 0.045:.1f}\\3c&H000000&", fill, hi)]
+        roles = ("ring", "top") if bubble else ("solo",)
         for layer, outline, col, hi_col in layers:
-            body = _body(rows, col, hi_col, size, fx, s.begins, dur_ms, into_ms)
+            bord = float(outline.split("\\bord", 1)[1].split("\\", 1)[0])
             for m0, m1, place in moves:
                 if m1 <= m0:
                     continue
+                words = (_Words(s.arts, roles[layer], bord, family, place,
+                                f"\\r\\fn{family}\\fs{round(size)}\\b1{place}{outline}",
+                                [round((a.t - s.at) * 1000) - m0 for _g0, _g1, a in s.arts]) if s.arts else None)
                 # A shake's later steps start mid-way: their scale is already settled.
-                body_here = body if m0 == 0 else _body(rows, col, hi_col, size, fx, False, dur_ms, into_ms)
+                body_here = _body(rows, col, hi_col, size, fx, s.begins and m0 == 0, dur_ms, into_ms, words)
                 out.append(f"Dialogue: {layer},{lines._ass_time(s.a + m0 / 1000)},{lines._ass_time(s.a + m1 / 1000)},"
                            f"Callout,,0,0,0,,{{\\fn{family}\\fs{round(size)}\\b1\\q2{place}{outline}}}{body_here}")
     return out
 
 
 def font_files() -> list[Path]:
-    return [FONT_DIR / f for f in (*FONT_FILES.values(), CJK_FILE) if (FONT_DIR / f).is_file()]
+    from chatwatcher.edit.cards import FONT_FILES as CARD_FONTS
+    return [FONT_DIR / f for f in (*FONT_FILES.values(), CJK_FILE, *CARD_FONTS.values()) if (FONT_DIR / f).is_file()]
 
 
 def info() -> dict[str, Any]:

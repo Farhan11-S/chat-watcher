@@ -128,3 +128,34 @@ def test_overlay_library_and_render(site, tmp_path):  # noqa: F811
     # Deleted from the library: the edit keeps its marker, the render skips it.
     client.post("/overlays/pings/delete")
     assert ovl.get_overlay(conn, "pings") is None and not list(ovl.overlays_dir(cfg).glob("pings.*"))
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+def test_black_and_opaque_backgrounds(tmp_path):
+    """A light effect on black keys by brightness; an opaque clip (a time card) isn't keyed
+    and shows as a cutaway. A clip with no screen colour is still refused by default."""
+    from chatwatcher import db
+    from chatwatcher.config import Config, PathsConfig
+    from chatwatcher.edit.autoedit.prompt import overlay_kind
+    cfg = Config(paths=PathsConfig(data_dir=tmp_path / "data", output_dir=tmp_path / "out"))
+    conn = db.open_db(cfg.paths.db_path)
+    src = tmp_path / "card.mp4"            # a red box on black: a light effect, or a card
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x180:d=1",
+                    "-vf", "drawbox=x=120:y=60:w=80:h=60:color=0xA01A1A:t=fill", str(src)], check=True)
+    with pytest.raises(ovl.OverlayError):
+        ovl.import_overlay(cfg, conn, src, original="card.mp4")
+    glow = ovl.import_overlay(cfg, conn, src, original="glow.mp4", key="black")
+    card = ovl.import_overlay(cfg, conn, src, original="time card.mp4", key="none")
+    assert (glow["key_color"], card["key_color"]) == (ovl.LUMA_KEY, ovl.NO_KEY)
+    assert ovl.is_opaque(card) and not ovl.is_opaque(glow)
+    assert "fill" in overlay_kind(card) and "light effect" in overlay_kind(glow)
+
+    def alpha(o, x, y):
+        out = subprocess.run(["ffmpeg", "-v", "error", "-c:v", "libvpx-vp9", "-i", str(ovl.video_path(cfg, o)),
+                              "-frames:v", "1", "-vf", "scale=32:18", "-f", "rawvideo", "-pix_fmt", "rgba", "-"],
+                             capture_output=True).stdout
+        return out[(y * 32 + x) * 4 + 3], out[(y * 32 + x) * 4]
+    assert alpha(glow, 2, 2)[0] < 10                      # black → see-through
+    a, red = alpha(glow, 16, 9)
+    assert a > 200 and red > 140                          # the dark red box: solid and lifted towards its colour
+    assert alpha(card, 2, 2)[0] > 250                     # opaque: nothing keyed

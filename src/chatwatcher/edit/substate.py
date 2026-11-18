@@ -101,7 +101,7 @@ def subtitles(cfg: Config, conn: sqlite3.Connection, moment_pk: int, clip: ClipR
             "names": names.get(conn, scope), "output_language": cfg.claude.output_language,
             "subs_auto": auto_cues(words, kind, style),
             "subs_auto_by_mode": {m: auto_cues(words, kind, style | {"mode": m}) for m in lines.MODES} if words else {},
-            "sub_words": [[round(a, 3), round(b, 3)] for a, b, _ in lines.words_of(words)] if words else [],
+            "sub_words": [[round(a, 3), round(b, 3), w] for a, b, w in lines.words_of(words)] if words else [],
             "sub_language": (words or {}).get("language"),
             "sub_layout": {**lines.frame_rules(w, h), "sizes": lines.SIZES, "highlight": lines.HIGHLIGHT,
                            "font": cfg.subtitles.font, "captions": cap.info()}}

@@ -350,3 +350,158 @@ def caption_effects(items: list[str], ps: list[pc.Piece], segs: list[list[float]
 def captions(words: dict[str, Any] | None, emphasis: list[str]) -> list[dict[str, Any]]:
     """Word-by-word cues with Claude's emphasis words *highlighted*."""
     return service.auto_cues(words, "short", {"mode": "words", "emphasis": emphasis})
+
+
+MUSIC_SNAP_S = 0.3       # a drop moves this far onto a loud hit (the crash, the scream)
+HUSH_TO_DROP_S = 0.35    # a hush ending this close to the drop ends exactly on it
+
+
+def music_effects(items: list[str], segs: list[list[float]], hits: list[tuple[float, float]],
+                  tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Claude's music bed ("track | drop at clip s | all|0|seconds | volume | under her words |
+    why"): at most one, its drop inside the cut, snapped onto a loud hit close by."""
+    from chatwatcher.edit import music as mus
+    known = {t["id"]: t for t in tracks}
+    for item in items:
+        bits = parts(item)
+        tr = known.get(bits[0] if bits else "")
+        try:
+            t = float(bits[1])
+        except (ValueError, IndexError):
+            continue
+        k = _inside(t, segs)
+        if tr is None or k is None:
+            continue
+        snapped = snap(t, hits, MUSIC_SNAP_S)
+        if _inside(snapped, segs) == k:
+            t = snapped
+        lead_s = (bits[2] if len(bits) > 2 else "all").strip().lower().rstrip("s ")
+        try:
+            lead = -1.0 if lead_s in ("all", "", "-1") else min(max(float(lead_s), 0.0), mus.LEAD_MAX)
+        except ValueError:
+            lead = -1.0
+
+        def num(i: int, default: float, lo: float, hi: float) -> float:
+            try:
+                v = float((bits[i] if len(bits) > i else "").replace("dB", "").strip())
+            except ValueError:
+                return default
+            return round(min(max(v, lo), hi), 1) if math.isfinite(v) else default
+
+        return [{"id": "c" + secrets.token_hex(3), "type": mus.MUSIC, "t": round(t, 3), "track": tr["id"],
+                 "lead": lead, "gain": num(3, mus.DEFAULT_GAIN, *mus.GAIN_RANGE),
+                 "duck": num(4, mus.DEFAULT_DUCK, *mus.DUCK_RANGE), "by": "claude",
+                 "why": " | ".join(bits[5:])[:300]}]
+    return []
+
+
+def hush_effects(items: list[str], segs: list[list[float]], drop: float | None = None) -> list[dict[str, Any]]:
+    """Claude's hushes ("clip s | seconds | silence|black | why"), inside the cut; one that
+    ends just short of (or just past) the music's drop ends exactly on it."""
+    from chatwatcher.edit import music as mus
+    from chatwatcher.edit.autoedit.plan import MAX_HUSHES
+    out = []
+    for item in items:
+        bits = parts(item)
+        try:
+            t, d = float(bits[0]), float(bits[1])
+        except (ValueError, IndexError):
+            continue
+        if not (math.isfinite(t) and math.isfinite(d)) or _inside(t, segs) is None:
+            continue
+        d = min(max(d, mus.HUSH_D[1]), mus.HUSH_D[2])
+        if drop is not None and abs(t + d - drop) < HUSH_TO_DROP_S and drop - d >= 0:
+            t = drop - d
+        style = (bits[2].strip().lower() if len(bits) > 2 else "silence")
+        out.append({"id": "c" + secrets.token_hex(3), "type": mus.HUSH, "t": round(t, 3), "d": round(d, 3),
+                    "style": style if style in mus.HUSH_STYLES else "silence", "by": "claude",
+                    "why": " | ".join(bits[3:])[:300]})
+    return out[:MAX_HUSHES]
+
+
+def card_effects(items: list[str], segs: list[list[float]]) -> list[dict[str, Any]]:
+    """Claude's cards ("clip s | seconds | style | text | why"), starting inside the cut."""
+    from chatwatcher.edit import cards as crd
+    from chatwatcher.edit.autoedit.plan import MAX_CARDS
+    out = []
+    for item in items:
+        bits = parts(item)
+        try:
+            t, d = float(bits[0]), float(bits[1])
+        except (ValueError, IndexError):
+            continue
+        style = bits[2].strip().lower() if len(bits) > 2 else ""
+        if style not in crd.STYLES or not (math.isfinite(t) and math.isfinite(d)) or _inside(t, segs) is None:
+            continue
+        fx = crd.clean({"style": style, "text": bits[3] if len(bits) > 3 else "", "d": d}, 0)
+        out.append({"id": "c" + secrets.token_hex(3), "type": crd.CARD, "t": round(t, 3), **fx, "by": "claude",
+                    "why": " | ".join(bits[4:])[:300]})
+    return out[:MAX_CARDS]
+
+
+WORD_SNAP_S = 1.5        # word art moves this far onto the time Whisper heard the word
+
+
+def word_effects(items: list[str], segs: list[list[float]], words: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Claude's word art ("clip s | word | style | colour | why"), on the moment Whisper heard
+    the word's first part (the nearest within WORD_SNAP_S), inside the cut."""
+    from chatwatcher.edit import wordart as wa
+    from chatwatcher.edit.autoedit.plan import MAX_WORDS
+    from chatwatcher.subs import lines
+    heard = lines.words_of(words) if words else []
+    norm = lambda s: re.sub(r"[^\w]", "", s.lower())             # noqa: E731
+    out: list[dict[str, Any]] = []
+    for item in items:
+        bits = parts(item)
+        try:
+            t = float(bits[0])
+            fx = wa.clean({"word": bits[1], "style": bits[2].strip().lower(),
+                           "color": (bits[3] if len(bits) > 3 else "").strip().lower()}, 0)
+        except (ValueError, IndexError):
+            continue
+        if not math.isfinite(t):
+            continue
+        first = norm(fx["word"].split()[0])
+        near = [a for a, _b, w in heard if first and norm(w) == first and abs(a - t) <= WORD_SNAP_S]
+        if near:
+            t = min(near, key=lambda a: abs(a - t))
+        if _inside(t, segs) is None or any(abs(o["t"] - t) < 0.05 for o in out):
+            continue
+        out.append({"id": "c" + secrets.token_hex(3), "type": wa.WORD, "t": round(t, 3), **fx, "by": "claude",
+                    "why": " | ".join(bits[4:])[:300]})
+    return out[:MAX_WORDS]
+
+
+def time_effects(items: list[str], segs: list[list[float]]) -> list[dict[str, Any]]:
+    """Claude's time effects ("clip s | seconds | slow|fast|ramp|freeze | speed or zoom |
+    region or sound | why"), inside the cut, none overlapping another."""
+    from chatwatcher.edit import timing as tm
+    from chatwatcher.edit.autoedit.plan import MAX_TIMES
+    out: list[dict[str, Any]] = []
+    for item in items:
+        bits = parts(item)
+        try:
+            t, d = float(bits[0]), float(bits[1])
+            style = bits[2].strip().lower()
+        except (ValueError, IndexError):
+            continue
+        if style not in tm.STYLES or not (math.isfinite(t) and math.isfinite(d)) or _inside(t, segs) is None:
+            continue
+        raw: dict[str, Any] = {"style": style, "d": d}
+        num = bits[3].strip().rstrip("x×") if len(bits) > 3 else ""
+        try:
+            if num:
+                raw["zoom" if style == "freeze" else "rate"] = float(num)
+        except ValueError:
+            pass
+        what = bits[4].strip().lower() if len(bits) > 4 else ""
+        raw["region" if style == "freeze" else "sound"] = what
+        fx = tm.clean(raw, 0)
+        span = (t, t + (0.01 if style == "freeze" else fx["d"]))
+        out.append({"id": "c" + secrets.token_hex(3), "type": tm.TIME, "t": round(t, 3), **fx, "by": "claude",
+                    "why": " | ".join(bits[5:])[:300], "_span": span})
+    kept: list[dict[str, Any]] = []
+    for fx in sorted(out, key=lambda f: f["t"]):
+        if all(fx["_span"][0] >= k["_span"][1] or fx["_span"][1] <= k["_span"][0] for k in kept):
+            kept.append(fx)
+    return [{k: v for k, v in fx.items() if k != "_span"} for fx in kept][:MAX_TIMES]

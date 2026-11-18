@@ -9,12 +9,12 @@ import { audio, playSound } from "./audio.js";
 import { playEdit, playFromHere, seek, stopEditPlay, toggle } from "./playback.js";
 import { render, toggleWatch } from "./io.js";
 import {
-  add, addFx, addSub, addVis, changed, del, deleteSub, doUndo, editFx, joinSub, move, nudge,
+  add, addFx, addMusic, addSub, addVis, addWordArt, changed, setArtWord, del, deleteSub, doUndo, editFx, joinSub, move, nudge,
   polishSubs, previewFx, pushUndo, rebuildSubs, saveNames, selectSeg, selectSub, setEdge, setGain,
   setSubMode, setSubStyle, setSubText, setSubTime, setSubVoice, split, splitSub, startOver, subIndex,
   subsChanged,
 } from "./editing.js";
-import { addOverlay, addSpot, addText, bringIn, ovSize, setOverlay, setSpotRegion, txStyle } from "./overlays.js";
+import { addCard, addOverlay, addSpot, addText, bringIn, ovSize, setOverlay, setSpotRegion, txStyle } from "./overlays.js";
 import { T, X, gx, gy, hitFx, hitSeg, hitSubAt, hitVfx, resize } from "./timeline.js";
 import { addSubAfter, giveTicked, lineEnd, linesToSubs, paintList, transcribe } from "./transcript.js";
 import { addPerson, playVoice, setSegRegion, setTransition, setVoice, tagKey } from "./panels.js";
@@ -236,6 +236,7 @@ root.addEventListener("click", ev => {
     if (ds.chipFor === "seg") setSegRegion(ds.chipRegion);
     else if (ds.chipFor === "spot") setSpotRegion(ds.chipRegion);
     else if (ds.chipFor === "capat") editFx({ at: ds.chipRegion });
+    else if (ds.chipFor === "time") editFx({ region: ds.chipRegion });
     else if (ds.chipFor === "lysrc") { if (ds.chipRegion) editFx({ region: ds.chipRegion }); }
     else if (ds.chipFor === "top" || ds.chipFor === "bottom") {
       const f = curFx(), other = ds.chipFor === "top" ? "bottom" : "top", change = { [ds.chipFor]: ds.chipRegion };
@@ -269,7 +270,9 @@ root.addEventListener("click", ev => {
     const b = S.D.regions[ds.layCentre];
     if (b && S.layout) setLayout({ type: "crop", x: Math.round((b.x + b.w / 2) * 1e4) / 1e4, y: Math.round((b.y + b.h / 2) * 1e4) / 1e4 });
   } else if (ds.layTitle !== undefined) { if (S.layout) setLayout({ title: S.D.titles[+ds.layTitle] || "" }); }
-  else if (ds.edAdd) { if (S.regionMode) toggleRegions(false); addVis(ds.edAdd); }
+  else if (ds.edAdd) { if (S.regionMode) toggleRegions(false); addVis(ds.edAdd, ds.timeStyle || ""); }
+  else if (ds.artWord !== undefined) setArtWord(ds.artWord);
+  else if (ds.subArt !== undefined) addWordArt(curSub(), ds.subArt);
   else if (ds.subGo) selectSub(ds.subGo);
   else if (ds.subStart || ds.subEnd) {
     const c = S.subs.find(x => x.id === (ds.subStart || ds.subEnd));
@@ -312,7 +315,7 @@ root.addEventListener("click", ev => {
       toggle, add, split, undo: doUndo, render, watch: toggleWatch,
       "play-seg": () => playEdit(S.sel, true),
       up: () => move(-1), down: () => move(1), delete: del,
-      "add-fx": addFx, "add-overlay": addOverlay, "add-text": addText, "add-spot": addSpot, autoedit: autoEdit, "clear-claude": clearClaude, whole: startOver, "chat-new": newChat,
+      "add-fx": addFx, "add-music": addMusic, "add-overlay": addOverlay, "add-text": addText, "add-spot": addSpot, "add-card": () => addCard(ds.card || "died"), autoedit: autoEdit, "clear-claude": clearClaude, whole: startOver, "chat-new": newChat,
       "fx-play": previewFx, regions: () => toggleRegions(), transcribe,
       "sub-add": addSub, "sub-rebuild": rebuildSubs, "lines-edit": linesToSubs, "sub-polish": polishSubs, "names-save": saveNames,
     })[ds.edAct]?.();
@@ -333,6 +336,13 @@ root.addEventListener("change", ev => {
   else if (t.matches("[data-fx-sound]")) editFx({ sound: t.value, gain: (sound(t.value) || {}).gain || 0 });
   else if (t.matches("[data-fx-gain]")) editFx({ gain: +t.value });
   else if (t.matches("[data-fx-duck]")) editFx({ duck: +t.value });
+  else if (t.matches("[data-mu-track]")) {
+    try { localStorage.setItem("cw-ed-music", t.value); } catch (e) {}
+    editFx({ track: t.value });
+  } else if (t.matches("[data-mu-lead]")) editFx({ lead: +t.value });
+  else if (t.matches("[data-mu-gain]")) editFx({ gain: +t.value });
+  else if (t.matches("[data-mu-duck]")) editFx({ duck: +t.value });
+  else if (t.matches("[data-hush-style]")) editFx({ style: t.value });
   else if (t.matches("[data-vis-d]")) editFx({ d: Math.min(+t.value, S.D.duration - curFx().t) });
   else if (t.matches("[data-vis-region]")) {
     const f = curFx(), change = { region: t.value };
@@ -348,6 +358,29 @@ root.addEventListener("change", ev => {
   else if (t.matches("[data-shot-split]")) editFx({ split: +t.value });
   else if (t.matches("[data-hook]")) setHook(t.dataset.hook, t.value);
   else if (t.matches("[data-layer-opacity]")) editFx({ opacity: +t.value });
+  else if (t.matches("[data-card-text], [data-card-who]")) { S.txEditing = false; changed(); }
+  else if (t.matches("[data-card-style]")) {
+    const f = curFx(), CI = S.D.card_info, was = CI.styles[f.style], now = CI.styles[t.value];
+    const change = { style: t.value, color: now.color, bg: now.bg };
+    if (!f.text || f.text === was.text) change.text = now.text;
+    if (t.value === "comment") Object.assign(change, { at: f.at || "middle", dx: f.dx || 0, dy: f.dy ?? CI.default_dy.comment, who: f.who || "" });
+    editFx(change);
+  } else if (t.matches("[data-card-color]")) editFx({ color: t.value });
+  else if (t.matches("[data-art-input]")) setArtWord(t.value);
+  else if (t.matches("[data-time-style]")) {
+    const TI = S.D.time_info, st = t.value, f = curFx();
+    const change = { style: st, d: TI.d[st][0] };
+    if (st === "freeze") Object.assign(change, { zoom: f.zoom ?? TI.zoom[0], mono: !!f.mono, region: f.region ?? "" });
+    else Object.assign(change, { rate: TI.rates[st][0], sound: f.sound || "tempo" });
+    editFx(change);
+  } else if (t.matches("[data-time-rate]")) editFx({ rate: +t.value });
+  else if (t.matches("[data-time-sound]")) editFx({ sound: t.value });
+  else if (t.matches("[data-time-zoom]")) editFx({ zoom: +t.value });
+  else if (t.matches("[data-time-mono]")) editFx({ mono: t.value === "1" });
+  else if (t.matches("[data-art-style]")) editFx({ style: t.value });
+  else if (t.matches("[data-art-color]")) editFx({ color: t.value });
+  else if (t.matches("[data-card-bg]")) editFx({ bg: t.value });
+  else if (t.matches("[data-card-place]")) editFx({ dy: +t.value, dx: 0 });
   else if (t.matches("[data-text-input]")) {
     const f = curFx();
     S.txEditing = false;

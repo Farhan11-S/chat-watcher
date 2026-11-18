@@ -3,12 +3,13 @@
 import { $, DUCKS, GAINS, HEIGHT, LANES, LANG, LENGTHS, S, VLABEL, ZOOMS, ZOOM_STEPS, call, pk, root, video } from "./state.js";
 import {
   btn, curFx, curSub, cutInto, el, flash, fmt, isVis, kept, keptFx, nice, ovPicture, ovSound,
-  overlayOf, post, r3, select, setSpeaker, sound, subStatus, subWidth, total, transOf,
+  overlayOf, partLen, post, r3, select, setSpeaker, sound, subStatus, subWidth, timeParts, total, track, transOf,
 } from "./util.js";
+import { musicBed } from "./audio.js";
 import { FULL, fitZoom, isShort, spotBox } from "./preview.js";
 import { playEdit, seek, stopEditPlay } from "./playback.js";
-import { CAPI, V, subsAt, voiceColor, voiceName, voiceText } from "./captions.js";
-import { changed, pushUndo, selectSub, subIndex, subsChanged } from "./editing.js";
+import { CAPI, V, cueArts, subsAt, voiceColor, voiceName, voiceText } from "./captions.js";
+import { artCue, artWords, changed, pushUndo, selectSub, subIndex, subsChanged } from "./editing.js";
 import { fxSize, sizeRange, txStyle } from "./overlays.js";
 import { regionCol } from "./timeline.js";
 import { giveTicked } from "./transcript.js";
@@ -197,6 +198,52 @@ export function paintFxPanel() {
   acts.append(vol, duck, d);
   box.appendChild(acts);
 }
+// The music bed: which track, where its drop lands (the marker), how much of it plays
+// before the drop, its volume and how far it dips under her words.
+export function paintMusicPanel() {
+  const box = $("[data-ed-selected]");
+  box.textContent = "";
+  const f = curFx(), tr = track(f.track), MI = S.D.music_info;
+  const head = el("div", "ed-sel-head");
+  head.append(el("b", "", "Music"), f.by === "claude" ? " · placed by Claude" : " · yours");
+  if (!kept(f.t)) head.append(el("span", "ed-warn", " · its drop is outside your cut, so it won't play"));
+  box.appendChild(head);
+  if (f.why) box.appendChild(el("p", "ed-why", f.why));
+  const pick = el("div", "actions");
+  const options = (S.D.music || []).map(m => [m.id, m.name + (m.mood ? " · " + m.mood : "") + " · " + Math.round(m.bpm) + " BPM"]);
+  if (!tr) options.unshift([f.track, f.track + " (missing)"]);
+  pick.append(select(options, f.track, { muTrack: "" }, "Track"));
+  box.appendChild(pick);
+  if (tr && tr.description) box.appendChild(el("p", "faint ed-why", tr.description));
+  box.appendChild(edgeRow("Drop", f.t, "fxNudge", "Land the drop on the playhead", 1 / (S.D.fps || 30)));
+  const acts = el("div", "actions ed-sel-acts");
+  const labelled = (text, control, title) => {
+    const l = el("label", "muted");
+    if (title) l.title = title;
+    l.append(el("small", "", text + " "), control);
+    return l;
+  };
+  acts.appendChild(labelled("starts", select([[-1, "with the edit"], [0, "on the drop"], [1, "1 s before it"], [2, "2 s before"],
+                                              [4, "4 s before"], [8, "8 s before"], [16, "16 s before"]],
+                                             f.lead ?? -1, { muLead: "" }, "How much music plays before the drop",
+                                             v => nice(v) + " s before"),
+                                      "With the edit: the track plays from the start of the edit (as much of it as there is before its drop). On the drop: silence, then the drop hits."));
+  acts.appendChild(labelled("volume", select([3, 0, -3, -6, -10, -15, -20].map(g => [g, (g > 0 ? "+" : "") + g + " dB"]),
+                                             f.gain ?? MI.default_gain, { muGain: "" }, "Music volume"),
+                            "0 = as loud as her talking. Hype edits sit near 0, a soft bed at -10 or lower."));
+  acts.appendChild(labelled("under her words", select([[0, "no dip"], [-6, "-6 dB"], [-10, "-10 dB"], [-14, "-14 dB"], [-20, "-20 dB"]],
+                                                      f.duck ?? MI.default_duck, { muDuck: "" }, "How far the music dips while she talks")));
+  box.appendChild(acts);
+  const b = musicBed();
+  if (b) box.appendChild(el("p", "faint ed-why",
+    `Plays ${fmt(b.start, 1)}–${fmt(b.start + b.length, 1)} of the edit, from ${fmt(b.offset, 1)} into the track; the drop (${fmt(tr.drop, 1)} in the track) hits at ${fmt(b.drop, 1)}.`
+    + (b.fadeOut ? " It fades out at the end." : " The track ends before the edit does.")));
+  const more = el("div", "actions ed-sel-acts");
+  const d = btn("Delete", "Remove the music (Del)", { edAct: "delete" });
+  d.classList.add("danger");
+  more.append(btn("▶ Play edit", "Hear it with the cut (music plays only in ▶ Play edit)", { edAct: "play-edit" }), d);
+  box.appendChild(more);
+}
 export function paintVisPanel() {
   const box = $("[data-ed-selected]");
   box.textContent = "";
@@ -214,8 +261,11 @@ export function paintVisPanel() {
     l.append(el("small", "", text + " "), control);
     return l;
   };
-  acts.appendChild(labelled("length", select(LENGTHS[f.type].map(v => [v, v + " s"]), f.d, { visD: "" }, "How long it lasts",
-                                              v => nice(v) + " s")));
+  if (f.type !== "word")       // word art lasts as long as its caption
+    acts.appendChild(labelled(f.type === "time" && f.style === "freeze" ? "holds" : "length",
+                              select(LENGTHS[f.type].map(v => [v, v + " s"]), f.d, { visD: "" },
+                                     f.type === "time" && f.style === "freeze" ? "How long the frame holds" : "How long it lasts",
+                                     v => nice(v) + " s")));
   if (ZOOMS.includes(f.type)) {
     const names = Object.keys(S.D.regions);
     const opts = names.map(n => [n, n]).concat([["", "centre of the frame"]]);
@@ -294,6 +344,36 @@ export function paintVisPanel() {
     if (isShort() && !spotBox(f, f.t + f.d / 2))
       box.appendChild(el("p", "ed-warn", "What it's round isn't in the Short's picture here, so it won't show: move it, "
                          + "or add a frame shot on that region."));
+  } else if (f.type === "card") {
+    const CI = S.D.card_info;
+    const input = el("input");
+    Object.assign(input, { type: "text", value: f.text || "", maxLength: 80, className: "ed-sub-input" });
+    input.dataset.cardText = "";
+    input.setAttribute("aria-label", "What it says");
+    input.title = f.style === "poster" ? "*stars* round words give them the colour (else the last line gets it)" : "No emoji (the render can't draw them)";
+    box.appendChild(input);
+    const STT = { died: "died: dark band, red serif", poster: "poster: words appear one by one", flat: "flat: one line on a plain screen",
+                  comment: "comment: a reply-to-comment sticker" };
+    acts.appendChild(labelled("style", select(Object.keys(CI.styles).map(k => [k, STT[k] || k]), f.style, { cardStyle: "" }, "Which card", v => v)));
+    acts.appendChild(labelled(f.style === "poster" ? "highlight" : "colour",
+                              select(Object.keys(CI.colors).map(c => [c, c]), f.color, { cardColor: "" }, "Its colour", v => v)));
+    if (f.style === "comment") {
+      const who = el("input");
+      Object.assign(who, { type: "text", value: f.who || "", maxLength: 24, placeholder: "who wrote it (optional)" });
+      who.dataset.cardWho = "";
+      who.setAttribute("aria-label", "Who wrote the comment");
+      acts.appendChild(labelled("by", who));
+      acts.appendChild(labelled("where", select([[-0.3, "top"], [-0.15, "upper"], [0, "middle"], [0.2, "lower"]], f.dy ?? -0.3,
+                                                { cardPlace: "" }, "Where the sticker sits", v => nice(v))));
+    } else
+      acts.appendChild(labelled("screen", select([["black", "black"], ["white", "white"], ["dim", "the picture, darkened"]],
+                                                 f.bg || CI.styles[f.style].bg || "black", { cardBg: "" }, "What's behind the words", v => v)));
+    box.appendChild(el("p", "faint ed-why", {
+      died: "The ironic ending: right after she says she's fine. Pair it with a sound (a low boom) and end the edit on it.",
+      poster: "A black screen of words, revealed one by one: the line that sums up the clip, hopecore or demotivational.",
+      flat: "A pause in the story: “3 HOURS LATER”, “MEANWHILE…”, “HE DID NOT TAKE IT WELL”.",
+      comment: "Open on the comment that the clip answers, like a TikTok reply.",
+    }[f.style] || ""));
   } else if (f.type === "text") {
     const input = el("input");
     Object.assign(input, { type: "text", value: f.text, maxLength: S.D.text_info.max, className: "ed-sub-input" });
@@ -321,6 +401,74 @@ export function paintVisPanel() {
     box.appendChild(el("small", "muted", "Where"));
     box.appendChild(regionChips(f.at || "", { chipFor: "capat" }, "their usual place",
                                 [["top", "top"], ["bottom", "bottom"], ["middle", "middle"], ["seam", "between the pictures"]]));
+  } else if (f.type === "word") {
+    const W = S.D.word_info, c = artCue(f);
+    const STT = { box: "box: white on a colour block", slime: "slime: dripping green", glow: "glow: soft neon",
+                  fire: "fire: hot comic capitals", scary: "scary: horror red", big: "big: much bigger" };
+    if (c) {
+      box.appendChild(el("small", "muted", "Which word of “" + c.text.replace(/\*/g, "") + "”"));
+      const chips = el("div", "ed-region-chips");
+      for (const w of artWords(c.text).slice(0, 20)) {
+        const b = btn(w, "Dress this word instead", { artWord: w });
+        b.className = "chip ed-rchip" + (w.toLowerCase() === f.word.toLowerCase() ? " current" : "");
+        chips.appendChild(b);
+      }
+      box.appendChild(chips);
+    }
+    const input = el("input");
+    Object.assign(input, { type: "text", value: f.word, maxLength: W.max_chars, className: "ed-sub-input" });
+    input.dataset.artInput = "";
+    input.setAttribute("aria-label", "The word it dresses");
+    input.title = "A word or a 2-3 word phrase of the caption, as it's written there (Enter)";
+    box.appendChild(input);
+    acts.appendChild(labelled("look", select(Object.keys(W.styles).map(k => [k, STT[k] || k]), f.style, { artStyle: "" },
+                                             "How the word looks", v => v)));
+    acts.appendChild(labelled("colour", select([["", "its own"]].concat(Object.keys(W.colors).map(k => [k, k])), f.color || "",
+                                               { artColor: "" }, "Its colour: the box's, the glow's, the slime's…", v => v)));
+    box.appendChild(el("p", "faint ed-why", "The word that carries the line, dressed like clip channels do it: it springs "
+                       + "bigger the moment she says it (At is that moment). One or two a clip; never two in one caption."));
+    if (!c || !cueArts(c).some(([, , a]) => a.id === f.id))
+      box.appendChild(el("p", "ed-warn", c ? `“${f.word}” isn't in the caption here, so it won't show.`
+                                           : "No caption shows here, so it won't show: move it onto a caption."));
+  } else if (f.type === "time") {
+    const TI = S.D.time_info;
+    const STT = { slow: "slow motion", ramp: "ramp: fast, then slams into slow", fast: "fast forward", freeze: "freeze frame (stare)" };
+    acts.appendChild(labelled("what", select(TI.styles.map(v => [v, STT[v] || v]), f.style, { timeStyle: "" }, "Which time effect", v => v)));
+    if (f.style === "freeze") {
+      acts.appendChild(labelled("push in", select([1, 1.1, 1.2, 1.25, 1.35, 1.5, 1.75, 2, 2.5].map(v => [v, v === 1 ? "none" : v + "×"]),
+                                                  f.zoom ?? TI.zoom[0], { timeZoom: "" }, "How far it pushes in while it holds",
+                                                  v => nice(v) + "×")));
+      acts.appendChild(labelled("colour", select([["", "as it is"], ["1", "black and white"]], f.mono ? "1" : "",
+                                                 { timeMono: "" }, "Black and white while it holds", v => v)));
+      if (Object.keys(S.D.regions).length) {
+        box.appendChild(el("small", "muted", "Pushes in on"));
+        box.appendChild(regionChips(f.region || "", { chipFor: "time" }, "the middle"));
+      }
+      box.appendChild(el("p", "faint ed-why", "The stare: the picture stops on her face while the music plays on (her voice stops). "
+        + "Right after the fail, ending the edit; or a record-scratch freeze before the twist."));
+    } else {
+      const [, lo, hi] = TI.rates[f.style];
+      const steps = [0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.75, 0.9, 1.25, 1.5, 2, 3, 4].filter(v => v >= lo && v <= hi);
+      acts.appendChild(labelled(f.style === "ramp" ? "lands at" : "speed", select(steps.map(v => [v, v + "×"]), f.rate,
+                                                  { timeRate: "" }, f.style === "ramp" ? "The slow speed it slams into" : "How fast it plays",
+                                                  v => nice(v) + "×")));
+      acts.appendChild(labelled("her voice", select([["tempo", "same pitch"], ["deep", "deep (pitch follows)"], ["mute", "muted"]],
+                                                    f.sound || "tempo", { timeSound: "" }, "What her voice does", v => v)));
+      box.appendChild(el("p", "faint ed-why", {
+        slow: "The payoff again, slower, so it lands. Deep voice for the slow-motion “noooo”.",
+        ramp: `Plays at ${TI.ramp_from}× and slows step by step into the moment at its end: the tuff edit's move, on the music's drop.`,
+        fast: "A boring stretch at speed instead of a cut, so the viewer sees time pass.",
+      }[f.style]));
+      const ps = timeParts().filter(p => p.f === f);
+      if (ps.length) box.appendChild(el("p", "faint ed-why", `${nice(ps.reduce((n, p) => n + p.e - p.s, 0))} s of the clip `
+        + `play in ${nice(ps.reduce((n, p) => n + partLen(p), 0))} s.`));
+      else box.appendChild(el("p", "ed-warn", "It isn't inside your cut, so it does nothing."));
+    }
+  } else if (f.type === "hush") {
+    acts.appendChild(labelled("what", select([["silence", "silence"], ["black", "silence + black picture"]], f.style || "silence",
+                                             { hushStyle: "" }, "Silence only, or the picture goes black too", v => v)));
+    box.appendChild(el("p", "faint ed-why", "Everything goes quiet, music too: the beat before a drop or a punchline. "
+      + "Black + short (0.15–0.4 s) on the beat is the stutter cut of tuff edits."));
   } else if (f.type === "shake") {
     acts.appendChild(labelled("strength", select([[1, "light"], [2, "normal"], [3, "heavy"]], f.strength, { visStrength: "" }, "How strong")));
   } else {
@@ -375,6 +523,17 @@ export function paintSubPanel() {
   who.append(el("small", "", "said by "), pick);
   if (!V().count) who.append(el("small", "faint", " · add people under Captions first"));
   box.appendChild(who);
+  const words = S.D.word_info ? artWords(c.text) : [];
+  if (words.length) {             // word art: dress one word of the line
+    const row = el("div", "ed-region-chips ed-art-chips"), dressed = cueArts(c).map(([, , a]) => a.word.toLowerCase());
+    row.appendChild(el("small", "muted", "✦ word art "));
+    for (const w of words.slice(0, 20)) {
+      const b = btn(w, `Dress “${w}”: a colour box, slime, a glow…`, { subArt: w });
+      b.className = "chip ed-rchip" + (dressed.includes(w.toLowerCase()) ? " current" : "");
+      row.appendChild(b);
+    }
+    box.appendChild(row);
+  }
   const f = 1 / (S.D.fps || 30);
   box.appendChild(edgeRow("Start", c.t0, "subNudge0", "Start it at the playhead", f));
   box.appendChild(edgeRow("End", c.t1, "subNudge1", "End it at the playhead", f));

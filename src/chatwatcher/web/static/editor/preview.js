@@ -1,7 +1,7 @@
 // The picture preview: the camera (edit/motion.py), the Short's panels (edit/layout.py),
 // spotlights (edit/spots.py) and the stage canvas that draws them over the video.
 import { ASS_TO_CSS, S, ZOOMS, sctx, stage, video } from "./state.js";
-import { curFx, keptFx, runsOf, wrapSub } from "./util.js";
+import { curFx, editTime, keptFx, runsOf, wrapSub } from "./util.js";
 
 let stageOn = false;
 let comp = null, bgc = null;   // the Short's preview: the picture before zoom, and the small blurred background
@@ -153,6 +153,11 @@ export function camera(t) {
     const [z0, x0, y0] = startView(zf, rx, ry);
     z = z0 + (zf.zoom - z0) * p; cx = x0 + (rx - x0) * p; cy = y0 + (ry - y0) * p;
   }
+  if (S.frozen && (S.frozen.f.zoom || 1) > 1) {     // a freeze frame's push-in (timing / render.retime_filter)
+    const q = Math.min(1, (performance.now() - S.frozen.since) / 1000 / S.frozen.f.d), sq = q * q * (3 - 2 * q);
+    const [rx, ry] = S.frozen.f.region && S.D.regions[S.frozen.f.region] ? centre(S.frozen.f.region) : [0.5, 0.5];
+    z *= 1 + (S.frozen.f.zoom - 1) * sq; cx += (rx - cx) * sq; cy += (ry - cy) * sq;
+  }
   let a = 0, dx = 0, dy = 0;
   for (const f of S.fx) {
     if (f.type !== "shake" || !active(f, t)) continue;
@@ -166,12 +171,13 @@ export function camera(t) {
   return [cx + dx, cy + dy, h];
 }
 function flashesAt(t) {
-  return S.fx.filter(f => f.type === "flash").concat(transVis().filter(v => v.type === "flash" || v.type === "fadeout"))
+  const holds = S.fx.filter(f => f.type === "hush" && f.style === "black" && active(f, t)).map(() => [[0, 0, 0], 1]);
+  return holds.concat(S.fx.filter(f => f.type === "flash").concat(transVis().filter(v => v.type === "flash" || v.type === "fadeout"))
     .filter(f => active(f, t)).map(f => {
       const [rgb, peak] = S.D.visual.flash[f.color] || S.D.visual.flash.white;
       const q = (t - f.t) / f.d;
       return [rgb, peak * (f.type === "fadeout" ? q : 1 - q)];
-    });
+    }));
 }
 // The picture box inside the <video> element (it can be letterboxed), relative to the player.
 export function pictureBox() {
@@ -218,7 +224,7 @@ function drawShort() {
     }
   }
   const [xc, yc, h] = camera(video.currentTime);
-  sctx.filter = blurAt(video.currentTime) ? `blur(${Math.round(cw / 60)}px)` : "none";
+  sctx.filter = [blurAt(video.currentTime) ? `blur(${Math.round(cw / 60)}px)` : "", mono()].filter(Boolean).join(" ") || "none";
   sctx.drawImage(comp, (xc - h) * cw, (yc - h) * ch, 2 * h * cw, 2 * h * ch, 0, 0, cw, ch);
   sctx.filter = "none";
   drawSpots(cw, ch, xc, yc, h, video.currentTime);
@@ -231,18 +237,6 @@ function drawShort() {
 // The hook (edit/hook.py): the layout's title over the Short's first seconds, in its style.
 // Shown while the edit's own time is under its seconds, and always while the Layout tab is
 // open (so you see what you're styling).
-function editTime(t) {
-  if (S.editPlay && S.segs[S.editPlay.i]) {
-    const i = S.editPlay.i;
-    return S.segs.slice(0, i).reduce((n, s) => n + s[1] - s[0], 0) + Math.max(0, t - S.segs[i][0]);
-  }
-  let before = 0;
-  for (const s of S.segs) {
-    if (t >= s[0] && t < s[1]) return before + t - s[0];
-    before += s[1] - s[0];
-  }
-  return null;
-}
 const hookHex = name => (S.D.layout_info.hook.colors[name] || "FFFFFF");
 function hookDark(rgb) {           // hook._dark: the ring round a bubble hook's white outline
   const r = parseInt(rgb.slice(0, 2), 16) / 255, g = parseInt(rgb.slice(2, 4), 16) / 255, b = parseInt(rgb.slice(4, 6), 16) / 255;
@@ -257,7 +251,7 @@ function drawHook(cw, ch) {
   if (!text || !H) return;
   const st = Object.assign({}, H.default, S.layout.hook || {});
   const pane = document.querySelector('[data-ed-pane="lay"]'), styling = pane && !pane.hidden;
-  const et = editTime(video.currentTime);
+  const et = editTime(video.currentTime, S.editPlay ? S.editPlay.i : null);
   const showing = et !== null && et < st.s;
   if (!showing && !styling) return;
   const u = showing ? et * 1000 : 900, dur = st.s * 1000;          // ms into the hook
@@ -341,13 +335,14 @@ function drawHook(cw, ch) {
 }
 // While a zoom, shake or flash shows, a canvas over the video draws the view; otherwise
 // it's hidden and you see the video (and its controls) as usual.
+const mono = () => (S.frozen && S.frozen.f.mono ? "grayscale(1)" : "");
 export function drawStage() {
   if (isShort()) return drawShort();
   const t = video.currentTime;
   const [xc, yc, h] = camera(t), fl = flashesAt(t);
   const show = !S.regionMode && video.videoWidth > 0 && video.readyState >= 2
     && (h < 0.4995 || Math.abs(xc - 0.5) > 1e-4 || Math.abs(yc - 0.5) > 1e-4 || fl.length > 0 || blurAt(t)
-        || spotsAt(t).length > 0);
+        || spotsAt(t).length > 0 || !!S.frozen);
   if (show !== stageOn) { stage.hidden = !show; stageOn = show; }
   if (!show) return;
   const box = pictureBox(), dpr = window.devicePixelRatio || 1;
@@ -355,7 +350,7 @@ export function drawStage() {
   const cw = Math.round(box.width * dpr), ch = Math.round(box.height * dpr);
   if (stage.width !== cw || stage.height !== ch) { stage.width = cw; stage.height = ch; }
   const vw = video.videoWidth, vh = video.videoHeight;
-  sctx.filter = blurAt(t) ? `blur(${Math.round(cw / 80)}px)` : "none";
+  sctx.filter = [blurAt(t) ? `blur(${Math.round(cw / 80)}px)` : "", mono()].filter(Boolean).join(" ") || "none";
   sctx.drawImage(video, (xc - h) * vw, (yc - h) * vh, 2 * h * vw, 2 * h * vh, 0, 0, cw, ch);
   sctx.filter = "none";
   drawSpots(cw, ch, xc, yc, h, t);

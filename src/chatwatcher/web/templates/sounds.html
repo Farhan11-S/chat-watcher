@@ -22,7 +22,7 @@
 <div class="page-head">
   <div>
     <h1>Library</h1>
-    <p class="sub">Sound effects and green-screen overlays for your edits. ✨ AI edit picks from these by each one's
+    <p class="sub">Sound effects, music and green-screen overlays for your edits. ✨ AI edit picks from these by each one's
       <b>description</b>, so write when to use it.</p>
   </div>
 </div>
@@ -30,6 +30,7 @@
 <div class="card flush" data-tabs>
   <nav class="tabs" aria-label="Library">
     <button type="button" class="on" data-tab="sounds">Sounds <span class="n">{{ sounds | length }}</span></button>
+    <button type="button" data-tab="music">Music <span class="n">{{ tracks | length }}</span></button>
     <button type="button" data-tab="overlays">Overlays <span class="n">{{ overlays | length }}</span></button>
     <button type="button" data-tab="starter">Starter pack <span class="n">{{ pack.have }}/{{ pack.sounds | length }}</span></button>
   </nav>
@@ -82,6 +83,77 @@
     <p class="empty" data-filter-empty hidden>No sounds match.</p>
   </section>
 
+  <section data-tab-panel="music" id="music" hidden>
+    <div class="toolbar" data-filter="#music-rows">
+      <label class="search">{{ icon('search') }}<input type="search" data-filter-q placeholder="Search music…" aria-label="Search music"></label>
+      <span class="count" data-filter-count>{{ tracks | length }}</span>
+      <span class="grow"></span>
+      <details class="menu right wide" data-menu>
+        <summary class="btn primary">＋ Add music</summary>
+        <form method="post" action="/music/upload" enctype="multipart/form-data" class="menu-list sound-upload">
+          <label class="sound-files">
+            <span>Music files <small class="muted">· mp3, m4a, wav, flac, ogg · whole tracks under 10 min · a few seconds each to listen to</small></span>
+            <input type="file" name="files" multiple required accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac,.opus">
+          </label>
+          <label><span>Mood <small class="muted">(for all of them; you can change each one after)</small></span>
+            <select name="mood"><option value="">—</option>
+              {% for m, what in moods.items() %}<option value="{{ m }}">{{ m }} · {{ what }}</option>{% endfor %}
+            </select></label>
+          <label><span>Description</span>
+            <input type="text" name="description" maxlength="500" placeholder="e.g. hard phonk: a cold comeback, an overtake, an aura moment"></label>
+          <label><span>Source and license</span><input type="text" name="source" maxlength="300" placeholder="e.g. YouTube Audio Library · free to use"></label>
+          <small class="faint">Each track is levelled and listened to: its tempo, every beat and its drop (where it hits hardest) are found, so an edit can land the drop on the punchline.</small>
+          <div class="actions"><button class="primary">Add music</button></div>
+        </form>
+      </details>
+    </div>
+    <p class="muted pad">A music bed plays under the whole edit, or comes in on a moment, and dips under her words.
+      Its <b>drop</b> lands where you put the music marker (＋ Add → Music in the editor), or where ✨ AI edit puts it: the punchline, the crash, the overtake.
+      Copyrighted songs can get a Short claimed or muted; YouTube's Audio Library and royalty-free packs are safe.</p>
+    {% if not tracks %}<p class="empty">No music yet. A few tracks cover most edits: a eurobeat, a phonk, a hopecore piano, a sad violin.</p>{% endif %}
+    <div class="sound-list" id="music-rows">
+      {% for m in tracks %}
+      <form class="sound-row" id="m-{{ m.id }}" method="post" action="/music/{{ m.id }}/save" data-item
+            data-search="{{ m.name }} {{ m.description }} {{ m.mood }} {{ m.id }}">
+        <div class="sound-play">
+          <audio controls preload="none" src="/media/music/{{ m.id }}" data-music-audio></audio>
+          <small class="muted"><span class="mono">{{ m.id }}</span> · {{ (m.duration_s // 60) | int }}:{{ '%02d' | format((m.duration_s % 60) | int) }}
+            · {{ '%.0f' | format(m.bpm) }} BPM
+            {% if used.get('music:' ~ m.id) %}· in {{ used['music:' ~ m.id] }} edit{{ 's' if used['music:' ~ m.id] != 1 }}{% endif %}</small>
+          <button type="button" class="small" title="Play from 3 s before the drop"
+                  onclick="const a=this.closest('form').querySelector('[data-music-audio]');a.currentTime=Math.max(0,parseFloat(this.closest('form').drop_s.value||0)-3);a.play()">▶ from the drop</button>
+        </div>
+        <div class="sound-fields">
+          <input type="text" name="name" value="{{ m.name }}" maxlength="80" aria-label="Name" class="sound-name">
+          <input type="text" name="description" value="{{ m.description }}" maxlength="500" aria-label="Description"
+                 placeholder="When to use it (Claude reads this)" class="{{ 'missing' if not m.description }}">
+          <div class="sound-meta">
+            <label class="muted"><small>mood</small>
+              <select name="mood"><option value="">—</option>
+                {% for mood in moods %}<option value="{{ mood }}" {{ 'selected' if mood == m.mood }}>{{ mood }}</option>{% endfor %}
+              </select></label>
+            <label class="muted" title="Seconds into the track where it hits hardest. Found {{ '%.2f' | format(m.found_drop_s) }} s when it was added.">
+              <small>drop at</small>
+              <input type="number" name="drop_s" value="{{ '%.2f' | format(m.drop_s) }}" min="0" max="{{ m.duration_s }}" step="0.01" style="width: 6.5em"> <small>s</small></label>
+            <input type="text" name="source" value="{{ m.source }}" maxlength="300" aria-label="Source and license" placeholder="source · license">
+            <label class="muted" title="This track's volume nudge (each edit sets its own volume too)."><small>volume</small>
+              <select name="gain_db">
+                {% for g in [6, 3, 0, -3, -6, -10] %}<option value="{{ g }}" {{ 'selected' if g == m.gain_db }}>{{ '+' if g > 0 }}{{ g }} dB</option>{% endfor %}
+                {% if m.gain_db not in [6, 3, 0, -3, -6, -10] %}<option value="{{ m.gain_db }}" selected>{{ m.gain_db }} dB</option>{% endif %}
+              </select></label>
+          </div>
+        </div>
+        <div class="sound-actions">
+          <button class="small">Save</button>
+          <button class="small danger" formaction="/music/{{ m.id }}/delete"
+                  onclick="return confirm('Delete {{ m.name | e }}? Edits that use it keep their marker but render without music.')">Delete</button>
+        </div>
+      </form>
+      {% endfor %}
+    </div>
+    <p class="empty" data-filter-empty hidden>No music matches.</p>
+  </section>
+
   <section data-tab-panel="overlays" id="overlays" hidden>
     <div class="toolbar" data-filter="#overlay-rows">
       <label class="search">{{ icon('search') }}<input type="search" data-filter-q placeholder="Search overlays…" aria-label="Search overlays"></label>
@@ -94,6 +166,12 @@
             <span>Green-screen clips <small class="muted">· mp4, webm, mov · under 15 s each · takes a few seconds each</small></span>
             <input type="file" name="files" multiple required accept="video/*,.mp4,.webm,.mov,.mkv">
           </label>
+          <label><span>Background</span>
+            <select name="key">
+              <option value="auto">green or blue screen (made see-through)</option>
+              <option value="black">black: a light effect (hearts, sparkles, glow), see-through by brightness</option>
+              <option value="none">none: an opaque clip (a time card, a meme clip) shown full screen</option>
+            </select></label>
           <label><span>Description <small class="muted">(optional, for all of them; you can edit each one after)</small></span>
             <input type="text" name="description" maxlength="500" placeholder="e.g. question-mark pings: someone says something dumb or makes a bad call"></label>
           <label><span>Tags</span><input type="text" name="tags" maxlength="200" placeholder="lol, ping, meme"></label>
@@ -114,7 +192,7 @@
           <video class="overlay-preview" src="/media/overlay/{{ o.id }}" muted loop autoplay playsinline
                  aria-label="{{ o.name }} (see-through)"></video>
           <small class="muted"><span class="mono">{{ o.id }}</span> · {{ '%.1f' | format(o.duration_s) }} s
-            · keyed #{{ o.key_color }}{% if not o.sound %} · no sound{% endif %}
+            · {% if o.key_color == 'none' %}opaque (full screen){% elif o.key_color == 'luma' %}light effect (black keyed){% else %}keyed #{{ o.key_color }}{% endif %}{% if not o.sound %} · no sound{% endif %}
             {% if used.get(o.id) %}· in {{ used[o.id] }} edit{{ 's' if used[o.id] != 1 }}{% endif %}</small>
           {% if o.sound %}<audio controls preload="none" src="/media/overlay/{{ o.id }}/sound"></audio>{% endif %}
         </div>

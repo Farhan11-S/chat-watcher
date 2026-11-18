@@ -29,7 +29,7 @@ def overlay_list(conn: sqlite3.Connection, moment_pk: int) -> list[dict[str, Any
     """The overlay library and this clip's inserts, as the editor gets them."""
     return [{"id": o["id"], "name": o["name"], "description": o["description"], "length": o["duration_s"],
              "aspect": o["width"] / o["height"], "gain": o["gain_db"], "sound": bool(o["sound"]),
-             "insert": o["moment_id"] is not None}
+             "insert": o["moment_id"] is not None, "opaque": ovl.is_opaque(o)}
             for o in ovl.list_overlays(conn, moment_pk)]
 
 
@@ -67,11 +67,21 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
     from chatwatcher.edit.sounds import list_sounds
     sounds = [{"id": x["id"], "name": x["name"], "description": x["description"], "length": x["duration_s"],
                "gain": x["gain_db"]} for x in list_sounds(conn)]
+    from chatwatcher.edit import cards as crd
+    from chatwatcher.edit import music as mus
+    from chatwatcher.edit import wordart as wa
+    from chatwatcher.edit import timing as tm
+    from chatwatcher.edit import formats as fmts
+    tracks = [{"id": x["id"], "name": x["name"], "mood": x["mood"], "description": x["description"],
+               "length": x["duration_s"], "bpm": x["bpm"], "drop": x["drop_s"], "gain": x["gain_db"],
+               "beats": x["beats"]} for x in mus.list_music(conn)]
+    speech = (cr.words(clip) or {}).get("speech") or []
     scope, scope_label = regions.scope_for(conn, moment_pk)
     out = {
         "kind": kind, "duration": clip.duration_s, "fps": clip.fps, **wf.to_json(),
         "segments": segments, "source": source, "saved": bool(row),
         "effects": cr.effects_to_clip(cr.effects(base), clip), "sounds": sounds,
+        "music": tracks, "music_info": mus.info(), "speech": speech, "card_info": crd.info(), "word_info": wa.info(), "time_info": tm.info(), "formats": fmts.info(),
         "overlays": overlay_list(conn, moment_pk),
         "overlay_info": {"places": ovl.PLACES, "size": ovl.SIZE_RANGE, "offset": ovl.OFFSET_RANGE, "out": list(cr.size(clip)) if kind == "long"
                          else [lay.OUT_W, lay.OUT_H]},
@@ -87,7 +97,9 @@ def load(cfg: Config, conn: sqlite3.Connection, moment_pk: int, kind: str = "lon
                       "fade": [spt.FADE_IN, spt.FADE_OUT], "min": spt.MIN_SIZE},
         "visual": {"types": motion.TYPES | {lay.FRAME: lay.FRAME_LIMITS, ovl.OVERLAY: (1.0, 0.1, ovl.MAX_EFFECT_S),
                                             txt.TEXT: txt.D_LIMITS, spt.SPOT: spt.D_LIMITS,
-                                            cap.CAPTION: cap.D_LIMITS, lyr.LAYER: lyr.D_LIMITS},
+                                            cap.CAPTION: cap.D_LIMITS, lyr.LAYER: lyr.D_LIMITS,
+                                            mus.HUSH: mus.HUSH_D, "card": crd.D_LIMITS,
+                                            wa.WORD: wa.D_LIMITS, tm.TIME: tm.D_LIMITS},
                    "transitions": motion.TRANSITIONS,
                    "transition_d": motion.TRANSITION_D, "zoom_range": motion.ZOOM_RANGE, "shake": motion.SHAKE_AMP,
                    "flash": motion.FLASH, "margin": motion.MARGIN, "waves": [motion.WAVES_X, motion.WAVES_Y]},
@@ -168,7 +180,9 @@ def save(cfg: Config, conn: sqlite3.Connection, moment_pk: int, raw: Any, source
     if effects is not None:
         known = {r["id"] for r in conn.execute("SELECT id FROM sounds")}
         ovs = {r["id"] for r in conn.execute("SELECT id FROM overlays")}
-        fx = [f | {"t": round(f["t"] + clip.zero_s, 3)} for f in clean_effects(effects, clip.duration_s, known, ovs)]
+        tracks = {r["id"] for r in conn.execute("SELECT id FROM music")}
+        fx = [f | {"t": round(f["t"] + clip.zero_s, 3)}
+              for f in clean_effects(effects, clip.duration_s, known, ovs, tracks)]
     else:
         fx = cr.effects(existing if existing is not None or kind == "long" else cr.stored(conn, moment_pk, "long"))
     conn.execute(

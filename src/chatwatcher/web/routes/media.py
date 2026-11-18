@@ -114,6 +114,15 @@ def router(ctx: Ctx) -> APIRouter:
             raise HTTPException(404)
         return FileResponse(p, media_type="audio/flac")
 
+    @r.get("/media/music/{track_id}")
+    def media_music(track_id: str, conn=Depends(get_conn)):
+        from chatwatcher.edit import music
+        t = music.get_track(conn, track_id) if music.valid_id(track_id) else None
+        p = music.track_path(cfg, t) if t else None
+        if not p or not p.is_file() or p.parent != music.music_dir(cfg):
+            raise HTTPException(404)
+        return FileResponse(p, media_type="audio/flac")
+
     @r.get("/media/overlay/{oid}")
     def media_overlay(oid: str, conn=Depends(get_conn)):
         from chatwatcher.edit import overlays

@@ -37,6 +37,19 @@ async function takeAiEdit(d) {
   showRender(d.render);
   preload();
 }
+// The format picker (edit/formats.py): none, Claude picks, or one format; its options come
+// with the edit, and each option's title says what it's for.
+export function paintFormats() {
+  const sel = $("[data-ed-format]");
+  if (!sel || !S.D || !S.D.formats || sel.options.length > 2) return;
+  for (const f of S.D.formats) {
+    const o = el("option", "", f.label);
+    o.value = f.key;
+    o.title = "For " + f.for;
+    sel.appendChild(o);
+  }
+}
+const format = () => ($("[data-ed-format]") || {}).value || "";
 export async function autoEdit() {
   const b = $('[data-ed-act="autoedit"]');
   if (S.segs.length > 1 && !confirm("✨ AI edit replaces your cut, Claude's effects and the subtitles with a new edit, and starts a new conversation in ✨ Direct (your own effects stay; Ctrl+Z brings everything back). Go on?")) return;
@@ -44,7 +57,7 @@ export async function autoEdit() {
   clearTimeout(S.saveTimer);
   fxStatus("Claude is editing the whole clip: cuts, hook, camera and effects… (usually 30–90 s)", "busy");
   try {
-    const d = await post(`/moment/${pk}/autoedit`, { ...body(), intensity: $("[data-ed-intensity]").value });
+    const d = await post(`/moment/${pk}/autoedit`, { ...body(), intensity: $("[data-ed-intensity]").value, format: format() });
     await takeAiEdit(d);
     paintChat(d.messages, true);
     const c = d.counts || {};
@@ -104,7 +117,7 @@ async function sendChat() {
   log.scrollTop = log.scrollHeight;
   try {
     const d = await post(`/moment/${pk}/direct`, { ...body(), intensity: $("[data-ed-intensity]").value,
-                                                   message, new: chatNew });
+                                                   format: format(), message, new: chatNew });
     if (d.applied) await takeAiEdit(d);
     paintChat(d.messages, true);
     if (d.applied) fxStatus("Claude changed the edit. Ctrl+Z undoes.", "ok");

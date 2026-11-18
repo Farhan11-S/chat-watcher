@@ -1,4 +1,4 @@
-"""The Sounds page: the sound-effect library and the green-screen overlays.
+"""The Sounds page: the sound-effect library, music for music beds, and the green-screen overlays.
 The files themselves are served by routes/media.py."""
 
 from __future__ import annotations
@@ -32,8 +32,13 @@ def router(ctx: Ctx) -> APIRouter:
                               "UNION ALL SELECT effects_json FROM shorts WHERE effects_json != '[]'"):
             for oid in {fx.get("overlay") for fx in json.loads(r["effects_json"]) if fx.get("overlay")}:
                 used[oid] = used.get(oid, 0) + 1
+        from chatwatcher.edit import music
+        for r in conn.execute("SELECT effects_json FROM edits WHERE effects_json LIKE '%\"music\"%' "
+                              "UNION ALL SELECT effects_json FROM shorts WHERE effects_json LIKE '%\"music\"%'"):
+            for tid in {fx.get("track") for fx in json.loads(r["effects_json"]) if fx.get("type") == "music"}:
+                used["music:" + tid] = used.get("music:" + tid, 0) + 1
         return render(request, "sounds.html", sounds=rows, used=used, pack=sounds.starter_status(conn),
-                      overlays=overlays.list_overlays(conn))
+                      overlays=overlays.list_overlays(conn), tracks=music.list_music(conn), moods=music.MOODS)
 
     @r.post("/sounds/upload")
     def sounds_upload(files: list[UploadFile] = File(...), description: str = Form(""), tags: str = Form(""),
@@ -99,9 +104,66 @@ def router(ctx: Ctx) -> APIRouter:
         sounds.delete_sound(cfg, conn, sound_id)
         return redirect("/sounds", msg=f"Deleted {sound_id}.")
 
+    @r.post("/music/upload")
+    def music_upload(files: list[UploadFile] = File(...), mood: str = Form(""), description: str = Form(""),
+                     source: str = Form(""), conn=Depends(get_conn)):
+        from chatwatcher.edit import music
+        tmp_dir = music.music_dir(cfg) / ".upload"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        added, failed = [], []
+        for f in files:
+            if not f.filename:
+                continue
+            tmp = tmp_dir / f"in_{time.time_ns()}{Path(f.filename).suffix[:10]}"
+            try:
+                size = 0
+                with open(tmp, "wb") as out:
+                    while chunk := f.file.read(1 << 20):
+                        size += len(chunk)
+                        if size > music.MAX_UPLOAD_BYTES:
+                            raise music.MusicError("bigger than 80 MB")
+                        out.write(chunk)
+                t = music.import_track(cfg, conn, tmp, original=f.filename, mood=mood, description=description,
+                                       source=source)
+                added.append(f"{t['id']} ({t['bpm']:.0f} BPM, drop at {t['drop_s']:.1f} s)")
+            except (music.MusicError, MediaError) as e:
+                failed.append(f"{f.filename}: {e}")
+            finally:
+                tmp.unlink(missing_ok=True)
+        if not added and not failed:
+            return redirect("/sounds#music", error="Pick one or more music files first.")
+        msg = f"Added {len(added)} track(s): {', '.join(added)}." if added else ""
+        if added:
+            msg += " Play each from its drop to check it, and give it a mood and a description."
+        if failed:
+            return redirect("/sounds#music", error=(msg + "\nCouldn't add: " + "; ".join(failed)).strip())
+        return redirect("/sounds#music", msg=msg.strip())
+
+    @r.post("/music/{track_id}/save")
+    def music_save(track_id: str, name: str = Form(""), mood: str = Form(""), description: str = Form(""),
+                   source: str = Form(""), gain_db: float = Form(0.0), drop_s: str = Form(""),
+                   conn=Depends(get_conn)):
+        from chatwatcher.edit import music
+        try:
+            drop = float(drop_s) if drop_s.strip() else None
+        except ValueError:
+            return redirect("/sounds#music", error="The drop is a number of seconds into the track.")
+        try:
+            music.update_track(conn, track_id, name=name, mood=mood, description=description, source=source,
+                               gain_db=gain_db, drop_s=drop)
+        except music.MusicError as e:
+            return redirect("/sounds#music", error=str(e))
+        return redirect(f"/sounds#m-{track_id}", msg=f"Saved {track_id}.")
+
+    @r.post("/music/{track_id}/delete")
+    def music_delete(track_id: str, conn=Depends(get_conn)):
+        from chatwatcher.edit import music
+        music.delete_track(cfg, conn, track_id)
+        return redirect("/sounds#music", msg=f"Deleted {track_id}.")
+
     @r.post("/overlays/upload")
     def overlays_upload(files: list[UploadFile] = File(...), description: str = Form(""), tags: str = Form(""),
-                        source: str = Form(""), conn=Depends(get_conn)):
+                        source: str = Form(""), key: str = Form("auto"), conn=Depends(get_conn)):
         from chatwatcher.edit import overlays
         tmp_dir = overlays.overlays_dir(cfg) / ".upload"
         tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +181,7 @@ def router(ctx: Ctx) -> APIRouter:
                             raise overlays.OverlayError("bigger than 80 MB")
                         out.write(chunk)
                 o = overlays.import_overlay(cfg, conn, tmp, original=f.filename, description=description,
-                                            tags=tags, source=source)
+                                            tags=tags, source=source, key=key)
                 added.append(o["id"])
             except (overlays.OverlayError, MediaError) as e:
                 failed.append(f"{f.filename}: {e}")
